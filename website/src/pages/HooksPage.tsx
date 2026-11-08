@@ -585,10 +585,10 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                           // and nothing else, so a keyboard or touch user met an ON switch
                           // beside `never fires` with nothing reconciling them. The action
                           // stays first, so the control still announces what it does.
-                          aria-label={[
-                            h.enabled ? i18nT('pages.hooksPage.disable_hook') : i18nT('pages.hooksPage.enable_hook'),
-                            h.enabled ? dormantOnNote(h.event) : '',
-                          ].filter(Boolean).join(' — ')}
+                          aria-label={!h.enabled ? i18nT('pages.hooksPage.enable_hook')
+                            : dormantOnNote(h.event)
+                              ? i18nT('pages.hooksPage.disable_hook_with_note', { note: dormantOnNote(h.event) })
+                              : i18nT('pages.hooksPage.disable_hook')}
                           title={h.enabled ? dormantOnNote(h.event) : undefined}
                         >
                           <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${h.enabled ? 'left-[18px]' : 'left-0.5'}`} />
@@ -910,7 +910,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                             <Badge
                               variant="muted"
                               title={reason}
-                              aria-label={`${i18nT('pages.hooksPage.stored_only')} — ${reason}`}
+                              aria-label={i18nT('pages.hooksPage.stored_only_reason', { reason })}
                               className="whitespace-normal text-[11px] leading-[1.15] max-w-[4.75rem] bg-transparent border border-dashed border-border"
                             >{i18nT('pages.hooksPage.stored_only')}</Badge>
                           </span>
