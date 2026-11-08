@@ -193,6 +193,7 @@ def _wait_healthy(
     tries: int = POD_HEALTH_WAIT_SECS_DEFAULT,
     superseded: str = "",
     refusal_mark: tuple[int, ...] | None = None,
+    owner_proof: bool = False,
 ) -> int:
     """Poll until the pod is USABLE (serving 200/401/403 *and* credentialled), or
     bail fast on failure.
@@ -206,6 +207,13 @@ def _wait_healthy(
     mint a credential that gateway never minted. Left ``""`` when there is nothing
     to supersede: a pod that was ALREADY active is not a new generation, so its
     current credential is the right one and must not be waited out.
+
+    *owner_proof*, set for a pod this command started, makes a ready pod also wait,
+    within the same budget, for the mint's ownership proof (``port_owner``
+    answering ``OWNER_POD``): that proof reads the gateway's pid record, which the
+    gateway writes off its readiness path and which can land after the credential.
+    A pod whose ownership is still unproven when the budget ends is returned as
+    ready, and the mint says why.
 
     Returns the HTTP code on success, or a negative sentinel on early failure:
       -1 = the unit's gateway crashed / is crash-looping (a broken worktree build
@@ -281,6 +289,13 @@ def _wait_healthy(
             serving_since = observed
         live = rt.published_credential(cfg, name, port)
         if serving and live and live != superseded:
+            # Ready. The proof wait below only delays this success, never turns it
+            # into a failure verdict.
+            while owner_proof and rt.port_owner(cfg, name, port) != rt.OWNER_POD:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(1.0, remaining))
             return code
         if code == rt.HEALTH_FOREIGN:
             saw_foreign = True
@@ -773,6 +788,8 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
             tries=wait_secs,
             superseded=superseded_credential,
             refusal_mark=refusal_mark,
+            # Under --no-token too: the agent pod surface mints as soon as `up` exits.
+            owner_proof=started_here,
         )
         if code not in (200, 401, 403):
             # A pod IS the worktree's own gateway. If it won't boot, that's a broken
@@ -1554,7 +1571,13 @@ def _restart(cfg: PodConfig, args: argparse.Namespace) -> None:
         _audit("pod.restart", "allowed", f"name={name} port={port} {limits.label()}")
         wait_secs = _health_wait_secs(args)
         code = _wait_healthy(
-            cfg, name, port, tries=wait_secs, superseded=superseded, refusal_mark=refusal_mark
+            cfg,
+            name,
+            port,
+            tries=wait_secs,
+            superseded=superseded,
+            refusal_mark=refusal_mark,
+            owner_proof=True,
         )
         if code not in (200, 401, 403):
             # This command started the unit, which is `Restart=on-failure` with a
