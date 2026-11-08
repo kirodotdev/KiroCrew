@@ -38,6 +38,7 @@ from kiro_crew.acp.client import (
     resolve_pin_spelling_on,
     sandbox_init_failure_for_runtime,
 )
+from kiro_crew.acp.kas_cli_settings import default_model_notice
 from kiro_crew.acp.mcp_session_report import (
     McpSessionReport,
     sanitize_sink_text,
@@ -48,7 +49,7 @@ from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.session_mcp import agent_spec_snapshot
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.transport_errors import AcpDelegateLaunchFailed
-from kiro_crew.acp.types import ACP_BACKENDS_HARNESS_OWNED_SESSIONS
+from kiro_crew.acp.types import ACP_BACKEND_KAS, ACP_BACKENDS_HARNESS_OWNED_SESSIONS
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.backends import model_registry_namespace
 from kiro_crew.agent_sdk.tool_gate import (
@@ -909,6 +910,12 @@ async def _start_kiro_runtime_impl(
                 # that would understate the phase's real distribution.
                 phases["session_new"] = (time.monotonic() - _t_sess) * 1000.0
 
+        # kiro-cli would start an unpinned chat on its cli.json chat.defaultModel,
+        # which KAS never reads. Crew does not apply it; it names it once,
+        # in the session-start notice, so the user can pick it. Read off the loop.
+        _default_model_notice = ""
+        if self._client.backend == ACP_BACKEND_KAS and configured_model in ("", DEFAULT_MODEL):
+            _default_model_notice = await asyncio.to_thread(default_model_notice, session_cwd)
         # Apply the configured model override (mirrors AcpClient handshake).
         # DEFAULT_MODEL ("auto") means "let kiro-cli pick per agent config".
         if configured_model and configured_model != DEFAULT_MODEL:
@@ -1018,6 +1025,7 @@ async def _start_kiro_runtime_impl(
             session_key=self._owning_session_key(),
             channel_id=self._owning_channel_id(),
         )
+        provider.kas_default_model_notice = _default_model_notice
         provider.memory_mode = self.memory_mode
         if resumed:
             provider.resumed = True
