@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo, lazy, Suspense } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Search, BookOpen, Network, FolderSync, HelpCircle, FileText, X, Copy, Settings } from 'lucide-react'
-import { Btn, SearchInput, Badge, EmptyState, ContentSkeleton } from '../../components/ui'
+import { Btn, Input, SearchInput, Badge, EmptyState, ContentSkeleton } from '../../components/ui'
 import Clickable from '../../components/Clickable'
 import Modal from '../../components/Modal'
 import SimpleSelect from '../../components/SimpleSelect'
@@ -260,6 +260,11 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
   const ingestion = useIngestionJobs()
   const [showHelp, setShowHelp] = useState(false)
   const [namespaceFilter, setNamespaceFilter] = useState('')
+  // '' keeps the default order; 'newest' / 'oldest' order by the day an item
+  // was added. The two days bound that same added day, inclusive.
+  const [sortOrder, setSortOrder] = useState('')
+  const [addedFrom, setAddedFrom] = useState('')
+  const [addedTo, setAddedTo] = useState('')
   const [uploadNamespace, setUploadNamespace] = useState('default')
   const [showAutocomplete, setShowAutocomplete] = useState(false)
   const [selectedItems, setSelectedItems] = useState<Set<string>>(new Set())
@@ -276,17 +281,22 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
   const limit = query ? 20 : MAX_PAGE_SIZE
   // Source-first list: when nothing is searched the top level renders one row
   // per source and each row pages within itself, so the item-level query below
-  // is only used for flat search results.
-  const sourceFirst = !query
+  // is only used for flat results. A date order or range is flat too: it reads
+  // across sources, newest or oldest first.
+  const dateView = !!(sortOrder || addedFrom || addedTo)
+  const sourceFirst = !query && !dateView
 
   const { data: itemsData, isLoading: itemsLoading, error: itemsError } = useQuery({
-    queryKey: ['knowledge-items', { page, query, typeFilter, statusFilter, namespaceFilter, limit }],
+    queryKey: ['knowledge-items', { page, query, typeFilter, statusFilter, namespaceFilter, sortOrder, addedFrom, addedTo, limit }],
     queryFn: () => {
       const params = new URLSearchParams({ page: String(page), limit: String(limit) })
       if (query) params.set('q', query)
       if (typeFilter) params.set('type', typeFilter)
       if (statusFilter) params.set('status', statusFilter)
       if (namespaceFilter) params.set('namespace', namespaceFilter)
+      if (sortOrder) params.set('sort', sortOrder)
+      if (addedFrom) params.set('added_from', addedFrom)
+      if (addedTo) params.set('added_to', addedTo)
       return knowledgeApi<{ items: KnowledgeItem[]; total: number }>(`/items?${params}`)
     },
     enabled: !sourceFirst,
@@ -509,7 +519,7 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
 
   useEffect(() => {
     setSelectedItems(new Set())
-  }, [page, query, typeFilter, statusFilter, namespaceFilter])
+  }, [page, query, typeFilter, statusFilter, namespaceFilter, sortOrder, addedFrom, addedTo])
 
   useEffect(() => {
     if (selectedEntity && entitySectionRef.current) {
@@ -548,7 +558,7 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
   // items, and both the list query and /namespaces are active-scoped, so it is
   // indistinguishable from an empty library and shows onboarding. The Sources
   // and Graph tabs stay mounted above this branch, so it is not a dead end.
-  const filtersPristine = !query && !typeFilter && !namespaceFilter && statusFilter === DEFAULT_STATUS_FILTER
+  const filtersPristine = !query && !typeFilter && !namespaceFilter && !dateView && statusFilter === DEFAULT_STATUS_FILTER
   const isEmpty = !loading && !listUnread && total === 0 && filtersPristine
   const totalPages = Math.ceil(total / limit)
 
@@ -601,6 +611,35 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
         onChange={v => { setNamespaceFilter(v); setPage(1) }}
         aria-label={i18nT('pages.knowledge.index.filter_by_namespace')}
       />
+      <SimpleSelect
+        options={['', 'newest', 'oldest']}
+        optionLabels={[i18nT('pages.knowledge.index.sort_default'), i18nT('pages.knowledge.index.sort_newest'), i18nT('pages.knowledge.index.sort_oldest')]}
+        value={sortOrder}
+        onChange={v => { setSortOrder(v); setPage(1) }}
+        aria-label={i18nT('pages.knowledge.index.sort_order')}
+      />
+      <div className="flex flex-wrap items-center gap-1.5">
+        <div className="text-muted text-[12px]">{i18nT('pages.knowledge.index.date_added')}</div>
+        <Input
+          type="date"
+          className="flex-none"
+          aria-label={i18nT('pages.knowledge.index.added_from')}
+          value={addedFrom}
+          max={addedTo || undefined}
+          onChange={e => { setAddedFrom(e.target.value); setPage(1) }}
+        />
+        <span className="text-muted text-[12px]" aria-hidden="true">
+          –
+        </span>
+        <Input
+          type="date"
+          className="flex-none"
+          aria-label={i18nT('pages.knowledge.index.added_to')}
+          value={addedTo}
+          min={addedFrom || undefined}
+          onChange={e => { setAddedTo(e.target.value); setPage(1) }}
+        />
+      </div>
     </div>
   )
 
@@ -738,11 +777,14 @@ export default function KnowledgePage({ embedded = false }: { embedded?: boolean
                   </div>
                 )
               ) : !items.length ? (
-                <EmptyState icon={<Search size={40} />} title={i18nT('pages.knowledge.index.no_items_match_your_search')} subtitle={i18nT('pages.knowledge.index.try_different_keywords_or_filters')} />
+                query
+                  ? <EmptyState icon={<Search size={40} />} title={i18nT('pages.knowledge.index.no_items_match_your_search')} subtitle={i18nT('pages.knowledge.index.try_different_keywords_or_filters')} />
+                  : <EmptyState icon={<Search size={40} />} title={i18nT('pages.knowledge.index.no_items_match_your_filters')} subtitle={i18nT('pages.knowledge.index.try_a_different_date_range_or_filter')} />
               ) : (
                 <div className="space-y-2 mt-3">
                   {items.map(item => (
                     <ItemCard key={item.id} item={item} onClick={() => setSelectedId(item.id)}
+                      showAddedDate={dateView}
                       selected={selectedItems.has(item.id)}
                       onSelect={(checked) => {
                         setSelectedItems(prev => {

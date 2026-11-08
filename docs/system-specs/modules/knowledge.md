@@ -1171,6 +1171,26 @@ Scopes the page to a single source. Composes with the existing `type`, `status`,
   see §4); adopting it in this branch is the remaining follow-up. Unscoped
   searches keep the cheap `limit * 3` window.
 
+### `GET /api/knowledge/items?sort=&added_from=&added_to=`
+
+Orders and bounds the list by the day an item was added (`created_at`).
+
+- `sort=newest|oldest` orders by `created_at`, rowid breaking ties so a page edge
+  is stable. Absent, the list keeps its default order: by source in the list
+  branch, by relevance in the search branch, where a date order re-sorts the
+  matched window stably (items added at the same moment keep their rank). That
+  window's size never depends on the page asked for, so every page slices one
+  order; it is the search's own result set, not the exhausted ranking, which with
+  a vector leg would be the whole embedded library.
+- `added_from` / `added_to` are inclusive `YYYY-MM-DD` days compared with the first
+  ten characters of `created_at` (the gateway's local `datetime.now().isoformat()`):
+  a SQL predicate in the list branch, a post-ranking filter in the search branch,
+  where they widen the window like `type`/`status`/`namespace`.
+- Any other `sort` value, or a day not spelled `YYYY-MM-DD`, is a 400.
+- `/source-counts` does not take them: while a date order or range is set, the
+  dashboard lists items flat across sources (one top-level pager) and each card
+  shows its added day instead of its last update.
+
 ### `GET /api/knowledge/source-counts`
 
 Returns the item count per source **under the active filters**:
