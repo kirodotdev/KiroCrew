@@ -713,6 +713,7 @@ _BASE_STATE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "'float | None' = None, update_check_interval_secs: 'int' = 43200, "
         "update_required: 'bool' = False, update_min_version: 'str' = '', "
         "update_can_arm: 'bool' = False, update_auto_effect: 'str' = 'unknown', "
+        "update_auto_manual_only: 'bool' = False, "
         "update_bundled_by_app: 'bool' = False, version_display: 'str' = '', "
         "bundle_id: 'str' = '') -> 'dict[str, Any]'",
     ),

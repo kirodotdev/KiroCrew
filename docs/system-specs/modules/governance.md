@@ -406,8 +406,13 @@ every wheel apply checks the pin again under the update lock before downloading
   stops the gateway installing an update by itself on every install shape,
   whatever the user's `auto_update` says: the check still runs, the badge still
   lights, and a person's Update applies it. `auto_update_effect` answers `notify`
-  but keeps the route, so the provider path still reads `can_apply` off it and
-  About keeps its Update button (see [cli](cli.md)). Each routine install reads
+  but keeps the route, so the provider path still reads `can_apply` off it, the
+  status frame's `update_auto_manual_only` is true, and About shows its "use
+  Update" note wherever the loop would have installed (see [cli](cli.md)). The
+  desktop app's own updater does not read the key: it installs app updates as
+  the app's own switch says, unless a policy provider that can apply stands it
+  down (`check_command` above). A failed governance read makes this key `false`,
+  unlike every other pin (see "an unresolvable pin" below). Each routine install reads
   the pin again at its last step before it changes anything, so a policy
   installed while the update waited still decides. A build below `min_version`
   still takes its mandatory update, because the floor is the stronger pin. A
@@ -451,7 +456,11 @@ environment and so applies the operator's own rewrite, and the pin judges that
 rewritten URL, as before (a pin written for the `ssh` spelling of an `https`→`ssh`
 rewrite still passes there). A URL the fetch will not use is never judged. **A pin blocks; an unresolvable pin does not:** if governance cannot be read
 at all the update proceeds, because refusing one would strand a host on a build
-that may need a patch. These are a routing constraint for a managed fleet, not a
+that may need a patch. `unattended_apply` is the exception and then reads `false`
+(`unattended_apply_allowed`): reading it as on would install unattended on a host
+whose policy may forbid it, while off stops only the unattended path, so a
+person's Update and `kirocrew update` still move the host. These are a routing
+constraint for a managed fleet, not a
 boundary against a local operator who could edit the checkout directly.
 
 **Roll the build before the pin.** The parser fails closed on an unknown key, so a
