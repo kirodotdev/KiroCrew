@@ -1405,6 +1405,12 @@ async def _run_inner_impl(
     # current prompt stats are still the authoritative billing record.
     usage.settle()
 
+    # kiro-cli's [STEERING steer-…] ack is protocol, not the run's answer: drop
+    # it before the completion result and the result.txt rewrite both read it.
+    # Imported here: this body runs on kiro_crew.subagent's globals.
+    from kiro_crew.messaging.driver import strip_steering_markers
+
+    result_text = strip_steering_markers(result_text)
     # Strip [OPTIONS: ...] tags and redact sensitive content
     cleaned, _ = extract_options(result_text) if result_text else (result_text, [])
     # Read before the fallback annotation, which is not a reply.
