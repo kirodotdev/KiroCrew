@@ -504,6 +504,7 @@ class CodexHarness(MembershipHarness):
         worker_stub_names: frozenset[str] | None = None,
         engine_features: frozenset[str] = frozenset(),
         session_cwd: str | Path | None = None,
+        ssh_auth_sock_forwarded: bool = False,
     ) -> SessionExtras:
         """Empty. codex has no custom-agent channel to register anything on.
 

@@ -1126,6 +1126,7 @@ class TestRuntimeSuppliesTheStubbedSet:
             withheld_out=None,
             prompt_unread_out=None,
             engine_features=frozenset(),
+            forward_ssh_auth_sock=False,
         ):
             seen.append(stub_server_names)
             return [{"id": agent}]
@@ -1153,6 +1154,7 @@ class TestRuntimeSuppliesTheStubbedSet:
             withheld_out=None,
             prompt_unread_out=None,
             engine_features=frozenset(),
+            forward_ssh_auth_sock=False,
         ):
             seen.append((session_key, member_dispatch))
             return [{"id": agent}]

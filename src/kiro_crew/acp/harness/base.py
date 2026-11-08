@@ -605,6 +605,7 @@ class HarnessAdapter(LaunchAdapter):
         worker_stub_names: frozenset[str] | None = None,
         engine_features: frozenset[str] = frozenset(),
         session_cwd: str | Path | None = None,
+        ssh_auth_sock_forwarded: bool = False,
     ) -> SessionExtras:
         """Per-session payload for this host, for both session start paths.
 
@@ -617,6 +618,10 @@ class HarnessAdapter(LaunchAdapter):
         ``worker_stub_names`` is handed in only for a KAS crewmate worker: the
         names of the stubs ``session/new`` injects for that session, from the
         caller's one overlay lookup. A host that projects nothing ignores it.
+
+        ``ssh_auth_sock_forwarded`` is the verdict the launch tail applied to the
+        running engine's own environment, for a host that starts the session's
+        stdio servers itself (KAS); False when no launch recorded one.
 
         ``engine_features`` is :func:`kiro_crew.acp.kas_engine_features.advertised`
         of this process's ``initialize`` answer. Only the KAS projection reads it.

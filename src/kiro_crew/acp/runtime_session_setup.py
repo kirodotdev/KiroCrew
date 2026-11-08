@@ -16,8 +16,8 @@ Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``, ``_
 ``_child_env_names``, ``_expect_mcp_reports``, ``_kiro_native_spec_lookup``, ``_launch_agent``,
 ``_launch_copy_spec``, ``_mcp_gateway_overlay``, ``_mcp_gateway_socket``, ``_member_context``,
 ``_native_launch_resources``, ``_native_launch_sources``, ``_native_launch_view_alias``,
-``_native_skill_projection``, ``_session_queues``, ``_start_launch_name``, ``_tool_search_wire``, ``_wire_mode_id``,
-``_work_dir``.
+``_native_skill_projection``, ``_session_queues``, ``_ssh_auth_sock_forwarded``, ``_start_launch_name``,
+``_tool_search_wire``, ``_wire_mode_id``, ``_work_dir``.
 """
 
 from __future__ import annotations
@@ -408,6 +408,7 @@ async def _kas_custom_agents(
         session_key=session_key,
         engine_features=kas_engine_features.advertised(getattr(self, "_agent_capabilities", {})),
         session_cwd=session_cwd,
+        ssh_auth_sock_forwarded=getattr(self, "_ssh_auth_sock_forwarded", False),
         **worker,
     )
     # Judged HERE, on the payload, so every path that builds one -- session/new
