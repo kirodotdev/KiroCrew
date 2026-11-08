@@ -905,7 +905,7 @@ export default function CrewEditorNextDialog({
                       <p className="text-[12px] text-muted">
                         {i18nT('crewEditorNext.webhooks_frame')}
                       </p>
-                      <CrewWebhookSection crew={editing} onNavigateAway={guardedNavigate} />
+                      <CrewWebhookSection crew={editingAgent} onNavigateAway={guardedNavigate} />
                     </fieldset>
                   </div>
                 </div>
