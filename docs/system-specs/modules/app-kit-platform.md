@@ -5841,7 +5841,7 @@ records which module owns which part, so a change lands in its owner.
 | `bridges_agents.py` | Materializing an app's agents: the app MCP policy (`_apply_agent_mcp_policy`, `_apply_agent_prompt`), host-managed MCP references, user edits carried across a refresh, shipped agent templates, `_register_agents` / `_deregister_agents` and `purge_uninstalled_agent_residue` |
 | `bridges_skills.py` | `_register_skills`, `_deregister_skills` and the startup `reconcile_app_skills` |
 | `bridges_crons.py` | The app cron manifest (`load_app_cron_defs`), the manifest digest and the resync of a changed job, `register_app_crons_with_service`, deregistration, and the execution-driven disarm and reconcile passes |
-| `bridges_mcp.py` | Registering an app's MCP servers: `resolve_stdio_command` and its interpreter and launch-target rules, the `kirocrew` host-CLI pin, the live backend port rewrite, the unresolvable-command and secret-reference warnings, backendless deps provisioning, `_register_mcp_servers` / `_deregister_mcp_servers`, re-registration and scrub, and the legacy shared `mcp.json` scrub |
+| `bridges_mcp.py` | Registering an app's MCP servers: `resolve_stdio_command` and its interpreter and launch-target rules, the `kirocrew` host-CLI pin, the live backend port rewrite (its launch-target anchor is also what adoption's E10 asks of a pinned tree's stdio server), the unresolvable-command and secret-reference warnings, backendless deps provisioning, `_register_mcp_servers` / `_deregister_mcp_servers`, re-registration and scrub, and the legacy shared `mcp.json` scrub |
 | `bridges_register.py` | `register_app` / `deregister_app` with `RegistrationResult`, `refresh_app_agents` and `refresh_app_agents_if_enabled`, the manifest-upgrade prune, `reconcile_enabled_app_resources`, and dropping the session resume pointers an app's conversations held (`discard_app_session_pointers`) |
 
 Imports only point down, in the facade's `_OWNERS` order: sources, mcp_config, agents,
@@ -6330,12 +6330,45 @@ after STAGE is never executed), then:
 |---|---|---|
 | E7 identity, version (= pin, = wheel, not below the record) | `manifest_identity_mismatch`, `version_mismatch` | never for this pin |
 | E8 no root build input or `.gitattributes` | `tree_requires_build` | never |
-| E10 no `mcpServers`, `ui.overlays`, `defaultEnabled: true`, nor a name a core table keys on | `pinned_feature_unsupported` | never |
+| E10 no `ui.overlays`, `defaultEnabled: true`, nor a name a core table keys on; an `mcpServers` entry only as a stdio server started from the tree within the wheel copy's declaration (below) | `pinned_feature_unsupported` | never |
 | E3/E5 host version, `APP_SDK_LEVEL`, `platform.os` | `host_too_old`, `host_sdk_too_old`, `platform_mismatch` | every STAGE pass |
 | E4 admission (`action="update"`, no exemption) | `admission_denied` | every STAGE pass |
 | E9 permission parity: nothing held back, no new `sessionApproval` | `permission_widening` | every STAGE pass |
 | E6 trust: a grant to another repository is never overwritten | `trust_conflict`, `trust_overlay_owned`, `config_unreadable` | every STAGE pass |
 | a transient failure (the config or the disk) | `config_unreadable`, `disk_full` | every STAGE pass, from the kept staged artifact |
+
+**A stdio MCP server through adoption** (`apps/builtin_adoption_mcp.py`,
+`adopted_mcp_servers_refusal`, called from the E10 check). A pinned tree may declare
+`mcpServers` only as stdio servers it starts from its own files: a bare `python`,
+`python3` or `py` `command` (`.exe` allowed) and `args` whose launch target is a
+relative `.py` path naming a file inside the tree. That is exactly the shape
+`resolve_stdio_command` anchors to an installed app's root ("An app's own `.py`
+launcher" in the manifest reference): the check asks the same
+`bridges._resolve_app_launcher_arg`, so a tree is accepted only when its server will
+register from the adopted root. Everything else runs code the pin's `treeSha256` does
+not cover and is refused: `-m` (it would run the released wheel package or another
+installed module), `-c`, the `kirocrew` host CLI, a PATH binary, a command or launch
+target carrying an absolute path, a file outside the tree, a missing file, and any
+`url` (an HTTP server is not carried). The wheel built-in's own `mcpServers` is the
+ceiling, never more: no server name it does not declare, no `autoApprove` verb it does
+not list (a wildcard it does not list included), no `env` entry it does not set with the same value (a value is a launch input too: `PYTHONPATH` or `PYTHONSTARTUP` would point the server at code outside the tree), a server
+it ships `disabled` stays disabled, and no field beyond `command`, `args`, `env`,
+`autoApprove` and `disabled`. Narrower is accepted, since it only removes reach. With no
+readable wheel manifest every server is refused. After the swap the record is an
+ordinary registry app, so the boot reconcile re-registers the server under the same
+`<app>:<server>` key through `_register_mcp_servers`, with the gateway's own
+interpreter, and it is spawned, sandboxed and governed like every other registry app's
+stdio server; nothing here changes the sandbox, the tool gate or the `autoApprove`
+strip. Not carried by this check: the gate's app-own-server auto-approve, which reads
+`builtin_app_mcp_servers` and so stops covering an adopted record, so its calls would
+start asking for approval on a governed host (where the `autoApprove` strip removes
+the local list) and on a harness that relies on the PreToolUse gate. That would change
+behaviour for the built-in's current users, so no pin may name a built-in whose wheel
+manifest declares `mcpServers` until the gate trust follows an adopted record:
+`test_no_shipped_pin_names_a_built_in_that_ships_an_mcp_server` fails on such a pin,
+and the change that carries the trust removes it. Pinned by
+`test/test_builtin_adoption_mcp.py`, including registration before and after an
+adoption.
 
 Then ONE trust-writer transaction (`agent_config_writer.mutate_trust_settings`)
 writes the grant exactly as `default_installs._grant` does (`apps_trusted`,
@@ -6484,8 +6517,8 @@ control for (wider access, another platform, a failed verification) says the mov
 on hold, never "until then".
 
 Writers: `apps/builtin_adoption.py`, `apps/builtin_adoption_apply.py`,
-`apps/builtin_adoption_checks.py`, `apps/builtin_adoption_fetch.py`,
-`apps/builtin_adoption_pins.py`, `apps/builtin_adoption_state.py`,
+`apps/builtin_adoption_checks.py`, `apps/builtin_adoption_mcp.py`,
+`apps/builtin_adoption_fetch.py`, `apps/builtin_adoption_pins.py`, `apps/builtin_adoption_state.py`,
 `apps/builtin_adoption_markers.py`, `apps/manager_adopt.py`,
 `apps/agent_config_writer.py`, `apps/routes_listing.py` (the released 404), `apps/adoption-pins.json`, `testing/harness.py`,
 `scripts/adoption_pin.py`. Tests: `test/test_builtin_adoption_*.py`,
