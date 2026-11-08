@@ -1049,11 +1049,11 @@ def _tier_app_own_server(facts: GateFacts, tier: GateTier) -> ToolHookResult | N
     prompt-injected agent can title a Bash call ``mcp__<app>:srv__x``, but kiro-cli
     only sets ``mcp_server`` for a genuine MCP-served call, so a forged shell/host
     title carries an empty server name and never matches (fail-closed). Restricted
-    to builtins on purpose: only a builtin's server is provably first-party. A
+    to first-party apps on purpose: a builtin, or a former builtin adopted from its
+    pin under repository-bound trust (``apps/builtin_adoption_gate.py``). A
     THIRD-PARTY app's server is arbitrary installed code whose internals the gate
-    cannot see, so its own-server calls are NOT auto-approved here -- the OS
-    sandbox it runs under and the third-party admission gate bound its behavior
-    instead.
+    cannot see, so its own-server calls are NOT auto-approved here; the OS sandbox
+    and the third-party admission gate bound its behavior instead.
 
     Placed AFTER every deny tier and governance in the table, so a ceiling/profile
     can still deny even a builtin's own server and every sensitive-path / keystone
@@ -1069,8 +1069,8 @@ def _tier_app_own_server(facts: GateFacts, tier: GateTier) -> ToolHookResult | N
     landed there (not declared by the app) would otherwise be trusted. The server
     must be DECLARED in the app's SHIPPED manifest
     (``_is_declared_builtin_mcp_server``, an in-memory set warmed at boot from
-    immutable manifests -- same discipline as ``_BUILTIN_APP_NAMES``) so only a
-    genuinely app-own server auto-approves.
+    immutable manifests, adopted servers re-checked against them, like
+    ``_BUILTIN_APP_NAMES``) so only a genuinely app-own server auto-approves.
 
     An app identity is recovered for a builtin whose slot carries NONE. Only a
     request with an authenticated app scope sets ``Slot._app``, so a builtin whose

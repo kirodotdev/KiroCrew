@@ -651,7 +651,10 @@ def set_builtin_app_mcp_servers(names: Iterable[str]) -> None:
 
     Called once at gateway boot with the names from
     ``apps.execution.builtin_app_mcp_servers`` (which enumerates the same
-    immutable manifest sources as ``builtin_app_names``). Dependency-inverted
+    immutable manifest sources as ``builtin_app_names``) and the adopted servers
+    ``apps.builtin_adoption_gate`` keeps (each one a shipped manifest declares,
+    launched as adoption carried it, under the pin's repository trust).
+    Dependency-inverted
     like ``set_builtin_app_names`` so ``hooks`` never imports ``apps`` and the
     gate never touches the filesystem. Idempotent; a later call replaces the set.
     """
@@ -677,8 +680,9 @@ def set_builtin_app_names(names: Iterable[str]) -> None:
 
     Called once at gateway boot with the names discovered from the shipped
     manifests (``apps.execution.builtin_app_names``, which enumerates the same
-    sources as ``shipped_builtin_app_root`` — core + the active edition). The
-    dependency is
+    sources as ``shipped_builtin_app_root`` — core + the active edition) plus each
+    former builtin whose adopted record keeps a server
+    (``apps.builtin_adoption_gate``). The dependency is
     inverted on purpose — boot code (which already imports ``apps``) pushes the
     names in, so ``hooks`` never imports ``apps`` and the gate never touches the
     filesystem. Idempotent; a later call replaces the set.
@@ -690,8 +694,10 @@ def set_builtin_app_names(names: Iterable[str]) -> None:
 def _is_first_party_app(app: str) -> bool:
     """True when *app* is a shipped builtin (first-party gateway code).
 
-    Only a BUILTIN app's MCP server is provably the gateway's own shipped code,
-    so only then does the app-own-server auto-approve's justification — "the
+    Only a BUILTIN app's MCP server is provably the gateway's own shipped code (a
+    former builtin adopted from its pin keeps it under the operator's grant to the
+    pinned repository, ``apps.builtin_adoption_gate``), so only then does the
+    app-own-server auto-approve's justification — "the
     server is the app's own declared code and only touches the app's own data,
     never a host surface" — actually hold.  A THIRD-PARTY installed app's server
     is arbitrary operator-installed code whose internals the PreToolUse gate
@@ -712,7 +718,8 @@ def set_builtin_app_agents(mapping: "Mapping[str, str]") -> None:
     """Install the agent → owning-builtin-app map for the gate.
 
     Called once at gateway boot with ``apps.execution.builtin_app_agents()`` —
-    derived only from shipped manifests whose install is builtin-owned, with
+    derived only from shipped manifests whose install is builtin-owned (or adopted
+    with a kept server, ``apps.builtin_adoption_gate``), with
     ambiguous names already dropped. Dependency-inverted like
     ``set_builtin_app_names`` so ``hooks`` never imports ``apps``. Idempotent; a
     later call replaces the map.

@@ -6613,16 +6613,34 @@ ordinary registry app, so the boot reconcile re-registers the server under the s
 `<app>:<server>` key through `_register_mcp_servers`, with the gateway's own
 interpreter, and it is spawned, sandboxed and governed like every other registry app's
 stdio server; nothing here changes the sandbox, the tool gate or the `autoApprove`
-strip. Not carried by this check: the gate's app-own-server auto-approve, which reads
-`builtin_app_mcp_servers` and so stops covering an adopted record, so its calls would
-start asking for approval on a governed host (where the `autoApprove` strip removes
-the local list) and on a harness that relies on the PreToolUse gate. That would change
-behaviour for the built-in's current users, so no pin may name a built-in whose wheel
-manifest declares `mcpServers` until the gate trust follows an adopted record:
-`test_no_shipped_pin_names_a_built_in_that_ships_an_mcp_server` fails on such a pin,
-and the change that carries the trust removes it. Pinned by
-`test/test_builtin_adoption_mcp.py`, including registration before and after an
-adoption.
+strip. Pinned by `test/test_builtin_adoption_mcp.py`, including registration before
+and after an adoption.
+
+**The gate's own-server grant through adoption** (`apps/builtin_adoption_gate.py`,
+`adopted_app_own_mcp_servers`). The PreToolUse gate's `app-own-server` grant reads three
+sets the boot warm (`_warm_builtin_app_names`) fills: first-party app names, declared
+`<app>:<server>` names and the agent-to-app map. `execution.builtin_app_names`,
+`builtin_app_mcp_servers` and `builtin_app_agents` keep only builtin-owned records, so on
+their own they would drop an adopted record and its server calls would start asking on a
+governed host (where the `autoApprove` strip removes the local list) and on a harness
+that relies on the gate. The warm therefore adds, for every server
+`adopted_app_own_mcp_servers` names, its `<app>:<server>`, its app, and the agents the
+WHEEL manifest declares for that app (`builtin_app_agents(adopted)`). A server is named
+only when all of these hold: the wheel pins the app; the active record is adopted from
+the pin's repository (`record_is_adopted_from`); the operator's execution grant for the
+app is bound to that same repository and covers the installed code
+(`trusted_app_repository`, `repository_bound_grant_denied`); and the installed manifest
+declares the server as a stdio server started from the adopted tree within the wheel
+copy's declaration (`builtin_adoption_mcp.carried_server`, the E10 predicate above,
+re-asked of the installed entry at every boot). A third-party record under the same name
+or server name, a mismatched launch, a grant bound elsewhere, or an unreadable manifest
+names nothing. The adopted tree lives in the data home, so this grant rests on the
+operator's grant to the pinned repository, the same trust that admits the record's code
+to run, rather than on shipped code. `builtin_app_mcp_servers` itself stays builtin-only,
+so `builtin_app_host_cli_mcp_launches` and the identity elements it feeds never cover an
+adopted record. The tier, its place in the table and `POLICY ∩ PROFILE` ahead of it are
+unchanged. Pinned by `test/test_builtin_adoption_gate.py`, end to end through STAGE and
+APPLY included.
 
 Then ONE trust-writer transaction (`agent_config_writer.mutate_trust_settings`)
 writes the grant exactly as `default_installs._grant` does (`apps_trusted`,
