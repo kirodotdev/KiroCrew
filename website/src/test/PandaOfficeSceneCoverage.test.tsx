@@ -461,6 +461,21 @@ describe('PandaOfficeScene arrivals', () => {
     expect(fillAt(pixel, PANDA_BLACK, (seat.x - 1) * S, (seat.y + 2) * S, 2 * S, 3 * S)).toBe(true)
   })
 
+  it('keeps an emoji whole when the nameplate and kanban card clip a name', () => {
+    // The rocket is a surrogate pair at UTF-16 index 7, so an 8-unit cut splits it.
+    const known = agent({ id: 'slot-emoji', name: 'Deploy 🚀 now', running: true, detail: '1 msgs' })
+    markAgentsKnown('panda-office', [known.id])
+    const { overlay } = mount([known])
+    fastForward(3)
+    clearRecords()
+    runFrames(1)
+    const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/
+    expect(labels(overlay).filter(t => lone.test(t))).toEqual([])
+    const desk = DESKS[0]
+    expect(overlay.texts.some(t => t.text.trim() === 'Deploy'
+      && t.x === (desk.x + 15) * S && t.y === (desk.y + 1) * S)).toBe(true)
+  })
+
   it('caps the den at its eight desks', () => {
     const many = Array.from({ length: 12 }, (_, i) => agent({ id: `slot-crowd-${i}`, running: true }))
     const { overlay } = mount(many)
