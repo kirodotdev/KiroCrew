@@ -327,7 +327,8 @@ function ChatSidebar({
   const [folderCleanupOpen, setFolderCleanupOpen] = useState(false)  // header ⋮ → "Clean up empty folders" panel
   const [manageTagsOpen, setManageTagsOpen] = useState(false)  // header ⋮ → "Manage tags…" panel (list-view tag CRUD)
   const [broadcastOpen, setBroadcastOpen] = useState(false)  // header ⋮ → "Broadcast message…" panel
-  const [filterSortOpen, setFilterSortOpen] = useState(false)
+  // 'folders': the board notice's Show opened the menu for its folder list (SearchDock).
+  const [filterSortOpen, setFilterSortOpen] = useState<boolean | 'folders'>(false)
   const sessionCleanup = useSessionCleanup({ cleanupOpen, setCleanupOpen, activeSlot, dispatch, queryClient })
 
   const bulkModel = useBulkModelSwitch({ localSlots })
