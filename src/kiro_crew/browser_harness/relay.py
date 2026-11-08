@@ -45,7 +45,7 @@ import itertools
 import json
 import logging
 import secrets
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Coroutine
 from typing import Any, Protocol
 
 import aiohttp
@@ -419,9 +419,14 @@ class CdpRelay:
             self._agent_targets.remove(target_id)
         self._adopted.pop(target_id, None)
 
-    async def close_agent_targets(self) -> None:
-        """Close every ledgered tab. The person's own tabs are never in the ledger."""
+    async def close_agent_targets(self, targets: Collection[str] | None = None) -> None:
+        """Close every ledgered tab, or only the ledgered ones in *targets* (one chat's).
+
+        The person's own tabs are never in the ledger.
+        """
         for target_id in self.agent_targets():
+            if targets is not None and target_id not in targets:
+                continue
             try:
                 await self.send("Target.closeTarget", {"targetId": target_id}, quiet=True)
             except RelayClosed:
