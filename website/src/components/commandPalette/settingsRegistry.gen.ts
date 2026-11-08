@@ -2298,6 +2298,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.mark-out-of-date-dashboard-fields",
+    "label": "Mark out-of-date Dashboard fields",
+    "labelKey": "pages.developer.featurePreviewsTab.dashboard_stale_fields",
+    "description": "Marks bot-written Dashboard fields that are out of date.",
+    "hint": "When a bot has not rewritten a field it writes on its Dashboard page for a day (or the field's own limit), the page marks that field with how long ago it was updated, and the bot is reminded to write it again in its next turn and check-in.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.model-for-the-small-model-judge",
     "label": "Model for the small-model judge",
     "labelKey": "pages.developer.featurePreviewsTab.decisions_judge_model",

@@ -135,7 +135,16 @@ def package_manifest(
                     if isinstance(choices, list) and choices
                     else None
                 )
-                fields[name] = FieldSpec(name, kind, None, None, True, shape)
+                stale_after = spec.get("stale_after_s")
+                fields[name] = FieldSpec(
+                    name,
+                    kind,
+                    None,
+                    None,
+                    True,
+                    shape,
+                    stale_after_s=stale_after if isinstance(stale_after, int) else None,
+                )
                 continue
             fold = str(source.get("fold") or "")
             path = str(source.get("path") or "")
@@ -195,6 +204,10 @@ class LivePage:
         #: would describe the same read in a different language from the first paint,
         #: and `dashboard_frame.page_locale` would answer English for all of them.
         self._locale = locale
+        #: The ``dashboard_stale_fields`` preview, read once by :meth:`arm` (which runs
+        #: off the loop): `_payload` runs on the fold worker, which does no I/O, so it
+        #: never reads config itself. A toggle reaches an open page when it is re-armed.
+        self._stale_preview = False
         # REENTRANT, because the read below runs INSIDE this lock and `_resolve_trees`
         # takes it again for the tree cache. A plain lock would deadlock there, and
         # reading outside the lock is what let a stale snapshot win -- see `_full_read`.
@@ -234,6 +247,10 @@ class LivePage:
         written values, and holding it in the feed is what lets a custom value change
         reach the page without a disk read on the fold worker.
         """
+        from kiro_crew import dashboard_agentic
+
+        # Before the subscribe, so no frame is built ahead of it.
+        self._stale_preview = dashboard_agentic.stale_fields_enabled()
         unavailable = [
             fold
             for fold in self._feed.subscribe(self._manifest, bool(self._agentic))
@@ -356,18 +373,24 @@ class LivePage:
 
     def _payload(self, fields: Mapping[str, Any], read: Any, version: int) -> dict[str, Any]:
         """One frame's ``read``, in the shape the frame's own builder produces."""
-        from kiro_crew import dashboard_frame
+        from kiro_crew import dashboard_agentic, dashboard_frame
 
+        written_at = getattr(read, "written_at", {}) or {}
         payload = dashboard_frame.read_payload(
             fields,
             agentic=sorted(self._agentic),
             seq=getattr(read, "seq", 0),
             missing=sorted(getattr(read, "missing", ()) or ()),
-            written_at={
-                name: str(self._redact(at))
-                for name, at in (getattr(read, "written_at", {}) or {}).items()
-            },
+            written_at={name: str(self._redact(at)) for name, at in written_at.items()},
             locale=self._locale,
+            # Preview `dashboard_stale_fields` only; `None` leaves the key out. Sent on
+            # every frame, patch or full, as `written_at` is: it describes the read whole.
+            # No I/O: the preview was read when this page was built.
+            stale_after=(
+                dashboard_agentic.stale_after_map(self._manifest, written_at)
+                if self._stale_preview
+                else None
+            ),
         )
         payload["version"] = version
         # WHOSE COUNTER THAT NUMBER IS. The version steps per frame within one armed
