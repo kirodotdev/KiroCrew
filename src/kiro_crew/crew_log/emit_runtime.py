@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import atexit
 import functools
+import importlib
 import sys
 import time
 import traceback
@@ -215,6 +216,19 @@ def _retry_delay(attempts: int) -> float:
     return writer.limits.retry_delay(attempts)
 
 
+_RELAY_FEED: Final = "kiro_crew.crew_log.work_relay_feed"
+
+
+def _relay_feed() -> Any:
+    """The relay module once a job has loaded it, else None; never loads it first.
+
+    Through ``import_module``, not ``sys.modules`` alone: a module another thread is
+    still importing is already listed there without its functions, and only the
+    import machinery waits for that import to finish.
+    """
+    return importlib.import_module(_RELAY_FEED) if _RELAY_FEED in sys.modules else None
+
+
 def flush(timeout: "float | None" = 5.0) -> bool:
     """Wait until no append and no board-relay copy is queued. True when both drained.
 
@@ -244,12 +258,12 @@ def flush(timeout: "float | None" = 5.0) -> bool:
 
     while True:
         # Read every round: the relay module can be loaded by a job this wait drains.
-        feed = sys.modules.get("kiro_crew.crew_log.work_relay_feed")
+        feed = _relay_feed()
         before = feed.generation() if feed is not None else 0
         if not writer.flush(timeout=left()):
             return False
         if feed is None:
-            if sys.modules.get("kiro_crew.crew_log.work_relay_feed") is None:
+            if _relay_feed() is None:
                 return True
             continue
         if not feed.drain(left()):
@@ -568,9 +582,8 @@ def _drain_writer_and_relay(writer: "CrewLogWriter", started: float, timeout: fl
     Bounded by *timeout* from *started* and by :data:`_SHUTDOWN_RELAY_ROUNDS`; work still
     owed when either runs out is logged and answers False.
     """
-    name = "kiro_crew.crew_log.work_relay_feed"
     for round_no in range(_SHUTDOWN_RELAY_ROUNDS):
-        feed = sys.modules.get(name)
+        feed = _relay_feed()
         before = feed.generation() if feed is not None else 0
         if feed is not None:
             try:
@@ -584,12 +597,12 @@ def _drain_writer_and_relay(writer: "CrewLogWriter", started: float, timeout: fl
         if left <= 0:
             break
         report = writer.drain_for_shutdown(left)
-        feed = sys.modules.get(name)
+        feed = _relay_feed()
         if report.drained and (feed is None or (feed.idle() and feed.generation() == before)):
             return True
         if not report.drained:
             break
-    feed = sys.modules.get(name)
+    feed = _relay_feed()
     stats = writer.stats()
     logger.warning(
         "crew log shutdown drain ran out with work left: %d append(s) buffered, %d relay "
