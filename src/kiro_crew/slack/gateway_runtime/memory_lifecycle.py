@@ -122,16 +122,21 @@ def _initialize_memory_worker(self: GatewayOrchestrator) -> bool:
                         indexed = memory.rebuild_index()
                         logger.info("Global memory ready: FTS indexed %d files", indexed)
                     except Exception as exc:
-                        from kiro_crew.memory_startup import damaged_database_remedy
-
-                        # The remedy names memory.db, so only its own open earns it.
-                        remedy = (
-                            damaged_database_remedy(
-                                getattr(self.vector_memory, "_db_path", None), exc
-                            )
-                            if opening_vectors
-                            else ""
+                        from kiro_crew.memory_startup import (
+                            damaged_database_remedy,
+                            global_memory_remedy,
                         )
+
+                        # Name what the failing step opened, so only the vector open
+                        # names memory.db. The restore pass already ran, so no
+                        # pending restore is the cause here.
+                        db_path = getattr(self.vector_memory, "_db_path", None)
+                        if opening_vectors:
+                            remedy = damaged_database_remedy(db_path, exc) or global_memory_remedy(
+                                db_path
+                            )
+                        else:
+                            remedy = global_memory_remedy(getattr(memory, "_memory_dir", None))
                         startup.fail_store("default", exc, remedy=remedy)
                         self.vector_memory.close()
                 if restored:
