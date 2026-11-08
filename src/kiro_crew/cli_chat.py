@@ -10,6 +10,7 @@ import re
 import sys
 import threading
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from kiro_crew.acp._dispatch import is_shell_kind
 from kiro_crew.acp.client import AcpError, AcpTimeoutError
@@ -41,7 +42,7 @@ from kiro_crew.hooks import (
     target_paths,
 )
 from kiro_crew.llm_helpers import _steer_host_deny, unfinished_turn_error
-from kiro_crew.memory_stores import UnknownMemoryStore
+from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE, UnknownMemoryStore
 from kiro_crew.messaging.commands import compact_unsupported_backend
 from kiro_crew.permission_floor import (
     OUTCOME_PENDING_APPROVAL,
@@ -60,6 +61,9 @@ from kiro_crew.sel import sel
 from kiro_crew.shell_audit_log import rotate_shell_audit_log
 from kiro_crew.start_priority import StartPriority
 from kiro_crew.terminal_safe import safe_terminal_line
+
+if TYPE_CHECKING:
+    from kiro_crew.cli_chat_context import CliSessionContext
 
 logger = logging.getLogger(__name__)
 
@@ -311,22 +315,28 @@ def _build_tool_gate(agent: str = "") -> _ToolGate:
     )
 
 
-def _resolve_cli_agent(cfg: KiroCrewConfig, name: str) -> tuple[str, str | None, str]:
-    """Map ``--agent``'s name to ``(kiro_agent, crew_agent, member_model)``.
+def _resolve_cli_agent(cfg: KiroCrewConfig, name: str) -> tuple[str, str | None, str, str]:
+    """Map ``--agent``'s name to ``(kiro_agent, crew_agent, member_model, memory_store)``.
 
     ``--agent`` takes a crew member or a kiro agent. A ``config.agents`` key is a
     member, checked first as the dashboard and the cron path do: it starts its
-    bound kiro agent under its own crew identity, with its model pin. A member
-    bound to no kiro agent runs the built-in one. Any other name is a kiro agent
-    and passes through with no crew identity and no model pin.
+    bound kiro agent under its own crew identity, with its model pin and its
+    memory store. A member bound to no kiro agent runs the built-in one. Any other
+    name is a kiro agent and passes through with no crew identity, no model pin
+    and the default store.
 
     Blocking: resolving a member's bound agent may scan the agents directory, so
     an ``async`` caller runs this on a worker thread.
     """
     if name not in cfg.agents:
-        return name, None, ""
+        return name, None, "", DEFAULT_MEMORY_STORE
     bindings = resolve_agent_bindings(cfg, name, validate_memory_files=False)
-    return bindings.kiro_agent or _DEFAULT_KIRO_AGENT, name, bindings.model
+    return (
+        bindings.kiro_agent or _DEFAULT_KIRO_AGENT,
+        name,
+        bindings.model,
+        bindings.memory_store_name,
+    )
 
 
 async def _chat(message: str | None, model: str | None, agent: str | None = None) -> None:
@@ -346,10 +356,10 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
     # the gate would therefore run that agent while bypassing its task profile.
     agent_name = agent or cfg.agent.default_agent or _DEFAULT_KIRO_AGENT
     # Only ``--agent`` names a member: ``agent.default_agent`` is a template name.
-    kiro_agent, crew_agent, member_model = agent_name, None, ""
+    kiro_agent, crew_agent, member_model, memory_store = agent_name, None, "", DEFAULT_MEMORY_STORE
     if agent:
         try:
-            kiro_agent, crew_agent, member_model = await asyncio.to_thread(
+            kiro_agent, crew_agent, member_model, memory_store = await asyncio.to_thread(
                 _resolve_cli_agent, cfg, agent
             )
         except UnknownMemoryStore as exc:
@@ -383,6 +393,16 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
     # Built once per process, not per request: a permission request must not
     # depend on a config read succeeding while the turn is parked.
     gate = _build_tool_gate(agent_name or "")
+    # Imported here so the other CLI commands do not pay for the context stack.
+    from kiro_crew.cli_chat_context import build_cli_session_context
+
+    context = await build_cli_session_context(
+        hooks=gate.hooks,
+        bot_name=cfg.agent.bot_name,
+        session_key=_CLI_SESSION_KEY,
+        agent=kiro_agent,
+        memory_store=memory_store,
+    )
     # The bundled ``postToolUse`` hook appends every ``execute_bash`` call to
     # ``<data home>/audit.log`` from inside kiro-cli, whichever process launched
     # it, and the sweep that bounds that file runs on the gateway's cleanup loop
@@ -412,9 +432,10 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
             # `-m` is documented as a non-interactive single message, so this
             # path never stops to ask -- a permission request is denied rather
             # than blocking a caller that may be a script.
-            await _send_and_print(provider, message, interactive=False, gate=gate)
+            built = await context.first_message(provider, message)
+            await _send_and_print(provider, built or message, interactive=False, gate=gate)
         else:
-            await _interactive(provider, cfg, gate=gate, agent=agent_name)
+            await _interactive(provider, cfg, gate=gate, agent=agent_name, context=context)
     finally:
         try:
             await provider.shutdown()
@@ -1391,18 +1412,27 @@ async def _interactive(
     *,
     gate: _ToolGate | None = None,
     agent: str = "",
+    context: CliSessionContext | None = None,
 ) -> None:
     """REPL loop — read user input, stream responses, auto-compact at configured threshold.
 
     The threshold is the one the run's crew declares (``agents.<name>.autocompact_pct``),
     resolved from *agent* by the same rule the provider factory keys the run on,
     else the global ``session.autocompact_pct``.
+
+    *context* builds the first message of each session on a harness other than
+    kiro-cli and KAS: the first turn's, the first after a compaction restart or a
+    history-clearing command, and the first after the provider's
+    ``context_incarnation`` changed, since each of those sessions holds none of it.
     """
     print(BANNER)
     print()
 
     print("Type your message (Ctrl+D or 'exit' to quit)\n")
 
+    # ``provider.context_incarnation`` after the last turn that carried the
+    # context; ``None`` until one does, and again once the session drops it.
+    delivered_to: object | None = None
     while True:
         # A cancelled permission prompt left a reader on stdin that this call
         # would race for the user's keystrokes, so the session ends here instead
@@ -1420,7 +1450,14 @@ async def _interactive(
             print("Bye! 👻")
             break
 
-        await _send_and_print(provider, message, interactive=True, gate=gate)
+        built: str | None = None
+        if context is not None and context.owed(provider, delivered_to):
+            built = await context.first_message(provider, message)
+        await _send_and_print(provider, built or message, interactive=True, gate=gate)
+        if built is not None:
+            delivered_to = provider.context_incarnation
+        elif context is not None and context.clears_history(message):
+            delivered_to = None
 
         # Check context usage — compact and restart if needed
         pct = provider.context_usage_pct()
@@ -1443,6 +1480,7 @@ async def _interactive(
                     pass
             await provider.shutdown()
             await provider.start()
+            delivered_to = None
         elif warn_at > 0 and pct >= warn_at:
             print(f"\n⚠️  Context at {pct:.0f}%", file=sys.stderr)
 
