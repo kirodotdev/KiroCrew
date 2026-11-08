@@ -44,8 +44,10 @@ export function RailHeaderGlyph({ avatar, boxClass, iconSize }: { avatar: string
 }
 
 /** The rail header: the brand mark that is also the collapse toggle. */
-export function RailBrandToggle({ effectiveCollapsed, toggleNav, avatar, branding, botName }: {
+export function RailBrandToggle({ effectiveCollapsed, locked = false, toggleNav, avatar, branding, botName }: {
   effectiveCollapsed: boolean
+  /** A reported fold holds the rail compact, so the toggle has nothing to do. */
+  locked?: boolean
   toggleNav: () => void
   avatar: string
   branding: ReturnType<typeof getThemeBranding>
@@ -92,7 +94,8 @@ export function RailBrandToggle({ effectiveCollapsed, toggleNav, avatar, brandin
           brand block makes the row taller. */}
       <button
         type="button"
-        className="group relative flex items-center gap-2 w-full p-0 bg-transparent border-none cursor-pointer text-left"
+        disabled={locked}
+        className="group relative flex items-center gap-2 w-full p-0 bg-transparent border-none cursor-pointer disabled:cursor-default text-left"
         onClick={() => { dismissTip(); toggleNav() }}
         {...pointerProps}
         onMouseEnter={showTip}

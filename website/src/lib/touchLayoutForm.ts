@@ -1,6 +1,12 @@
+import { FOLD_TWO_PANE_QUERY } from '../hooks/useViewportSegments'
+
 /**
  * The layout form a touch-first device asks for, read from the browser's own
  * mobile/desktop mode rather than the window's width.
+ *
+ * One input comes first, on any device: a reported fold at 640px and wider
+ * returns `false` (the two-pane form), ahead of the touch-first phone rule.
+ * A flat foldable reports no fold, so it keeps the rule below.
  *
  * A touch-first device is one whose primary pointer is coarse AND cannot hover.
  * On it the browser already knows which form the person wants: a phone browser
@@ -16,8 +22,9 @@
  * shortcut: a home-screen web app has no "Request desktop site" toggle, so it
  * keeps the browser's default mode; revisit if that needs a setting of its own.
  */
-export function touchFirstForm(): true | null {
+export function touchFirstForm(): boolean | null {
   if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return null
+  if (window.matchMedia(FOLD_TWO_PANE_QUERY).matches) return false
   const touchFirst = window.matchMedia('(pointer: coarse)').matches && window.matchMedia('(hover: none)').matches
   if (!touchFirst) return null
   // Mobile mode promotes to the phone form at any width. Desktop mode leaves

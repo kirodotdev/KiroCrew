@@ -402,7 +402,7 @@ function ChatSidebar({
   } = useBoardColumns()
   // After the columns: only board view may widen the sidebar past SIDEBAR_MAX.
   const {
-    paintedSidebarWidth, rootStyle, sidebarMax, paintedWidthRef, sidebarResize, nudgeSidebar, widenForBoard, restorePreBoardWidth,
+    paintedSidebarWidth, foldLocked, rootStyle, sidebarMax, paintedWidthRef, sidebarResize, nudgeSidebar, widenForBoard, restorePreBoardWidth,
   } = useSidebarResize({ onWidthChange, onDragChange, fillsHost, boardActive: orderedColumns.length > 0 })
   const fullTitlesOnScroll = useFullTitlesOnScrollSetting()
   const needsMeHoverCard = useNeedsMeHoverCardSetting()
@@ -1060,6 +1060,7 @@ function ChatSidebar({
           rounded-xl radius so the accent bar spans exactly the straight
           segment of the border. `sidebar-resize-handle` stays as the hook the
           mobile overlay and the split-pane host use to hide it. */}
+      {!foldLocked && (
       <ResizeHandle
         handleProps={sidebarResize}
         label={i18nT('pages.chatSidebar.resize_sidebar')}
@@ -1073,6 +1074,7 @@ function ChatSidebar({
         // width, and at z-10 it took the inner half of the grip's 6px strip.
         className="sidebar-resize-handle absolute top-0 -right-[3px] h-full z-40"
       />
+      )}
 
       {/* Header — all elements ("Sessions" title, kebab, New button) centered
           on one line 23px from the panel top (1px card border + mt-0.5, then

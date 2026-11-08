@@ -40,7 +40,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
     activeAppDragId, appDndSensors, handleAppDragStart, handleAppDragEnd, handleAppDragCancel, APPS_NAV_LIMIT,
     appsExpanded, toggleAppsExpanded, slotOwners, appBadges, discoverBadges, railAppBadges, railAppRunStates,
     commandPalette, kiroUsageOpen, setKiroUsageOpen, kiroAccountEntry,
-    setReportProblemOpen, toggleNav, effectiveCollapsed, closeMobileNav, activePath, libraryNavActive,
+    setReportProblemOpen, toggleNav, effectiveCollapsed, foldCompactRail, closeMobileNav, activePath, libraryNavActive,
     discoverNavActive, isChat, navRowActive,
   } = shell
   // A docked mate's row is the lit one while its chat is open; lighting the
@@ -148,7 +148,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
         {/* Top-fixed: menu row + primary destinations + Apps section header.
             The sidebar toggle lives HERE (menu row), not in the topbar. */}
         <div className="shrink-0 flex flex-col gap-0.5 px-2 pt-2">
-          <RailBrandToggle effectiveCollapsed={effectiveCollapsed} toggleNav={toggleNav} avatar={avatar} branding={branding} botName={botName} />
+          <RailBrandToggle effectiveCollapsed={effectiveCollapsed} locked={foldCompactRail} toggleNav={toggleNav} avatar={avatar} branding={branding} botName={botName} />
           {/* Hairline under the expanded header (collapsed rail has none —
               the big logo alone separates well). */}
           {!effectiveCollapsed && <div aria-hidden="true" className="h-px bg-border shrink-0 mb-[7px]" />}

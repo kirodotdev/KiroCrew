@@ -13,6 +13,29 @@ export const SIDEBAR_MIN = 180
 export const SIDEBAR_MAX = 1400
 
 /**
+ * The width that ends the sessions list at a reported fold: the leading
+ * segment (the right-hand one in a right-to-left document) less the nav rail,
+ * floored at `SIDEBAR_MIN`. Segments are listed left to right.
+ */
+export function foldSidebarWidth(
+  { segments, railW, leading }: { segments: readonly { width: number }[]; railW: number; leading: 'left' | 'right' },
+): number {
+  return Math.max(SIDEBAR_MIN, leadingSegment(segments, leading).width - railW)
+}
+
+/** Whether the rail must stay compact beside a fold: expanded, it would leave
+ *  the leading segment less than `SIDEBAR_MIN`, so the list would cross the fold. */
+export function foldHoldsRailCompact(
+  { segments, expandedRailW, leading }: { segments: readonly { width: number }[]; expandedRailW: number; leading: 'left' | 'right' },
+): boolean {
+  return leadingSegment(segments, leading).width < expandedRailW + SIDEBAR_MIN
+}
+
+function leadingSegment<T>(segments: readonly T[], leading: 'left' | 'right'): T {
+  return leading === 'right' ? segments[segments.length - 1] : segments[0]
+}
+
+/**
  * A stored width read back from localStorage: `null` when it is not a usable
  * number or is under `SIDEBAR_MIN`, otherwise the value as saved. It is NOT
  * narrowed to this window: a width saved on a wider window stays in state, and

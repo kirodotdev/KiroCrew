@@ -336,7 +336,7 @@
    is the last thing the ladder takes: rung tbr-6 hides its message visually
    (the same sr-only set) and drops its icon, so the capsule's red dot is the
    one mark left, and its tooltip and live region still carry the same words. */
-@media (min-width:768px){
+@media (min-width:768px), (min-width: 640px) and (horizontal-viewport-segments: 2){
   .topbar.tb-measured > .tb-right{justify-content:safe flex-end}
   .topbar.tb-measured .tb-left .instance-tab-bar-inline,.topbar.tb-measured .tb-left .tb-crew-grow{flex:1 1 auto}
   .topbar.tb-measured .tb-left .crew-chip-row{width:0;flex:1 1 auto;max-width:max-content}

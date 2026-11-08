@@ -1,6 +1,8 @@
 /** The sidebar's persisted width and its resize handle (pointer drag and arrow keys). */
 import { useState, useRef, useEffect, useLayoutEffect, useCallback } from 'react'
-import { SIDEBAR_MIN, SIDEBAR_MAX, sidebarRoomWidth, parseStoredSidebarWidth, sidebarPaintWidth } from '../chat/sidebarWidth'
+import { SIDEBAR_MIN, SIDEBAR_MAX, sidebarRoomWidth, parseStoredSidebarWidth, sidebarPaintWidth, foldSidebarWidth } from '../chat/sidebarWidth'
+import { useViewportSegments } from '../../hooks/useViewportSegments'
+import { leadingEdge } from '../../lib/layoutFormTransition'
 import { CHAT_PANE_MIN_W } from '../chat/SidePanel'
 import { useRailWidth } from '../../hooks/useRailWidth'
 import { useWindowWidth } from '../../hooks/useWindowWidth'
@@ -58,9 +60,16 @@ export function useSidebarResize({ onWidthChange, onDragChange, fillsHost = fals
   // mid-session after a wide drag must not leave the root, and the resize handle
   // on its right edge, far outside the drawer box that clips it. The stored
   // preference itself is kept for a wider window, as ChatPage keeps it.
-  const paintedSidebarWidth = sidebarPaintWidth({
-    stored: seatWidth, winW, railW: railWidth, chatMin,
-  })
+  // While the device reports a fold, the list ends at it and the fold owns the
+  // width: `foldLocked` hides the resize handle, so nothing writes the stored
+  // preference, which comes back when the device is flattened.
+  const segments = useViewportSegments()
+  const foldLocked = segments !== null && !fillsHost
+  const foldLockedRef = useRef(foldLocked)
+  foldLockedRef.current = foldLocked
+  const paintedSidebarWidth = foldLocked && segments
+    ? foldSidebarWidth({ segments, railW: railWidth, leading: leadingEdge() })
+    : sidebarPaintWidth({ stored: seatWidth, winW, railW: railWidth, chatMin })
   // The root's inline style. A switch between list and board view repaints at
   // once, as main's board auto-widen and its restore already do.
   const rootStyle = { width: paintedSidebarWidth }
@@ -101,6 +110,16 @@ export function useSidebarResize({ onWidthChange, onDragChange, fillsHost = fals
     safeSetItem(SIDEBAR_LS_KEY, String(w))
   }, [])
 
+  // Clears a drag's global side effects: the body styles and the parent's
+  // dragging flag. A no-op when no drag is running.
+  const abandonDrag = useCallback(() => {
+    if (!sidebarDraggingRef.current) return
+    sidebarDraggingRef.current = false
+    document.body.style.cursor = ''
+    document.body.style.userSelect = ''
+    onDragChangeRef.current?.(false)
+  }, [])
+
   // threshold 0: a dedicated edge affordance resizes immediately on press (no
   // 10px hysteresis), matching the original mouse resizer's feel.
   const sidebarResize = usePointerDrag({
@@ -114,6 +133,8 @@ export function useSidebarResize({ onWidthChange, onDragChange, fillsHost = fals
       onDragChangeRef.current?.(true)
     },
     onMove: ({ dx }) => {
+      // A drag the fold abandoned (see abandonDrag) stays inert.
+      if (!sidebarDraggingRef.current) return
       // A move with no horizontal travel (the zero-delta move threshold 0 fires
       // on press, or a pen's pressure or vertical jitter) lands on the start
       // width, so commitResize keeps the stored preference on release.
@@ -121,10 +142,8 @@ export function useSidebarResize({ onWidthChange, onDragChange, fillsHost = fals
       setSidebarWidth(newW)
     },
     onEnd: () => {
-      sidebarDraggingRef.current = false
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-      onDragChangeRef.current?.(false)
+      if (!sidebarDraggingRef.current) return
+      abandonDrag()
       commitResize(sidebarWidthRef.current, sidebarStartW.current, sidebarStoredAtStart.current)
     },
   })
@@ -138,6 +157,8 @@ export function useSidebarResize({ onWidthChange, onDragChange, fillsHost = fals
    *  can give it back. Persisting the automatic width without that destroys their
    *  chosen width permanently and strands a ~900px sidebar in list view. */
   const widenForBoard = useCallback((next: number) => {
+    // The fold owns the width: a board opened while folded saves nothing.
+    if (foldLockedRef.current) return
     safeSetItem(SIDEBAR_PRE_BOARD_LS_KEY, String(sidebarWidthRef.current))
     setSidebarWidth(next)
     safeSetItem(SIDEBAR_LS_KEY, String(next))
@@ -158,13 +179,14 @@ export function useSidebarResize({ onWidthChange, onDragChange, fillsHost = fals
   // body styles and the parent's dragging state would stay stuck. Restore them
   // on teardown. The old mouse-only handler did this in its listener cleanup;
   // the pointer migration must preserve it.
-  useEffect(() => () => {
-    if (sidebarDraggingRef.current) {
-      sidebarDraggingRef.current = false
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-      onDragChangeRef.current?.(false)
-    }
-  }, [])
-  return { paintedSidebarWidth, rootStyle, sidebarMax: sidebarCeiling(boardActive, winW, railWidth, chatMin), paintedWidthRef, sidebarResize, nudgeSidebar, widenForBoard, restorePreBoardWidth }
+  useEffect(() => abandonDrag, [abandonDrag])
+  // Folding mid-drag removes the handle (foldLocked), and the pointer's release
+  // can no longer reach it, so the drag ends here. It saves nothing: the fold
+  // owns the width, and the width from before the drag comes back on unfolding.
+  useLayoutEffect(() => {
+    if (!foldLocked || !sidebarDraggingRef.current) return
+    abandonDrag()
+    setSidebarWidth(sidebarStoredAtStart.current)
+  }, [foldLocked, abandonDrag])
+  return { paintedSidebarWidth, foldLocked, rootStyle, sidebarMax: sidebarCeiling(boardActive, winW, railWidth, chatMin), paintedWidthRef, sidebarResize, nudgeSidebar, widenForBoard, restorePreBoardWidth }
 }

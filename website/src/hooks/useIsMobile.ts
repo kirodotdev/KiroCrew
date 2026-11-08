@@ -2,6 +2,7 @@ import { useSyncExternalStore } from 'react'
 import { appPathname } from '@/lib/basePath'
 import { runLayoutFormChange } from '@/lib/layoutFormTransition'
 import { touchFirstForm } from '@/lib/touchLayoutForm'
+import { FOLD_TWO_PANE_QUERY } from '@/hooks/useViewportSegments'
 
 /* Exported for the top-bar rung-budget test: the <640px icon-only rung base in
    index.css needs the desktop readouts to be unreachable below the pill's
@@ -42,6 +43,8 @@ const listeners = new Set<() => void>()
 // draws the old form. `null` while nothing is subscribed: reads go live.
 let committed: boolean | null = null
 let attachedMql: MediaQueryList | null = null
+// A fold or unfold at the same width fires no resize, only this list's `change`.
+let foldMql: MediaQueryList | null = null
 
 // A touch-first device takes the form its browser asks for (touchLayoutForm);
 // every other device keeps the width breakpoint. The resize and orientation
@@ -111,6 +114,8 @@ function attach() {
   attachedMql = currentMql()
   wasViewportless = viewportless()
   attachedMql?.addEventListener('change', onSignal)
+  foldMql = typeof window !== 'undefined' && typeof window.matchMedia === 'function' ? window.matchMedia(FOLD_TWO_PANE_QUERY) : null
+  foldMql?.addEventListener?.('change', onSignal)
   if (typeof window !== 'undefined') {
     for (const type of WINDOW_RECHECK_EVENTS) window.addEventListener(type, onSignal)
     for (const type of DOCUMENT_RECHECK_EVENTS) document.addEventListener(type, onSignal)
@@ -120,6 +125,8 @@ function attach() {
 function detach() {
   attachedMql?.removeEventListener('change', onSignal)
   attachedMql = null
+  foldMql?.removeEventListener?.('change', onSignal)
+  foldMql = null
   if (typeof window !== 'undefined') {
     for (const type of WINDOW_RECHECK_EVENTS) window.removeEventListener(type, onSignal)
     for (const type of DOCUMENT_RECHECK_EVENTS) document.removeEventListener(type, onSignal)
