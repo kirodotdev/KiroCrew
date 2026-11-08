@@ -273,6 +273,45 @@ class TestDoctorKasBundle:
         assert "kiro-cli" not in out
         assert len(issues) == 1
 
+    @staticmethod
+    def _automatic_route_without_the_pin(monkeypatch, on_disk, *, installable):
+        from kiro_crew.acp import kas_route
+        from kiro_crew.agent_sdk import backend_install, kas_bundle
+
+        automatic = kas_route.KasRoute(bundle=True, reason=kas_route.REASON_NO_KIRO_CLI)
+        monkeypatch.setattr(kas_bundle, "kas_route", lambda: automatic)
+        monkeypatch.setattr(kas_bundle, "installed_bundle", lambda: None)
+        monkeypatch.setattr(kas_bundle, "installed_versions", lambda: on_disk)
+        monkeypatch.setattr(kas_bundle, "pinned_version", lambda: "0.66.40")
+        monkeypatch.setattr(backend_install, "_engine_installable_here", lambda: installable)
+
+    @pytest.mark.parametrize("on_disk", [[], ["0.66.33"]])
+    def test_a_pin_the_gateway_downloads_on_the_automatic_route_is_not_an_issue(
+        self, monkeypatch, capsys, on_disk
+    ):
+        """A fresh install with no kiro-cli starts here, and the first chat downloads
+        the engine: the row still warns, but the summary is not red."""
+        self._automatic_route_without_the_pin(monkeypatch, on_disk, installable=True)
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert "bundle:      ⚠  " in out
+        assert "downloads it at the first chat" in out
+        assert issues == []
+
+    @pytest.mark.parametrize("on_disk", [[], ["0.66.33"]])
+    def test_a_pin_this_host_cannot_download_stays_an_issue(self, monkeypatch, capsys, on_disk):
+        """A host the engine cannot run on, or a version override the gateway does
+        not install unattended, fails at the first chat, so the summary says so."""
+        self._automatic_route_without_the_pin(monkeypatch, on_disk, installable=False)
+        issues: list[str] = []
+        cli_doctor._doctor_kas(issues)
+        out = capsys.readouterr().out
+        assert "The gateway will not install it on this host" in out
+        assert "downloads it at the first chat" not in out
+        assert len(issues) == 1
+        assert "the gateway will not install it on this host" in issues[0]
+
     def test_another_version_on_disk_names_what_is_installed_and_what_is_needed(
         self, monkeypatch, capsys
     ):
