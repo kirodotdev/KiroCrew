@@ -43,6 +43,31 @@ def _json(value: Any) -> str:
     )
 
 
+def _search_text(value: Any) -> str:
+    """Return a decoded value as plain text for the literal filter.
+
+    Strings are kept as stored, so a backslash or a quote is not searched in its
+    JSON-escaped form. Dict keys and leaves are joined by spaces; other scalars use JSON.
+    The walk uses an explicit stack, like ``_contains_memory_search_text``, so a deeply
+    nested value cannot raise ``RecursionError``.
+    """
+    parts: list[str] = []
+    pending: list[Any] = [value]
+    while pending:
+        part = pending.pop()
+        if isinstance(part, str):
+            parts.append(part)
+        elif isinstance(part, list):
+            pending.extend(reversed(part))
+        elif isinstance(part, dict):
+            for key, item in reversed(list(part.items())):
+                pending.append(item)
+                pending.append(key)
+        else:
+            parts.append(_json(part))
+    return " ".join(parts)
+
+
 def _normalized(value: str) -> str:
     return unicodedata.normalize("NFKC", value).casefold()
 
@@ -193,8 +218,8 @@ def _rows(store: Any, query: dict, identities: list[tuple[str, str]] | None = No
             text = row["text"]
             if row["value_json"] is not None:
                 try:
-                    text = _json(json.loads(row["value_json"]))
-                except (ValueError, TypeError):
+                    text = _search_text(json.loads(row["value_json"]))
+                except (ValueError, TypeError, RecursionError):
                     pass
             searchable = f"{row['key'] or ''} {text} {row['tags']} {meta.get('category', '')} {meta.get('subject', '')} {meta.get('predicate', '')}"
             folded = _normalized(searchable)
