@@ -345,6 +345,8 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         process_start_time,
     )
     from kiro_crew.platform_compat_kill import (  # noqa: F401
+        _POST_KILL_DRAIN_SECS,
+        _STDLIB_RUN,
         REAP_TIMEOUT_SECS,
         _discard_output_until_exit,
         _isolated_group_of_live_child,
@@ -361,6 +363,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         kill_process_tree_async,
         kill_process_tree_pinned,
         pgroup_exists,
+        run_killing_tree_on_timeout,
         terminate_and_reap,
         terminate_and_reap_sync,
     )

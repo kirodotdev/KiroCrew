@@ -1021,6 +1021,11 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         "platform_compat_runtime.py::find_python_interpreter",
         "platform_compat_kill.py::kill_pid",
         "platform_compat_kill.py::kill_process_tree",
+        # ``subprocess.run`` with a timeout that also ends the child's tree on
+        # Windows. Like run_limited it spawns whatever argv it is handed, so it
+        # cannot route on its own behalf; _SPAWN_NAMES keeps each caller visible
+        # here under its own row. It cannot import the sandbox, which imports it.
+        "platform_compat_kill.py::run_killing_tree_on_timeout",
         "platform_compat_trust.py::reveal_in_file_manager",
         "platform_compat_identity.py::process_command_line",
         # Same class as process_command_line: a read-only process-attribute query

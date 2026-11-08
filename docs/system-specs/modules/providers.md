@@ -682,7 +682,9 @@ bodies in a private temp dir, the same spawn and argv the file panel's
 `/api/file-diff` uses, and the gateway keeps only the lines from the first
 `@@`, under its own header. A CR inside a line stays in it. Git output with
 no `@@` but a `Binary files` line shows as binary; a git diff past its 10 s
-timeout returns the same cut-off reply as an over-cap file (header only,
+timeout (a hard bound on Windows too: the spawn goes through
+`platform_compat.run_killing_tree_on_timeout`, which ends git's whole
+tree) returns the same cut-off reply as an over-cap file (header only,
 `truncated`), and any other failure is `git_failed` with no patch.
 Identical masked bodies with no mode change or
 rename yield an empty diff;
