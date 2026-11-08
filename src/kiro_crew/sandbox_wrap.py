@@ -521,6 +521,7 @@ def wrap_argv(
     *,
     strip_python_env: bool = False,
     forward_ssh_auth_sock: bool = False,
+    forward_ssh_auth_sock_out: list[bool] | None = None,
     extra_hidden_dirs: tuple[str, ...] = (),
     seal_hidden_dirs: bool = False,
     extra_hidden_dir_ids: tuple[tuple[str, int, int], ...] = (),
@@ -541,6 +542,10 @@ def wrap_argv(
         mode: ``"auto"``/``"standard"`` (expose .aws/.ssh/.kube),
               ``"cc"`` (hide .aws but expose .aws/config for Bedrock auth),
               ``"strict"`` (hide everything), ``"off"`` (no sandbox).
+        forward_ssh_auth_sock_out: When given, the ``SSH_AUTH_SOCK`` forward
+            this wrap applies is appended to it: *forward_ssh_auth_sock*
+            re-judged on the tier after the governance floor clamp, so it can
+            only turn True into False.
         extra_hidden_dirs: Additional absolute directory trees to deny.
         extra_visible_dirs: Trusted paths that must remain visible when an
             otherwise-hidden parent contains them (the whole parent's mask is lifted).
@@ -627,6 +632,8 @@ def wrap_argv(
             forward_ssh_auth_sock = _forward_for_effective_tier(mode, extra_hidden_dirs)
         except Exception:
             forward_ssh_auth_sock = False
+    if forward_ssh_auth_sock_out is not None:
+        forward_ssh_auth_sock_out.append(forward_ssh_auth_sock)
 
     if mode == "off":
         # Fix #2: verify kiro-cli delegation before honoring "off". The

@@ -1117,12 +1117,10 @@ class KasHarness(MembershipHarness):
                 withheld_out=withheld,
                 prompt_unread_out=prompt_unread,
                 engine_features=engine_features,
-                # The engine's own launch verdict, re-judged here (off the loop)
-                # on the tier it was spawned under: the wrap may have dropped the
-                # socket after that verdict, and a floor raised or a consent
-                # revoked since must not reach new servers. The AND only drops.
-                # shortcut: a floor raised then lowered between the wrap's read and
-                # this one still forwards; upgrade by having the wrap return its verdict.
+                # The verdict the engine's own sandbox wrap applied, re-judged
+                # here (off the loop) on the tier it was spawned under: a floor
+                # raised or a consent revoked since must not reach new servers.
+                # The AND only drops.
                 forward_ssh_auth_sock=bool(
                     ssh_auth_sock_forwarded
                     and self.spawn_sandbox_mode is not None

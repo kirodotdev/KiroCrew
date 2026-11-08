@@ -392,6 +392,7 @@ async def wrap_argv_async(
     *,
     strip_python_env: bool = False,
     forward_ssh_auth_sock: bool = False,
+    forward_ssh_auth_sock_out: list[bool] | None = None,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
@@ -417,6 +418,8 @@ async def wrap_argv_async(
         options["strip_python_env"] = True
     if forward_ssh_auth_sock:
         options["forward_ssh_auth_sock"] = True
+    if forward_ssh_auth_sock_out is not None:
+        options["forward_ssh_auth_sock_out"] = forward_ssh_auth_sock_out
     if extra_hidden_dirs:
         options["extra_hidden_dirs"] = extra_hidden_dirs
     if extra_visible_dirs:

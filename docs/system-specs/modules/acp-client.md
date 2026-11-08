@@ -3606,10 +3606,12 @@ stdio server the agent block declares (not a managed, pooled or Connection one)
 both through Crew's launcher (`kas_env_launch.inherited_auth_env`): `KRB5CCNAME` as
 `env.resolve_krb5_ccname` settles it (on Linux, the user's own
 `FILE:/tmp/krb5cc_<uid>` in place of the keyring default the sandbox's user
-namespace reads as empty), and `SSH_AUTH_SOCK` only when
-`sandbox._forward_ssh_auth_sock` kept it for the KAS engine's own spawn: the
-launch tail records that verdict (`_ssh_auth_sock_forwarded`), the runtime hands it
-to `session_extras`, and the KAS harness ANDs it with the same verdict re-judged on
+namespace reads as empty), and `SSH_AUTH_SOCK` only when the KAS engine's own
+spawn kept it: the launch tail records the verdict its sandbox wrap applied
+(`sandbox._forward_ssh_auth_sock`, re-judged by `wrap_argv` on the tier it applies
+and handed back through `forward_ssh_auth_sock_out`) as `_ssh_auth_sock_forwarded`,
+the runtime hands it to `session_extras`, and the KAS harness ANDs it with the same
+verdict re-judged on
 the tier the engine was spawned under (`KasHarness.spawn_sandbox_mode`). A later
 `agent.sandbox`, floor or consent change can therefore only drop the socket. They are read from the gateway's live environment
 at each projection and go into the owner-only launch snapshot, never the wire. A
