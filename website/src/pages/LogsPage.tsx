@@ -15,7 +15,14 @@ const LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR'] as const
  *  so this is the backend's message; anything else is stringified rather than
  *  swallowed. */
 const errMsg = (e: unknown): string => (e instanceof Error && e.message ? e.message : String(e))
-const levelColor = (lvl: string) => lvl === 'ERROR' ? 'text-danger' : lvl === 'WARNING' ? 'text-warn' : lvl === 'DEBUG' ? 'text-muted' : 'text-text'
+/** A line's place in `LEVELS` for the level filter. A level the chips do not
+ *  list (Python's `CRITICAL`, or any custom level) ranks above `ERROR`, so it
+ *  shows at every filter: `indexOf` gave it -1, which hid it at all four. */
+const lineRank = (lvl: string) => {
+  const i = LEVELS.indexOf(lvl as (typeof LEVELS)[number])
+  return i === -1 ? LEVELS.length : i
+}
+const levelColor = (lvl: string) => lvl === 'ERROR' || lvl === 'CRITICAL' ? 'text-danger' : lvl === 'WARNING' ? 'text-warn' : lvl === 'DEBUG' ? 'text-muted' : 'text-text'
 const levelBg = (lvl: string, active: boolean) => {
   if (!active) return 'bg-transparent text-muted border-border hover:border-border-strong hover:text-text'
   if (lvl === 'DEBUG') return 'bg-muted text-muted-fg border-muted'
@@ -71,7 +78,7 @@ export function LogViewer({ compact }: { compact?: boolean }) {
 
   const { filtered, matchCount } = useMemo(() => {
     const levelIdx = LEVELS.indexOf(currentLevel as typeof LEVELS[number])
-    const levelFiltered = lines.filter(l => LEVELS.indexOf(l.level as typeof LEVELS[number]) >= levelIdx)
+    const levelFiltered = lines.filter(l => lineRank(l.level) >= levelIdx)
     const q = search.toLowerCase()
     // newestFirst reverses the display (latest at top); default is latest-last (tail).
     if (!q) {
