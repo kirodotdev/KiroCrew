@@ -14487,6 +14487,9 @@
       "error_title": "このボードを読み取れませんでした"
     },
     "devFleetPage": {
+      "pr_state_open": "オープン",
+      "pr_state_merged": "マージ済み",
+      "pr_state_closed": "クローズ",
       "actions": "アクション",
       "applies_the_last_pull_build_the_dashboard_will_b": "最後のプル+ビルドを適用します。ダッシュボードは一時的に切断され、自動的に再接続されます。",
       "backend_unavailable": "バックエンド利用不可",

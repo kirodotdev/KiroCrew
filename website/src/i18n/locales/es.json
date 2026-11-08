@@ -15251,6 +15251,9 @@
       "error_title": "No se pudo leer este tablero"
     },
     "devFleetPage": {
+      "pr_state_open": "abierta",
+      "pr_state_merged": "fusionada",
+      "pr_state_closed": "cerrada",
       "actions": "Acciones",
       "applies_the_last_pull_build_the_dashboard_will_b": "Aplica el último Pull+Compilar. El panel se desconectará brevemente y se volverá a conectar por su cuenta.",
       "backend_unavailable": "Backend no disponible",

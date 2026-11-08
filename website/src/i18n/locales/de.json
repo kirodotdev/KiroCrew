@@ -14869,6 +14869,9 @@
       "error_title": "Diese Übersicht konnte nicht gelesen werden"
     },
     "devFleetPage": {
+      "pr_state_open": "offen",
+      "pr_state_merged": "gemergt",
+      "pr_state_closed": "geschlossen",
       "actions": "Aktionen",
       "applies_the_last_pull_build_the_dashboard_will_b": "Wendet den letzten Pull+Build an. Das Dashboard trennt sich kurz und verbindet sich von selbst wieder.",
       "backend_unavailable": "Backend nicht verfügbar",

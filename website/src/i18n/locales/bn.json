@@ -14869,6 +14869,9 @@
       "error_title": "এই বোর্ড পড়া গেল না"
     },
     "devFleetPage": {
+      "pr_state_open": "খোলা",
+      "pr_state_merged": "মার্জ হয়েছে",
+      "pr_state_closed": "বন্ধ",
       "actions": "অ্যাকশন",
       "applies_the_last_pull_build_the_dashboard_will_b": "শেষ পুল+বিল্ড প্রয়োগ করে। ড্যাশবোর্ড অল্প সময়ের জন্য বিচ্ছিন্ন হয়ে নিজেই আবার কানেক্ট করবে।",
       "backend_unavailable": "ব্যাকএন্ড উপলব্ধ নয়",

@@ -15251,6 +15251,9 @@
       "error_title": "Impossibile leggere questa bacheca"
     },
     "devFleetPage": {
+      "pr_state_open": "aperta",
+      "pr_state_merged": "unita",
+      "pr_state_closed": "chiusa",
       "actions": "Azioni",
       "applies_the_last_pull_build_the_dashboard_will_b": "Applica l'ultimo Pull+Build. La dashboard si disconnetterà brevemente e si riconnetterà da sola.",
       "backend_unavailable": "Backend non disponibile",

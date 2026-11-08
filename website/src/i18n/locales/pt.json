@@ -15251,6 +15251,9 @@
       "error_title": "Não foi possível ler este quadro"
     },
     "devFleetPage": {
+      "pr_state_open": "aberta",
+      "pr_state_merged": "mesclada",
+      "pr_state_closed": "fechada",
       "actions": "Ações",
       "applies_the_last_pull_build_the_dashboard_will_b": "Aplica o último Pull+Build. O dashboard vai se desconectar por um instante e reconectar sozinho.",
       "backend_unavailable": "Backend indisponível",

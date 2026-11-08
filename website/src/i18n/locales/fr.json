@@ -15251,6 +15251,9 @@
       "error_title": "Impossible de lire ce tableau"
     },
     "devFleetPage": {
+      "pr_state_open": "ouverte",
+      "pr_state_merged": "fusionnée",
+      "pr_state_closed": "fermée",
       "actions": "Actions",
       "applies_the_last_pull_build_the_dashboard_will_b": "Applique le dernier Pull+Build. Le tableau de bord se déconnecte brièvement puis se reconnecte de lui-même.",
       "backend_unavailable": "Backend indisponible",

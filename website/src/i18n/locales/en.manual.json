@@ -6960,6 +6960,9 @@
       "error_title": "Could not read this board"
     },
     "devFleetPage": {
+      "pr_state_open": "open",
+      "pr_state_merged": "merged",
+      "pr_state_closed": "closed",
       "pod_task_chip_one": "{{n}} task",
       "pod_task_chip_other": "{{n}} tasks",
       "applies_the_last_pull_build_the_dashboard_will_b": "Applies the last Pull+Build. The dashboard will briefly disconnect and reconnect on its own.",
