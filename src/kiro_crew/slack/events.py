@@ -66,6 +66,7 @@ from kiro_crew.dashboard.handlers import get_update_info
 from kiro_crew.dashboard.token_auth import LINK_WINDOW_SECS, MAX_SESSION_TTL_SECS, parse_duration
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import safe_read_file
+from kiro_crew.http_proxy import resolve_proxy
 from kiro_crew.mcp_discovery import list_servers
 from kiro_crew.messaging.commands import note_user_stop
 from kiro_crew.messaging.dispatch import admit_inbound_callback

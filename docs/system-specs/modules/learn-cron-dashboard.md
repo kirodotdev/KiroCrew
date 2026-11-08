@@ -4728,8 +4728,8 @@ Binary changes without text hunks use a summary with a redacted filename without
 The update check's release-feed fetch and official MCP registry share
 `http_proxy.resolve_proxy(url)`, which resolves the HTTPS proxy, falling back to
 the HTTP proxy, through `urllib.request.getproxies()` on each request. A host
-matched by `urllib.request.proxy_bypass()` (`NO_PROXY` or the OS bypass list)
-is fetched directly. The selected proxy is passed explicitly to aiohttp; the session keeps
+matched by `urllib.request.proxy_bypass()` (`NO_PROXY` or the OS bypass list),
+by bare host or by `host:port` with the scheme's default port, is fetched directly. The selected proxy is passed explicitly to aiohttp; the session keeps
 `trust_env=False` so feed requests do not read `.netrc` credentials. The bounded
 response read and update-check timeout apply on both proxied and direct requests.
 `handlers/_update_feed.py` owns the transport; `updates._fetch_feed_bytes` is
