@@ -758,10 +758,11 @@ class SetupConfig:
     onInstall: str = ""  # shell command, registry install + every registry update  # noqa: N815
     # `onUpdate` is declared and round-trips but NOTHING dispatches it (see the
     # declared-not-wired paragraph in docs/system-specs/modules/app-kit-platform.md
-    # and test/test_setup_hooks_contract.py). Put update-time work in `onInstall`.
+    # and test/test_setup_hooks_contract.py). Put update-time work in `onEnable`,
+    # which an update of an enabled app re-runs, or in `onInstall`.
     onUpdate: str = ""  # declared, not executed: no code path dispatches it  # noqa: N815
     onUninstall: str = ""  # shell command run before removing app files  # noqa: N815
-    onEnable: str = ""  # shell command run when app is enabled  # noqa: N815
+    onEnable: str = ""  # run on enable, and after an enabled app's update  # noqa: N815
     onDisable: str = ""  # shell command run when app is disabled  # noqa: N815
     # onEnable / onDisable / onUninstall run through `/bin/bash` and are NOT run
     # on native Windows (no `/bin/bash`): the runner refuses them with an

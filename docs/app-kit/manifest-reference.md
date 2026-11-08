@@ -2023,15 +2023,18 @@ the endpoint; it does not import provider code.
 |-------|------|---------|-------------|
 | `setup.onInstall` | string | `""` | Shell command run during a registry install **and again on every registry update** (an update re-enters the install transaction), after clone/build and before the installed copy is created. Not run for a local-path install. Make it idempotent |
 | `setup.onUninstall` | string | `""` | Shell command run before uninstall |
-| `setup.onUpdate` | string | `""` | Declared and preserved in the manifest but **not executed** — no code path dispatches it. Put update-time work in an idempotent `onInstall`, which a registry update re-runs |
-| `setup.onEnable` | string | `""` | Shell command run when app is enabled |
+| `setup.onUpdate` | string | `""` | Declared and preserved in the manifest but **not executed**: no code path dispatches it. Put dependency installs into the installed folder in `onEnable`, which an update of an enabled app re-runs, and build steps in an idempotent `onInstall`, which a registry update re-runs |
+| `setup.onEnable` | string | `""` | Shell command run when app is enabled, and again after every update of an enabled app (an update replaces the installed folder, and the fresh copy never carries `node_modules` or `.venv`) |
 | `setup.onDisable` | string | `""` | Shell command run when app is disabled |
 | `setup.onEnableTimeout` | number | `30` | Timeout in seconds for `onEnable` script, 1 to 300. A numeric string such as `"60"` is read as its number and a fraction is truncated. A value below 1 (including `false`) runs at the 30s default; `true` is read as 1 second and one above 300 runs at 300, with a warning logged each time the script runs; the manifest still installs and its signature is unaffected. A value that is not a number (`"abc"`, `null`) fails validation |
 | `setup.onDisableTimeout` | number | `30` | Timeout in seconds for `onDisable` script, 1 to 300, clamped the same way as `onEnableTimeout` |
 | `setup.configSchema` | object | `{}` | JSON Schema for app configuration |
 
 If `onEnable` fails (non-zero exit), the enable is rolled back — the app
-stays disabled and any registered resources are deregistered. `onDisable`
+stays disabled and any registered resources are deregistered. If it fails when
+an update re-runs it, the new version stays installed but the app is disabled
+the way Disable does it, and the update answers 400 with
+`code: "on_enable_failed"`. `onDisable`
 failures are logged as warnings but do not block the disable operation. Local-path
 installs do not run `onInstall`; build first, then install. The `onEnable`,
 `onDisable` and `onUninstall` hooks always invoke `/bin/bash`, so they are
@@ -2147,7 +2150,8 @@ Control how Kiro Crew manages the app:
 For a **server-mode** app (every builtin), `platform.os` is a user-facing CLAIM,
 not an access control. It is rendered on the App Store detail page
 (`website/src/pages/AppDetailPage.tsx`), and that is its only non-test consumer.
-`apps/routes_enable.py` reads it once, via `_client_install_manifest()`, which returns
+The `onEnable` runner in `apps/routes_lifecycle.py` reads it once, via
+`_client_install_manifest()`, which returns
 `None` unless `platform.installMode == "client"`; `handle_enable_app`'s docstring
 states the rest outright — "nothing else on the enable path consults that field".
 So omitting the block does **not** stop the app being enabled anywhere.

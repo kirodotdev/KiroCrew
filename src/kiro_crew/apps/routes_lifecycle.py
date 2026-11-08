@@ -4,8 +4,9 @@ The minimum-version check, warning redaction, registering and deregistering an a
 the event loop, starting a backend after an install and stopping one with its outcome
 observed, whether an app may run once installed, restoring an app after a failed update,
 re-installing an installed app from the registry, suspending one for session-approval
-reconsent, the refusal while a startup hook still runs, and dropping an app's
-notification channels.
+reconsent, the refusal while a startup hook still runs, dropping an app's
+notification channels, telling open dashboards an app's files were replaced, and
+running ``setup.onEnable`` for an enable and again after an update of an enabled app.
 
 Part of the ``kiro_crew.apps.routes`` family: callers and tests reach every name here
 as ``kiro_crew.apps.routes.<name>``, and a patch there reaches this module too
@@ -16,6 +17,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
+import time
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
@@ -36,8 +39,13 @@ from kiro_crew.apps.bridges import (
     snapshot_app_agent_configs,
 )
 from kiro_crew.apps.hooks_integration import stop_retained_startup_hooks
-from kiro_crew.apps.manager import get_app
+
+# Aliased to keep `routes._run_lifecycle_script` patchable, which several tests rely on.
+from kiro_crew.apps.lifecycle_scripts import run_lifecycle_script as _run_lifecycle_script
+from kiro_crew.apps.manager import disable_app, get_app
+from kiro_crew.apps.manifest import PlatformConfig
 from kiro_crew.apps.registry import install_from_registry
+from kiro_crew.apps.teardown import teardown_app_runtime
 from kiro_crew.apps.version import check_min_version as _check_min_version_str
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.sel import sel
@@ -85,6 +93,26 @@ def _unregister_notification_channels(request: web.Request, name: str) -> None:
     removed = bus.unregister_app_channels(name)
     if removed:
         logger.info("Unregistered %d notification channel(s) for app %s", removed, name)
+
+
+def _announce_app_ui_changed(request: web.Request, name: str) -> None:
+    """Tell every open dashboard that *name*'s installed files were just replaced.
+
+    A dashboard keeps an app's UI module for the life of the page (the ESM module
+    map is keyed by URL), so a tab that has the app open, or opens it again later,
+    would run the old UI until a manual reload. This sends the ``app_reload`` frame
+    the dev-mode watcher sends (``apps/dev_mode.py``), and AppHost answers it with a
+    page reload. Best effort: the files are already in place, and a gateway with no
+    dashboard socket has no tab to tell.
+    """
+    state = request.app.get("state")
+    broadcast = getattr(state, "broadcast_ws", None) if state is not None else None
+    if broadcast is None:
+        return
+    try:
+        broadcast("app_reload", {"app": name, "ts": time.time()})
+    except Exception:
+        logger.debug("app_reload broadcast for %s failed", name, exc_info=True)
 
 
 async def _backend_platform_refusal(name: str, backend: Any) -> str | None:
@@ -396,3 +424,115 @@ async def _refuse_while_startup_hook_runs(name: str, *, action: str) -> web.Resp
         },
         status=409,
     )
+
+
+def _client_install_manifest(manifest: dict[str, Any]) -> PlatformConfig | None:
+    """The app's :class:`PlatformConfig` when it is a CLIENT-install app, else ``None``.
+
+    A ``client`` app's real payload is a desktop application the user installs on
+    their OWN machine; what the gateway holds is metadata plus a dashboard page.
+    So its lifecycle scripts address something that legitimately may not be on
+    this host, which is what makes them advisory rather than a health check:
+    see :func:`handle_enable_app`.
+
+    Never raises. ``PlatformConfig.from_dict`` iterates ``os`` and ``arch``
+    directly, so a hand-edited ``app.json`` carrying ``"os": null`` raises
+    ``TypeError`` there; this is the first place the enable path parses
+    ``platform`` at all, so an unguarded call would turn a malformed manifest into
+    a 500 on enable. A manifest this app cannot read is treated as "not a client
+    app", which keeps the strict rollback behavior rather than silently widening
+    the advisory path.
+    """
+    platform_raw = manifest.get("platform")
+    if not isinstance(platform_raw, dict):
+        return None
+    try:
+        platform_cfg = PlatformConfig.from_dict(platform_raw)
+    except (TypeError, ValueError) as exc:
+        logger.warning("Ignoring an unreadable platform block on app enable: %s", exc)
+        return None
+    return platform_cfg if platform_cfg.installMode == "client" else None
+
+
+async def _run_on_enable_script(
+    name: str, manifest: dict[str, Any]
+) -> tuple[dict[str, Any] | None, bool]:
+    """Run *name*'s ``setup.onEnable`` for an enable, or again after an update.
+
+    One runner for the enable route and every update of an enabled app, so the
+    timeout, the client-install rules and the redaction cannot drift between them.
+    Returns the response's ``onEnable`` block, ``None`` when *manifest* declares no
+    script, and whether the caller must take the app down: True only when the
+    script failed for an app that is not a ``platform.installMode: "client"`` app.
+    A client app's script is advisory and is skipped on a host its ``platform.os``
+    does not list (see ``handle_enable_app``). The timeout is
+    ``setup.onEnableTimeout`` clamped here, where the script runs, under the
+    caller's app lifecycle lock.
+    """
+    setup = manifest.get("setup") or {}
+    on_enable = setup.get("onEnable", "")
+    if not on_enable:
+        return None, False
+    client_platform = _client_install_manifest(manifest)
+    if client_platform is not None and not client_platform.supports_platform(sys.platform):
+        return {"output": "", "failed": False, "skipped": "unsupported_platform"}, False
+    # Local imports keep these helpers out of the names the routes facade serves.
+    from kiro_crew.apps.manifest import lifecycle_timeout_seconds
+    from kiro_crew.security import redact_credentials
+
+    timeout = lifecycle_timeout_seconds(
+        setup.get("onEnableTimeout"), app_name=name, field_name="onEnableTimeout"
+    )
+    script_output = await _run_lifecycle_script(
+        name, on_enable, timeout=timeout, action="on_enable"
+    )
+    cleaned, _ = redact_credentials(script_output.get("output", ""))
+    failed = bool(script_output.get("failed", False))
+    return {"output": cleaned, "failed": failed}, failed and client_platform is None
+
+
+async def _rerun_on_enable_after_update(
+    request: web.Request, name: str
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Run an updated, still-enabled app's ``setup.onEnable`` again, as Enable runs it.
+
+    An update swaps in a fresh copy of the app's files, which never carries
+    ``node_modules`` or ``.venv``, and keeps the app enabled, so whatever the
+    script installed into the installed folder is gone until it runs again. Every
+    route that updates an installed app (both branches of ``handle_update_app``,
+    and a registry install over an installed app) calls this once the app is
+    re-registered and its backend started, the order Enable uses, and only while
+    the app may still run. The script is the NEW version's, read from the live
+    record.
+
+    Returns the ``onEnable`` response block (``None`` when the new version declares
+    no script) and, when the script failed, the failure body for the caller's 400,
+    which carries that block too. The app was running, so a failure takes it down
+    the way Disable does (:func:`teardown_app_runtime`, which also removes its
+    scheduled jobs and hook routes) and leaves it disabled, as a failed
+    ``onEnable`` leaves an Enable. The new files stay in place, so a failure
+    still sends the ``app_reload`` announcement (:func:`_announce_app_ui_changed`)
+    the caller's success path would have sent.
+    """
+    record = await _read_app_record(name) or {}
+    block, must_take_down = await _run_on_enable_script(name, record.get("manifest") or {})
+    if block is None or not must_take_down:
+        return block, None
+    teardown = await teardown_app_runtime(name, record)
+    disabled = await asyncio.to_thread(disable_app, name)
+    _unregister_notification_channels(request, name)
+    _announce_app_ui_changed(request, name)
+    failure: dict[str, Any] = {
+        "ok": False,
+        "name": name,
+        "error": "onEnable script failed after the update, so the app is now disabled",
+        "script_output": block["output"],
+        "code": "on_enable_failed",
+        "onEnable": block,
+    }
+    notes = [*teardown.warnings, *teardown.failures]
+    if not disabled.ok:
+        notes.append(f"disable failed: {disabled.error}")
+    if notes:
+        failure["warnings"] = [_redact_warning(note) for note in notes]
+    return block, failure

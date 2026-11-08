@@ -176,7 +176,9 @@ async def _handle_repos(request: web.Request) -> web.Response:
         # character allowlist as a parsed URL — this value becomes a path segment
         # in a `gh api` call and (via full_name) a stored identifier.
         try:
-            owner, name = adapters.parse_repo_url(f"https://github.com/{owner}/{name}")
+            owner, name = await asyncio.to_thread(
+                adapters.parse_repo_url, f"https://github.com/{owner}/{name}"
+            )
         except (adapters.AdapterParseError, adapters.UnsupportedPlatform, ValueError) as e:
             return web.json_response(
                 {"code": "invalid_repo", "error": f"invalid repo: {e}"}, status=400
@@ -205,7 +207,8 @@ async def _handle_repos(request: web.Request) -> web.Response:
             owner, name = pr["owner"], pr["repo"]
         else:
             try:
-                repo_host, owner, name = adapters.parse_repo_ref(name)
+                # Off the loop: a refused host can read config.json for the wording.
+                repo_host, owner, name = await asyncio.to_thread(adapters.parse_repo_ref, name)
             except (adapters.AdapterParseError, adapters.UnsupportedPlatform, ValueError) as e:
                 return web.json_response(
                     {"code": "invalid_repo_url", "error": f"invalid repo url: {e}"}, status=400

@@ -45,9 +45,11 @@ from kiro_crew.apps.registry import (
 from kiro_crew.apps.routes_art import _SAFE_REPO_RE, _is_safe_repo_identifier
 from kiro_crew.apps.routes_install import _resync_app_crons_after_update
 from kiro_crew.apps.routes_lifecycle import (
+    _announce_app_ui_changed,
     _app_may_run_after_install,
     _register_app_off_loop,
     _reinstall_from_registry,
+    _rerun_on_enable_after_update,
     _start_backend_after_install,
     _suspend_app_for_session_approval_reconsent,
 )
@@ -263,10 +265,26 @@ async def handle_registry_install(request: web.Request) -> web.Response:
             backend_refused = await _start_backend_after_install(result["name"])
             if backend_refused:
                 result["backend_refused"] = backend_refused
+            if was_installed:
+                # An update: the new tree gets back what onEnable installed into
+                # the installed folder (see handle_update_app).
+                on_enable, failure = await _rerun_on_enable_after_update(request, result["name"])
+                if failure is not None:
+                    sel().log_api_access(
+                        caller="dashboard",
+                        operation="app_registry_install",
+                        outcome="failed",
+                        resources=name,
+                        error=failure["error"],
+                    )
+                    return web.json_response({**result, **failure}, status=400)
+                if on_enable is not None:
+                    result["onEnable"] = on_enable
     result["registration"] = reg.to_dict()
     sel().log_api_access(
         caller="dashboard", operation="app_registry_install", outcome="completed", resources=name
     )
+    _announce_app_ui_changed(request, result["name"])
     return web.json_response(result, status=201)
 
 
@@ -398,9 +416,16 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
                     # the app is reachable without a gateway reboot. No-op for
                     # backend-less apps.
                     backend_refused = await _start_backend_after_install(r["name"])
-                    r["registration"] = reg.to_dict()
                     if backend_refused:
                         r["backend_refused"] = backend_refused
+                    if was_installed:
+                        # An update, as in handle_registry_install: onEnable runs again.
+                        on_enable, failure = await _rerun_on_enable_after_update(request, r["name"])
+                        if failure is not None:
+                            return {**r, **failure}
+                        if on_enable is not None:
+                            r["onEnable"] = on_enable
+                    r["registration"] = reg.to_dict()
             return r
 
     install_task = asyncio.create_task(_locked_install())
@@ -457,6 +482,7 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
         outcome="completed",
         resources=name,
     )
+    _announce_app_ui_changed(request, result["name"])
     await _send_sse("done", json.dumps(result))
     await _finish_stream()
     return resp

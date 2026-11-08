@@ -35,6 +35,7 @@ from kiro_crew.apps.registry import (
     registry_name_from_source,
 )
 from kiro_crew.apps.routes_lifecycle import (
+    _announce_app_ui_changed,
     _app_may_run_after_install,
     _backend_platform_refusal,
     _check_min_version,
@@ -42,6 +43,7 @@ from kiro_crew.apps.routes_lifecycle import (
     _refuse_while_startup_hook_runs,
     _register_app_off_loop,
     _reinstall_from_registry,
+    _rerun_on_enable_after_update,
     _restore_app_after_failed_update,
     _snapshot_agent_configs_off_loop,
     _start_backend_after_install,
@@ -237,10 +239,16 @@ async def handle_update_app(request: web.Request) -> web.Response:
                 backend = await asyncio.get_running_loop().run_in_executor(
                     subprocess_executor(), start_app_backend, name
                 )
-                reg_install["registration"] = reg_result.to_dict()
                 backend_refused = await _backend_platform_refusal(name, backend)
                 if backend_refused:
                     reg_install["backend_refused"] = backend_refused
+                on_enable, on_enable_failure = await _rerun_on_enable_after_update(request, name)
+                if on_enable_failure is not None:
+                    failed_body = {**reg_install, **on_enable_failure}
+                    return _on_enable_failed_after_update(name, failed_body)
+                reg_install["registration"] = reg_result.to_dict()
+                if on_enable is not None:
+                    reg_install["onEnable"] = on_enable
         # The take-down removed an enabled app's MCP servers from the agent spec and
         # the registration wrote the new version's: end as an MCP page write does, so
         # a chat already open sees the change (app-kit-platform §1).
@@ -255,6 +263,7 @@ async def handle_update_app(request: web.Request) -> web.Response:
         sel().log_api_access(
             caller="dashboard", operation="app_update", outcome="completed", resources=name
         )
+        _announce_app_ui_changed(request, name)
         return web.json_response(reg_install)
 
     if not source:
@@ -310,6 +319,7 @@ async def handle_update_app(request: web.Request) -> web.Response:
         # would start a backend the user has not re-consented to.
         up_reg = None
         backend_refused = None
+        on_enable = None
         still_enabled = await _app_may_run_after_install(name)
         if still_enabled:
             up_reg = await _register_app_off_loop(name, prior_agents)
@@ -328,6 +338,10 @@ async def handle_update_app(request: web.Request) -> web.Response:
                 subprocess_executor(), start_app_backend, name
             )
             backend_refused = await _backend_platform_refusal(name, backend)
+            on_enable, on_enable_failure = await _rerun_on_enable_after_update(request, name)
+            if on_enable_failure is not None:
+                failed_body = {**up_result.to_dict(), **on_enable_failure}
+                return _on_enable_failed_after_update(name, failed_body)
 
     # As on the registry branch: the old MCP servers are out of the agent spec and the
     # new ones in, so end as an MCP page write does (app-kit-platform §1).
@@ -347,7 +361,26 @@ async def handle_update_app(request: web.Request) -> web.Response:
         resp["registration"] = up_reg.to_dict()
     if backend_refused:
         resp["backend_refused"] = backend_refused
+    if on_enable is not None:
+        resp["onEnable"] = on_enable
+    _announce_app_ui_changed(request, name)
     return web.json_response(resp)
+
+
+def _on_enable_failed_after_update(name: str, body: dict[str, Any]) -> web.Response:
+    """The 400 for an update whose re-run ``onEnable`` failed and left the app disabled.
+
+    The new files are in place, so *body* keeps the update's own fields under the
+    ``on_enable_failed`` failure from :func:`_rerun_on_enable_after_update`.
+    """
+    sel().log_api_access(
+        caller="dashboard",
+        operation="app_update",
+        outcome="failed",
+        resources=name,
+        error="onEnable script failed after the update",
+    )
+    return web.json_response(body, status=400)
 
 
 async def _resync_app_crons_after_update(request: web.Request, name: str) -> None:
@@ -624,4 +657,5 @@ async def handle_install_app(request: web.Request) -> web.Response:
     install_body: dict[str, Any] = {**result.to_dict(), "registration": reg.to_dict()}
     if backend_refused:
         install_body["backend_refused"] = backend_refused
+    _announce_app_ui_changed(request, result.name)
     return web.json_response(install_body, status=201)
