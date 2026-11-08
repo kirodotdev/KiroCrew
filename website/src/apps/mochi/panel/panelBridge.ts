@@ -441,11 +441,13 @@ export function permissionApprovalFromFrame(
     purpose?: string
     target?: ApprovalTarget
   } = { id, tool }
-  if (typeof m.tool_input === 'string' && m.tool_input) {
-    req.toolInput = m.tool_input
-    const purpose = purposeFromToolInput(m.tool_input)
-    if (purpose !== undefined) req.purpose = purpose
-  }
+  if (typeof m.tool_input === 'string' && m.tool_input) req.toolInput = m.tool_input
+  // The gateway reads `tool_purpose` through a Tool Search envelope, which the
+  // raw input's top level does not show; the raw read covers a row without it.
+  const purpose =
+    (typeof m.tool_purpose === 'string' && m.tool_purpose.trim()) ||
+    (req.toolInput ? purposeFromToolInput(req.toolInput) : undefined)
+  if (purpose) req.purpose = purpose
   if (typeof m.full_command === 'string' && m.full_command) req.fullCommand = m.full_command
   if (typeof m.base_command === 'string' && m.base_command) req.baseCommand = m.base_command
   // Proof is server-authored on the pending card. Scope strings are display
