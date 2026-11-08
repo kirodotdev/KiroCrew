@@ -66,7 +66,8 @@ it needs no HTML-serving route of its own. The frontend
 
 The empty chat's welcome screen (`WelcomeView`) has one brand-mark slot, and a
 Level-1 pack fills it with `branding/welcome.svg|png|webp|gif` (256 KB, served
-and rendered like the loader art, so an animated image plays in place).
+and rendered like the loader art through `PackLoaderImage`, so an animated image
+plays in place and holds its first frame under `prefers-reduced-motion: reduce`).
 Precedence: compiled `registerThemeBranding()` `logo` → pack welcome image →
 pack `logo` → the stock ghost. So a pack that ships only a logo shows it there
 too, matching the left rail.
