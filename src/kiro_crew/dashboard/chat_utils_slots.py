@@ -164,7 +164,7 @@ def dashboard_slot_key(session_key: str) -> str:
         # spellings. Whichever matched, the displaying tab is the job's own --
         # unless a ``new_chat_per_run`` run has a tab of its own, linked to its
         # exact key: minted as :func:`cron_tab_name`, or named by its transcript
-        # stem once reopened from history, so the published live name wins.
+        # stem, so the published live name wins.
         job_id = session_key.removeprefix("cron:").split(":", 1)[0]
         if session_key != f"cron:{job_id}" and has_dashboard_surface(session_key):
             return _normalize_slot_key(
