@@ -229,7 +229,7 @@ Durable tiers only:
    and receives the write instead — via `set_semantic_if_absent`, NOT
    `write_lesson`: that writer deletes an existing lesson on exact-substring or
    >50% topic overlap ("newer replaces older"), which for an import would let a
-   foreign directive delete a correction the *user* taught the agent. Import
+   foreign directive delete a lesson already in the store. Import
    recognizes the same overlap and reports `existing` instead of replacing. `ContextBuilder` reads vector lessons first and
    never falls back to the JSONL when they exist, so a JSONL-only write would be
    recorded as imported yet stay invisible to the agent.
