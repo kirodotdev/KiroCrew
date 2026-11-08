@@ -6,7 +6,7 @@ import { hasBuiltinComponent } from '../../apps/builtinRegistry'
 import { appRouteOf } from '../../utils/appPopoutRoute'
 import { i18nT } from '../../i18n/t'
 
-/** The press events dnd-kit's mouse, touch and keyboard sensors start a drag from. */
+/** The press events dnd-kit's mouse and touch sensors start a drag from. */
 const stop = (e: React.SyntheticEvent) => e.stopPropagation()
 
 /**
@@ -28,25 +28,32 @@ const stop = (e: React.SyntheticEvent) => e.stopPropagation()
  * container that holds both: a button inside a button is one control to
  * assistive tech and activates the outer one.
  *
- * The sortable wrapper around the row carries dnd-kit's listeners, so the
- * press events here stop at the button: pressing it is never a pick-up, and
- * Enter or Space on it never starts a keyboard drag.
+ * The sortable wrapper around the row carries dnd-kit's listeners, so presses
+ * stop at the button: pressing it is never a pick-up. Keys are not stopped:
+ * the rail has no keyboard sensor, and the document-level shortcut handlers
+ * must still see a key pressed here.
+ *
+ * Each state has one name, naming the app, used for both the accessible name
+ * and the hover hint, so a list of these buttons reads as one per app.
  *
  * Renders nothing for a route the pop-out window would refuse as no app, so
  * the rail never offers a window that opens on a not-found notice.
  */
-export function AppRowPopoutAction({ route, active }: {
+export function AppRowPopoutAction({ route, label, active }: {
   /** The row's app route (`/dev-fleet`, `/apps/foo`): the pop-out's identity. */
   route: string
+  /** The row's app name, as the row shows it. */
+  label: string
   /** Whether the row is the app on screen, so the window opens where the user is. */
   active: boolean
 }) {
   const { pathname, search } = useLocation()
   const { isPoppedOut, open, focus } = useAppPopouts()
   const poppedOut = isPoppedOut(route)
-  const popOutLabel = i18nT('components.appPopoutControl.pop_out_app_to_its_own_window')
-  const focusTipLabel = i18nT('components.appPopoutControl.this_app_is_open_in_its_own_window_focus_it')
-  const tip = useLabelTip(poppedOut ? focusTipLabel : popOutLabel)
+  const name = poppedOut
+    ? i18nT('shell.nav.appRowPopoutAction.label_is_open_in_its_own_window_focus_it', { label })
+    : i18nT('shell.nav.appRowPopoutAction.pop_out_label_to_its_own_window', { label })
+  const tip = useLabelTip(name)
   if (appRouteOf(route, hasBuiltinComponent) !== route) return null
 
   return (
@@ -57,14 +64,11 @@ export function AppRowPopoutAction({ route, active }: {
       className={`absolute right-1.5 top-1/2 -translate-y-1/2 z-10 flex items-center justify-center w-6 h-6 rounded-md border-none cursor-pointer transition-[opacity,color,background-color] duration-150 ${poppedOut
         ? 'opacity-100 text-accent bg-accent/10 hover:bg-accent/20'
         : 'opacity-0 group-hover/approw:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100 [@media(hover:none)]:w-8 [@media(hover:none)]:h-8 [@media(hover:none)]:right-1 bg-transparent text-muted hover:text-text hover:bg-bg-hover'}`}
-      aria-label={poppedOut
-        ? i18nT('components.appPopoutControl.focus_popped_out_window')
-        : popOutLabel}
+      aria-label={name}
       {...tip.handlers}
       onPointerDown={e => { e.stopPropagation(); tip.handlers.onPointerDown?.(e) }}
       onMouseDown={stop}
       onTouchStart={stop}
-      onKeyDown={stop}
       onClick={e => {
         e.stopPropagation()
         if (poppedOut) focus(route)

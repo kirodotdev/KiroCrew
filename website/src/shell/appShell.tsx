@@ -18,7 +18,7 @@ import {
   takeDeferredPendingInput,
   type DeferredPendingInput,
 } from '../utils/navIntent'
-import { installSoftNavigate } from '../utils/errorReport'
+import { hardNavigate, installSoftNavigate } from '../utils/errorReport'
 import { fetchNotifications, armBootNotificationsFallback } from '../store/notificationsSlice'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { useDashboardHealthProbe } from '../hooks/useDashboardHealthProbe'
@@ -365,12 +365,15 @@ export function useAppShell() {
   //
   // Embed windows never register. Chat and artifact pop-outs do not either:
   // routing those windows to /chat would replace the surface the user chose to
-  // keep open. An app pop-out does register because its frame forwards a /chat
-  // navigation to the main window and steps back, so the soft path preserves
-  // the popped-out app while carrying the staged prompt across windows.
+  // keep open. An app pop-out registers `hardNavigate` rather than the router:
+  // the frame's hard-exit sink hands /chat and the staged prompt to the main
+  // window, so nothing commits in the pop-out and the app on screen keeps its
+  // state. It asks no leave guard, because this window's page is not left;
+  // the main window asks its own before it navigates.
   useEffect(() => {
     if ((isPopout && !appPopoutRoute) || isEmbed) return
-    installSoftNavigate(navigate, mayLeaveForNavigation)
+    if (appPopoutRoute) installSoftNavigate(hardNavigate)
+    else installSoftNavigate(navigate, mayLeaveForNavigation)
     return () => installSoftNavigate(null)
   }, [isPopout, appPopoutRoute, isEmbed, navigate, mayLeaveForNavigation])
 

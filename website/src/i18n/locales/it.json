@@ -6508,13 +6508,9 @@
       "this_app_is_disabled": "Questa app è disattivata",
       "this_app_provides_agents_and_skills_but_no_visua": "Questa app fornisce agenti e skill ma nessuna interfaccia visiva.\n            Usa i suoi agenti dalla chat."
     },
-    "appPopoutControl": {
-      "pop_out_app_to_its_own_window": "Apri l'app in una finestra separata",
-      "this_app_is_open_in_its_own_window_focus_it": "Questa app è aperta in una finestra separata — mettila a fuoco",
-      "focus_popped_out_window": "Metti a fuoco la finestra separata",
-      "return": "Riporta indietro",
-      "return_to_main_window": "Torna alla finestra principale",
-      "return_this_app_to_the_main_window": "Riporta questa app nella finestra principale"
+    "appPopoutTitleBar": {
+      "return": "Torna",
+      "return_to_main_window_and_close_this_popout": "Torna alla finestra principale e chiudi questa finestra separata"
     },
     "approvalCard": {
       "actions_group": "Azioni di approvazione",
@@ -23434,5 +23430,13 @@
     "streak_short_many": "Serie di {{count}} giorni",
     "try_it": "Prova",
     "video_failed": "Non è stato possibile caricare il video della funzionalità"
+  },
+  "shell": {
+    "nav": {
+      "appRowPopoutAction": {
+        "pop_out_label_to_its_own_window": "Apri {{label}} in una finestra separata",
+        "label_is_open_in_its_own_window_focus_it": "L'app {{label}} è aperta in una finestra separata — mettila a fuoco"
+      }
+    }
   }
 }

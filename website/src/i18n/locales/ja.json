@@ -6131,13 +6131,9 @@
       "this_app_is_disabled": "このアプリは無効です",
       "this_app_provides_agents_and_skills_but_no_visua": "このアプリはエージェントとスキルを提供しますが、ビジュアルインターフェースはありません。\n            チャットからそのエージェントを使用します。"
     },
-    "appPopoutControl": {
-      "pop_out_app_to_its_own_window": "アプリを別ウィンドウに切り離す",
-      "this_app_is_open_in_its_own_window_focus_it": "このアプリは別ウィンドウで開いています — そこにフォーカス",
-      "focus_popped_out_window": "切り離したウィンドウにフォーカス",
-      "return": "戻す",
-      "return_to_main_window": "メインウィンドウに戻す",
-      "return_this_app_to_the_main_window": "このアプリをメインウィンドウに戻す"
+    "appPopoutTitleBar": {
+      "return": "戻る",
+      "return_to_main_window_and_close_this_popout": "メインウィンドウに戻ってこのポップアウトを閉じる"
     },
     "approvalCard": {
       "actions_group": "承認アクション",
@@ -22362,5 +22358,13 @@
     "getting_started": "はじめに",
     "streak_days_other": "{{count}} 日 · 最長 {{best}} 日",
     "video_failed": "機能紹介動画を読み込めませんでした"
+  },
+  "shell": {
+    "nav": {
+      "appRowPopoutAction": {
+        "pop_out_label_to_its_own_window": "{{label}}を別ウィンドウに切り離す",
+        "label_is_open_in_its_own_window_focus_it": "{{label}}は別ウィンドウで開いています — そこにフォーカス"
+      }
+    }
   }
 }

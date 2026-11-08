@@ -6336,13 +6336,9 @@
       "this_app_is_disabled": "यह ऐप अक्षम है",
       "this_app_provides_agents_and_skills_but_no_visua": "यह ऐप एजेंट और स्किल देता है, लेकिन कोई विज़ुअल इंटरफ़ेस नहीं।\n            इसके एजेंट चैट से उपयोग करें।"
     },
-    "appPopoutControl": {
-      "pop_out_app_to_its_own_window": "ऐप को अपनी अलग विंडो में पॉप आउट करो",
-      "this_app_is_open_in_its_own_window_focus_it": "यह ऐप अपनी अलग विंडो में खुला है — उस पर फ़ोकस करो",
-      "focus_popped_out_window": "पॉप-आउट विंडो पर फ़ोकस करो",
-      "return": "वापस लाओ",
-      "return_to_main_window": "मुख्य विंडो में वापस लाओ",
-      "return_this_app_to_the_main_window": "इस ऐप को मुख्य विंडो में वापस लाओ"
+    "appPopoutTitleBar": {
+      "return": "वापस जाओ",
+      "return_to_main_window_and_close_this_popout": "मुख्य विंडो में वापस जाओ और यह पॉपआउट बंद करो"
     },
     "approvalCard": {
       "actions_group": "अनुमोदन क्रियाएँ",
@@ -22897,6 +22893,14 @@
       "tier_one": "लगातार {{count}} दिन",
       "tier_other": "लगातार {{count}} दिन",
       "title": "सबसे लंबी लगातार अवधि"
+    }
+  },
+  "shell": {
+    "nav": {
+      "appRowPopoutAction": {
+        "pop_out_label_to_its_own_window": "{{label}} को अपनी अलग विंडो में पॉप आउट करो",
+        "label_is_open_in_its_own_window_focus_it": "{{label}} अपनी अलग विंडो में खुला है — उस पर फ़ोकस करो"
+      }
     }
   }
 }

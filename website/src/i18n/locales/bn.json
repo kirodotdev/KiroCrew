@@ -6336,13 +6336,9 @@
       "this_app_is_disabled": "এই অ্যাপটি বন্ধ করা আছে",
       "this_app_provides_agents_and_skills_but_no_visua": "এই অ্যাপটি এজেন্ট ও স্কিল দেয়, কিন্তু কোনও ভিজ্যুয়াল ইন্টারফেস নেই।\n            চ্যাট থেকে এর এজেন্টগুলি ব্যবহার করুন।"
     },
-    "appPopoutControl": {
-      "pop_out_app_to_its_own_window": "অ্যাপটি আলাদা উইন্ডোতে খোলো",
-      "this_app_is_open_in_its_own_window_focus_it": "এই অ্যাপটি আলাদা উইন্ডোতে খোলা আছে — সেটিতে ফোকাস করো",
-      "focus_popped_out_window": "পপ-আউট উইন্ডোতে ফোকাস করো",
-      "return": "ফিরিয়ে আনো",
-      "return_to_main_window": "মূল উইন্ডোতে ফিরিয়ে আনো",
-      "return_this_app_to_the_main_window": "এই অ্যাপটি মূল উইন্ডোতে ফিরিয়ে আনো"
+    "appPopoutTitleBar": {
+      "return": "ফিরে যাও",
+      "return_to_main_window_and_close_this_popout": "মূল উইন্ডোতে ফিরে যাও এবং এই পপআউটটি বন্ধ করো"
     },
     "approvalCard": {
       "actions_group": "অনুমোদন ক্রিয়া",
@@ -22897,6 +22893,14 @@
       "title": "প্রথম PR নজরদারি",
       "action": "একটা পুল রিকোয়েস্টে নজর রাখো",
       "blurb": "CI সবুজ হলে বা রিভিউ এলে জানো"
+    }
+  },
+  "shell": {
+    "nav": {
+      "appRowPopoutAction": {
+        "pop_out_label_to_its_own_window": "{{label}} আলাদা উইন্ডোতে খোলো",
+        "label_is_open_in_its_own_window_focus_it": "{{label}} আলাদা উইন্ডোতে খোলা আছে — সেটিতে ফোকাস করো"
+      }
     }
   }
 }

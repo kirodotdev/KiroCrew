@@ -6508,13 +6508,9 @@
       "this_app_is_disabled": "Este app está desativado",
       "this_app_provides_agents_and_skills_but_no_visua": "Este app fornece agentes e habilidades, mas nenhuma interface visual.\n            Use os agentes dele pelo chat."
     },
-    "appPopoutControl": {
-      "pop_out_app_to_its_own_window": "Destacar o app em uma janela própria",
-      "this_app_is_open_in_its_own_window_focus_it": "Este app está aberto em sua própria janela — focar nela",
-      "focus_popped_out_window": "Focar a janela destacada",
-      "return": "Voltar",
-      "return_to_main_window": "Voltar para a janela principal",
-      "return_this_app_to_the_main_window": "Retornar este app para a janela principal"
+    "appPopoutTitleBar": {
+      "return": "Retornar",
+      "return_to_main_window_and_close_this_popout": "Retornar à janela principal e fechar esta janela destacada"
     },
     "approvalCard": {
       "actions_group": "Ações de aprovação",
@@ -23433,6 +23429,14 @@
       "title": "Primeiro PR acompanhado",
       "starter_prompt": "Acompanhe o PR que vou colar a seguir e me avise quando a CI ficar verde.",
       "blurb": "Saiba quando a CI ficar verde ou chegar uma revisão"
+    }
+  },
+  "shell": {
+    "nav": {
+      "appRowPopoutAction": {
+        "pop_out_label_to_its_own_window": "Destacar {{label}} em uma janela própria",
+        "label_is_open_in_its_own_window_focus_it": "O app {{label}} está aberto em sua própria janela — focar nela"
+      }
     }
   }
 }
