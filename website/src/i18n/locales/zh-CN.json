@@ -315,6 +315,9 @@
     "release_notes_not_published_yet": "{{release}} 的更新日志尚未发布，现改为显示 {{shown}} 的更新日志。"
   },
   "appSdk": {
+    "pullRequestPanel": {
+      "not_declared": "此应用无法显示拉取请求：其权限未声明 {{path}}。"
+    },
     "chatEmbed": {
       "delivery_seen_text_kept": "你的消息已在上方对话中。文字仍保留在输入框里，方便你再次使用。",
       "agent_is_working": "代理正在工作…",

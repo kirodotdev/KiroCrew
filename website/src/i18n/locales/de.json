@@ -330,6 +330,9 @@
     "release_notes_not_published_yet": "Die Versionshinweise für {{release}} sind noch nicht veröffentlicht. Stattdessen werden die Hinweise zu {{shown}} angezeigt."
   },
   "appSdk": {
+    "pullRequestPanel": {
+      "not_declared": "Diese App kann keine Pull Requests anzeigen – ihre Berechtigungen deklarieren {{path}} nicht."
+    },
     "chatEmbed": {
       "delivery_seen_text_kept": "Deine Nachricht steht oben im Verlauf. Der Text bleibt im Eingabefeld, falls du ihn wiederverwenden willst.",
       "agent_is_working": "Agent arbeitet...",

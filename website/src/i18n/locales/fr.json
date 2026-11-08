@@ -345,6 +345,9 @@
     "release_notes_not_published_yet": "Les notes de version de {{release}} ne sont pas encore publiées. Affichage des notes de {{shown}} à la place."
   },
   "appSdk": {
+    "pullRequestPanel": {
+      "not_declared": "Cette app ne peut pas afficher de pull requests : ses autorisations ne déclarent pas {{path}}."
+    },
     "chatEmbed": {
       "delivery_seen_text_kept": "Ton message figure dans la conversation ci-dessus. Le texte reste dans le champ de saisie si tu veux le réutiliser.",
       "agent_is_working": "L’agent travaille...",

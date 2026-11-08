@@ -519,6 +519,11 @@ export { default as ChatEmbed } from './ChatEmbed'
 // The keys `ChatEmbed`'s `hide` prop accepts; any other string is a type error.
 export type { ChatEmbedHideKey } from './chatEmbedHide'
 export { default as ChatMessageList } from './ChatMessageList'
+// The dashboard's pull-request panel. An external app's panel reaches only the
+// source endpoints its `permissions.api` declares (see ./PullRequestPanel).
+export { default as PullRequestPanel } from './PullRequestPanel'
+export type { AppPullRequestPanelProps } from './PullRequestPanel'
+export type { PullRequestLink } from '../utils/pullRequestLinks'
 // The transcript's row registry, so an app can add a row type or replace one
 // instead of forking the message list.
 export {
