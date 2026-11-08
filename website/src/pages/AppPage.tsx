@@ -88,9 +88,11 @@ export default function AppPage() {
   }, [name, navigate, attempt])
 
   if (loading) {
+    // A status region, so a screen reader hears that the app is loading: the
+    // page it replaces is gone, and nothing else on screen says what is next.
     return (
-      <div className="flex-1 flex items-center justify-center text-muted text-sm">
-        <Loader2 size={16} className="animate-spin mr-2" /> {i18nT('pages.appPage.loading_app')}
+      <div role="status" className="flex-1 flex items-center justify-center text-muted text-sm">
+        <Loader2 size={16} className="animate-spin mr-2" aria-hidden="true" /> {i18nT('pages.appPage.loading_app')}
       </div>
     )
   }
