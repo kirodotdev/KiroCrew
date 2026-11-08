@@ -690,6 +690,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _ensure_utf8_process_environment,
         _is_windows_store_python_stub,
         _rearm_process_alarm_after_failed_exec,
+        _soften_non_unicode_posix_streams,
         arm_process_alarm,
         awake_now,
         boottime_now,
