@@ -35,13 +35,16 @@ export const PULSE_MOTION = {
  *  state and active-press feedback stay identical to the rest of the
  *  dashboard; only the pill radius is app-specific. */
 export function Btn({
-  label, onClick, primary, danger, disabled, title, big, ariaLabel, nowrap,
+  label, onClick, primary, danger, disabled, busy, title, big, ariaLabel, nowrap,
 }: {
   label: ReactNode
   onClick?: () => void
   primary?: boolean
   danger?: boolean
   disabled?: boolean
+  /** Its own action is running: looks and reads disabled and ignores clicks,
+   *  but stays focusable. A native `disabled` drops keyboard focus to the page. */
+  busy?: boolean
   title?: string
   big?: boolean
   /** Required when `label` renders an icon with no adjacent text. */
@@ -51,13 +54,23 @@ export function Btn({
 }) {
   return (
     <HostBtn
-      onClick={onClick}
+      onClick={busy ? undefined : onClick}
       disabled={disabled}
+      aria-disabled={busy || undefined}
       title={title}
       primary={primary}
       danger={danger}
       aria-label={ariaLabel}
-      className={twMerge('rounded-full', big && 'px-6 py-2 text-sm', nowrap && 'whitespace-nowrap shrink-0')}
+      className={twMerge(
+        'rounded-full', big && 'px-6 py-2 text-sm', nowrap && 'whitespace-nowrap shrink-0',
+        // The host's `disabled:` look, keyed on aria-disabled instead.
+        busy && 'cursor-not-allowed active:scale-100',
+        busy && (primary
+          ? 'bg-bg-hover hover:bg-bg-hover text-muted border-transparent shadow-none hover:shadow-none opacity-60'
+          : danger
+            ? 'hover:text-danger hover:border-border hover:bg-transparent opacity-30'
+            : 'hover:border-border hover:bg-transparent opacity-30'),
+      )}
     >
       {label}
     </HostBtn>
