@@ -16419,6 +16419,7 @@
         "last_search_ok": "Última búsqueda: correcta",
         "last_search_refused": "Última búsqueda: rechazada",
         "last_search_failed": "Última búsqueda: fallida",
+        "sync_failed_notice": "La última sincronización de esta fuente falló.",
         "pending_import_budget": "En espera: el presupuesto de importación de este minuto (knowledge.import_chunk_budget) se agotó. Vuelve a sincronizar en un minuto.",
         "confirm_account_to_enable": "Confirma la cuenta de AWS de arriba para añadir esta fuente.",
         "enter_region_to_add": "Introduce la región de AWS para añadir esta fuente.",

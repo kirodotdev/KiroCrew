@@ -16017,6 +16017,7 @@
         "last_search_ok": "पिछली खोज: ठीक",
         "last_search_refused": "पिछली खोज: अस्वीकृत",
         "last_search_failed": "पिछली खोज: विफल",
+        "sync_failed_notice": "इस स्रोत का पिछला सिंक विफल रहा।",
         "pending_import_budget": "प्रतीक्षा में: इस मिनट का आयात बजट (knowledge.import_chunk_budget) खत्म हो गया है। एक मिनट बाद फिर से सिंक करो।",
         "confirm_account_to_enable": "यह स्रोत जोड़ने के लिए ऊपर AWS खाते की पुष्टि करो।",
         "enter_region_to_add": "यह स्रोत जोड़ने के लिए AWS Region दर्ज करो।",
