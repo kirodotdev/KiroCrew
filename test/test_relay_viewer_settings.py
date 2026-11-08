@@ -30,6 +30,7 @@ def test_the_viewer_is_off_and_empty_by_default() -> None:
     assert tunnel.relay_viewer_enabled is False
     assert tunnel.relay_viewer_cps_url == ""
     assert tunnel.relay_viewer_credential == ""
+    assert tunnel.relay_viewer_relay_domain == ""
 
 
 def test_the_viewer_settings_round_trip(tmp_path, monkeypatch) -> None:
@@ -37,6 +38,7 @@ def test_the_viewer_settings_round_trip(tmp_path, monkeypatch) -> None:
         "relay_viewer_enabled": True,
         "relay_viewer_cps_url": "https://control.example.com/",
         "relay_viewer_credential": "secret://viewer-test",
+        "relay_viewer_relay_domain": "us-east-1.relay.example.invalid",
     }
     cfg = _load(tmp_path, monkeypatch, stored)
     tunnel = cfg.to_dict()["tunnel"]
@@ -100,3 +102,49 @@ def test_a_credential_value_is_dropped_and_never_logged(tmp_path, monkeypatch, c
     messages = [r.getMessage() for r in caplog.records]
     assert any("tunnel.relay_viewer_credential ignored" in m for m in messages)
     assert not any(CREDENTIAL in m for m in messages)
+
+
+@pytest.mark.parametrize(
+    ("value", "kept"),
+    [
+        ("us-east-1.relay.example.invalid", "us-east-1.relay.example.invalid"),
+        ("  Relay.Example.Invalid ", "relay.example.invalid"),
+    ],
+)
+def test_a_relay_domain_is_kept_in_lower_case(tmp_path, monkeypatch, value, kept) -> None:
+    cfg = _load(tmp_path, monkeypatch, {"relay_viewer_relay_domain": value})
+    assert cfg.tunnel.relay_viewer_relay_domain == kept
+
+
+@pytest.mark.parametrize(
+    ("value", "kept"),
+    [
+        ("https://relay.example.test", "https://relay.example.test"),
+        ("Relay.Example.Test:443", "relay.example.test:443"),
+        ("relay.example.test/", "relay.example.test/"),
+        (" Relaý.Example.Test ", "Relaý.Example.Test"),
+        ("   ", ""),
+    ],
+)
+def test_a_relay_domain_is_kept_as_written_with_no_format_check(
+    tmp_path, monkeypatch, caplog, value, kept
+) -> None:
+    with caplog.at_level(logging.WARNING):
+        cfg = _load(tmp_path, monkeypatch, {"relay_viewer_relay_domain": value})
+    assert cfg.tunnel.relay_viewer_relay_domain == kept
+    assert not any("relay_viewer_relay_domain" in r.getMessage() for r in caplog.records)
+
+
+def test_an_upper_case_relay_domain_still_matches_a_listed_crew(tmp_path, monkeypatch) -> None:
+    from kiro_crew.relay_viewer import cps
+
+    endpoint = "teamaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    cfg = _load(tmp_path, monkeypatch, {"relay_viewer_relay_domain": "Relay.Example.Test"})
+    raw = {
+        "endpointId": endpoint,
+        "crewUrl": f"https://{endpoint}.relay.example.test",
+        "name": "Build team Crew",
+        "crewType": "TEAM",
+    }
+    crew = cps._crew_endpoint(raw, cfg.tunnel.relay_viewer_relay_domain)
+    assert crew is not None and crew.endpoint_id == endpoint
