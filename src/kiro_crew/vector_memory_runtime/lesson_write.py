@@ -47,6 +47,21 @@ def _lesson_writer(raw: object) -> dict[str, str] | None:
     return stamp_of(raw)
 
 
+def _outranks_write(existing: dict, source: str, confidence: float) -> bool:
+    """Whether stored row *existing* outranks a ``source`` write at *confidence*.
+
+    A ``user_explicit`` row outranks every other source, and a strictly higher stored
+    confidence outranks a lower one. Nothing outranks a ``user_explicit`` write.
+    """
+    if source == "user_explicit":
+        return False
+    try:
+        existing_confidence = float(existing.get("confidence") or 0.0)
+    except (TypeError, ValueError):
+        existing_confidence = 0.0
+    return existing.get("source") == "user_explicit" or existing_confidence > confidence
+
+
 def write_lesson(
     self: VectorMemoryStore,
     rule: str,
@@ -81,6 +96,9 @@ def write_lesson(
       unless a stored near-duplicate outranks this write (``user_explicit``
       over a lower-authority source, or strictly higher stored confidence),
       which reports ``deduped`` / ``semantic_similarity``.
+
+    No rule deletes a stored row that outranks this write: the two lexical rules
+    store the submission beside it instead.
 
     **A call that stores nothing deletes nothing.** Every supersede the scan
     decides on is QUEUED, and the queue drains only once ``set_semantic`` has
@@ -370,7 +388,6 @@ def write_lesson(
     # skipped for it entirely. The pass is non-mutating for its own reason,
     # independent of the scan's deferral below: an authority decline must not
     # spend the call's embed budget rewriting rows it is about to refuse.
-    # Scan-wide authority ordering is a tracked follow-up decision.
     if (
         self.algorithm_version != "v2"
         and similarity is not None
@@ -383,11 +400,10 @@ def write_lesson(
                 continue
             # PURE semantic matches only. A row the mutating scan's
             # substring or topic-overlap branch would claim FIRST (per-row
-            # branch order) keeps main's outcome for it -- those branches
-            # are source-blind by main's design, and the pre-pass must not
-            # decline a write that main would have resolved lexically
-            # before the semantic test ever ran. The predicates mirror the
-            # scan's own, on the same normalized text.
+            # branch order) is left to that branch: it declines a submission
+            # the row covers, as before, and otherwise stores the submission
+            # beside an outranking row. The predicates mirror the scan's own,
+            # on the same normalized text.
             pre_lower = pre_text.lower()
             if rule_lower in pre_lower or pre_lower in rule_lower:
                 continue
@@ -446,11 +462,7 @@ def write_lesson(
                 # equal and lets the newer write win): near-duplicates are
                 # DIFFERENT rows with no same-key freshness to prefer, and
                 # equal confidence falls through to newest-wins below.
-                try:
-                    existing_confidence = float(existing.get("confidence") or 0.0)
-                except (TypeError, ValueError):
-                    existing_confidence = 0.0
-                if existing.get("source") == "user_explicit" or existing_confidence > confidence:
+                if _outranks_write(existing, source, confidence):
                     logger.info(
                         "Lesson semantic dedup: higher-authority %r kept over %s",
                         existing["key"],
@@ -488,6 +500,11 @@ def write_lesson(
 
         may_retire_existing, covering_row_arrives_less_often = _lessons.tier_permissions(
             existing, applies
+        )
+        # No branch below retires a row that outranks this write: a consolidation
+        # rewording that overlaps the user's own lesson is stored beside it.
+        may_retire_existing = may_retire_existing and not _outranks_write(
+            existing, source, confidence
         )
 
         # Substring dedup
@@ -588,8 +605,7 @@ def write_lesson(
                 sim = similarity({"embedding": row_blob})
                 if sim > 0.85:
                     # Newest wins, matching the substring and topic-overlap
-                    # branches above -- both supersede the stored row
-                    # unconditionally. A length tie-break on
+                    # branches above. A length tie-break on
                     # ``len(rule) > len(existing_text)`` would DROP the
                     # submission when it loses, making character count
                     # decide which of two near-identical rules is current.
@@ -600,9 +616,8 @@ def write_lesson(
                     # effect, the one outcome that actively misleads the
                     # agent rather than merely losing information.
                     #
-                    # No authority check HERE, by construction: the
-                    # non-mutating pre-pass above already returned DEDUPED
-                    # if any purely-semantic row outranks the write. Like
+                    # The non-mutating pre-pass above already returned
+                    # DEDUPED if any purely-semantic row outranks the write. Like
                     # both lexical branches, this one only QUEUES its
                     # supersede -- a later row can still decline the write
                     # via ``substring_covered``, and a declined write
