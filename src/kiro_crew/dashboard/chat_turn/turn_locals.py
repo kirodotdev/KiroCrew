@@ -198,6 +198,7 @@ class _ChatTurn:
     _refusal_reasons: "list[tuple[str, str]]"
     _repeat_loop: "RepeatLoopTracker"
     _replay_accepted_this_turn: "bool"
+    _replay_admitted_incarnation: "object"
     _replay_pending: "bool"
     _reply_flushed: "bool"
     _reply_mids_snapshot: "list[str] | None"
