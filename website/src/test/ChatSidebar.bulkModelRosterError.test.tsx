@@ -125,21 +125,24 @@ function renderSidebar(slots: Record<string, unknown>[] = SLOTS) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   qc.setQueryData(['chat-folders'], [])
   qc.setQueryData(['tag-columns'], [])
-  render(
+  const tree = (list: Record<string, unknown>[]) => (
     <QueryClientProvider client={qc}>
       <Provider store={store}>
         <ThemeProvider>
           <MemoryRouter>
             <ChatSidebar
-              slots={slots as typeof SLOTS} activeSlot={null} unreadSlots={[]}
+              slots={list as typeof SLOTS} activeSlot={null} unreadSlots={[]}
               history={[]} historyHasMore={false}
               defaultAgent="" installedAgents={[{ name: 'builder', source: 'builtin' }]}
             />
           </MemoryRouter>
         </ThemeProvider>
       </Provider>
-    </QueryClientProvider>,
+    </QueryClientProvider>
   )
+  const { rerender } = render(tree(slots))
+  /** Re-render with a new slot list, as a slots push does. */
+  return (list: Record<string, unknown>[]) => rerender(tree(list))
 }
 
 async function openSwitchAllPanel() {
@@ -344,5 +347,96 @@ describe('ChatSidebar — Switch All Sessions already-on-target line (#11103)', 
     fireEvent.click(screen.getByRole('option', { name: /opus-4\.8/ }))
     expect(switchBtn().textContent).toBe('Switch 2 sessions')
     expect(screen.queryByTestId('bulk-model-on-target')).toBeNull()
+  })
+})
+
+describe('ChatSidebar — Switch All Sessions buttons keep focus while busy', () => {
+  // A native `disabled` on the button the reader just pressed blurs it to
+  // <body>. Both requests can fail with the panel still open, so the reader
+  // must still be on the button to retry. Each stays focusable, says it is busy,
+  // and ignores a second press.
+  const switchBtn = () => screen.getByRole('button', { name: /^(Switch \d+ sessions?|Switching…)$/ })
+
+  it('keeps focus on Switch while the switch is out, and after it fails', async () => {
+    mocks.models.mockResolvedValue(LIVE_ROSTER)
+    let fail: (e: unknown) => void = () => {}
+    mocks.chatSlotsModel.mockImplementation(() => new Promise((_resolve, reject) => { fail = reject }))
+    renderSidebar()
+    await openSwitchAllPanel()
+    await waitFor(() => expect(optionIds()).toEqual(['auto', 'opus-4.8', 'sonnet-4.7']))
+    fireEvent.click(screen.getByRole('option', { name: /opus-4\.8/ }))
+
+    const button = switchBtn()
+    button.focus()
+    await act(async () => { fireEvent.click(button) })
+    expect(mocks.chatSlotsModel).toHaveBeenCalledTimes(1)
+    expect(button.textContent).toBe('Switching…')
+    expect(button).toHaveAttribute('aria-disabled', 'true')
+    expect(button).toHaveAttribute('aria-busy', 'true')
+    expect(button).not.toBeDisabled()
+    expect(document.activeElement).toBe(button)
+
+    await act(async () => { fireEvent.click(button) })
+    expect(mocks.chatSlotsModel).toHaveBeenCalledTimes(1)
+
+    await act(async () => { fail(new Error('gateway restarting')) })
+    expect(await screen.findByText('gateway restarting')).toBeTruthy()
+    expect(button.textContent).toBe('Switch 2 sessions')
+    expect(button).not.toHaveAttribute('aria-disabled')
+    expect(document.activeElement).toBe(button)
+  })
+
+  it('keeps Switch focusable when a slots push lands before the response', async () => {
+    // The gateway publishes the switched slots before it answers, so the count
+    // can reach 0 mid-request; the button must not go natively disabled then.
+    mocks.models.mockResolvedValue(LIVE_ROSTER)
+    mocks.chatSlotsModel.mockImplementation(() => new Promise(() => {}))
+    const pushSlots = renderSidebar()
+    await openSwitchAllPanel()
+    await waitFor(() => expect(optionIds()).toEqual(['auto', 'opus-4.8', 'sonnet-4.7']))
+    fireEvent.click(screen.getByRole('option', { name: /opus-4\.8/ }))
+    const button = switchBtn()
+    button.focus()
+    await act(async () => { fireEvent.click(button) })
+    await act(async () => { pushSlots(SLOTS.map(s => ({ ...s, model: 'opus-4.8' }))) })
+    expect(screen.getByTestId('bulk-model-on-target').textContent).toBe('2 sessions already use this model')
+    expect(button).not.toBeDisabled()
+    expect(button).toHaveAttribute('aria-disabled', 'true')
+    expect(document.activeElement).toBe(button)
+  })
+
+  it('keeps focus on the roster Retry while it refetches', async () => {
+    mocks.models.mockRejectedValue(new Error('503'))
+    renderSidebar()
+    await openSwitchAllPanel()
+    await screen.findByTestId('bulk-model-roster-error')
+
+    let answer: (v: unknown) => void = () => {}
+    mocks.models.mockImplementation(() => new Promise((_resolve, reject) => { answer = reject }))
+    const retry = screen.getByRole('button', { name: 'Retry' })
+    retry.focus()
+    const calls = mocks.models.mock.calls.length
+    await act(async () => { fireEvent.click(retry) })
+    expect(mocks.models.mock.calls.length).toBe(calls + 1)
+    // The query's fetching flag reaches the render on its own notify tick.
+    await waitFor(() => expect(retry).toHaveAttribute('aria-disabled', 'true'))
+    expect(retry).not.toBeDisabled()
+    expect(document.activeElement).toBe(retry)
+
+    await act(async () => { fireEvent.click(retry) })
+    expect(mocks.models.mock.calls.length).toBe(calls + 1)
+
+    await act(async () => { answer(new Error('503')) })
+    await waitFor(() => expect(retry).not.toHaveAttribute('aria-disabled'))
+    expect(screen.getByTestId('bulk-model-roster-error')).toBeTruthy()
+    expect(document.activeElement).toBe(retry)
+  })
+
+  it('keeps Switch natively disabled while nothing is picked', async () => {
+    mocks.models.mockResolvedValue(LIVE_ROSTER)
+    renderSidebar()
+    await openSwitchAllPanel()
+    await waitFor(() => expect(optionIds()).toEqual(['auto', 'opus-4.8', 'sonnet-4.7']))
+    expect(switchBtn()).toBeDisabled()
   })
 })
