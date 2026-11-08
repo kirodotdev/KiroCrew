@@ -672,6 +672,22 @@ class TestMaybeReexec:
         maybe_reexec(["gateway"])
         mock_execve.assert_not_called()
 
+    def test_marker_is_not_inherited_by_a_restart_replacement(self, tmp_path, monkeypatch):
+        """The exec'd gateway drops the marker, so a restart's replacement follows the pointer."""
+        checkout = _make_valid_checkout(tmp_path)
+        write_target(checkout)
+        monkeypatch.setattr(sys, "argv", ["/other/bin/kirocrew", "gateway"])
+        monkeypatch.setenv(EXEC_MARKER, "1")
+        mock_execve = MagicMock()
+        monkeypatch.setattr(os, "execve", mock_execve)
+        monkeypatch.setattr(os, "chdir", MagicMock())
+        maybe_reexec(["gateway"])
+        mock_execve.assert_not_called()
+        assert EXEC_MARKER not in os.environ
+        # The replacement inherits this environment and boots through the same bootstrap.
+        maybe_reexec(["gateway"])
+        mock_execve.assert_called_once()
+
     def test_returns_without_exec_when_no_pointer(self, monkeypatch):
         """No pointer file -> stay here."""
         mock_execve = MagicMock()
