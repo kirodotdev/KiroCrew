@@ -30,7 +30,7 @@ from kiro_crew.constants import CHANNEL_OWNER_DM_NAMESPACES
 from kiro_crew.notifications.bridge import BridgeTransportUnavailable
 
 #: The bridge transports this sink serves; ``DashboardState`` registers one each.
-TRANSPORT_SINKS: tuple[str, ...] = ("discord", "telegram")
+TRANSPORT_SINKS: tuple[str, ...] = ("discord", "telegram", "webex")
 
 #: The marker a critical note's first line carries.
 _CRITICAL_MARKER = "🚨"
