@@ -17076,6 +17076,8 @@
       "status_error": "已结束",
       "status_running": "运行中",
       "title": "会话拆解",
+      "turn_n": "第 {{n}} 轮",
+      "turn_short": "{{n}}",
       "tool_count_other": "{{n}} 个工具",
       "unknown_agent": "子代理",
       "unknown_model": "未知"

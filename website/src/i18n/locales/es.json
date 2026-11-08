@@ -17962,6 +17962,8 @@
       "status_error": "terminado",
       "status_running": "en curso",
       "title": "Desglose de la sesión",
+      "turn_n": "Turno {{n}}",
+      "turn_short": "T{{n}}",
       "tool_count_one": "{{n}} herramienta",
       "tool_count_many": "{{n}} herramientas",
       "tool_count_other": "{{n}} herramientas",
