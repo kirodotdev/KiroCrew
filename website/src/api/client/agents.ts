@@ -338,6 +338,30 @@ export interface DashboardRead {
   suggestions?: boolean
 }
 
+/** One hop of a value's lineage, as `member_dashboard_lineage.build_lineage` writes it.
+ *  `by` says who vouches for it: the gateway's own record, or the script's claim. A hop
+ *  the record cannot supply yet carries only `needs`. */
+export interface DashboardLineageHop {
+  kind: 'page' | 'field' | 'fold' | 'crew_log' | 'record' | 'script' | 'source' | 'freshness' | 'run' | 'write' | 'earlier_write' | 'looked_at'
+  by?: 'gateway' | 'script'
+  needs?: string
+  [key: string]: unknown
+}
+
+/** One value's lineage: `GET /api/members/{slug}/dashboard/lineage`. */
+export interface DashboardLineage {
+  path: string
+  field: string
+  kind: 'fold' | 'agentic' | 'custom'
+  type: string
+  found: boolean
+  value: unknown
+  hops: DashboardLineageHop[]
+  /** What Edit may offer: correct a Bot-written value (`scalar` false: ask instead),
+   *  edit the script job behind a record, or change how a folded value is shown. */
+  edit: { kind: 'correct'; type: string; scalar: boolean } | { kind: 'source'; writer: string; job: string } | { kind: 'fold' }
+}
+
 /** A dashboard template's manifest. Mirrors `TemplateManifest`. */
 export interface DashboardManifest {
   id: string
@@ -527,6 +551,21 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, jMembe
     memberDashboardPreviewDiscard: (slug: string, member: string, stagedMs: number) =>
       post('/api/members/' + encodeURIComponent(slug) + '/dashboard/preview/discard?member=' + encodeURIComponent(member), { staged_ms: stagedMs })
         .then(j) as Promise<{ ok: boolean }>,
+    // Dashboard edit mode (preview `dashboard_edit_mode`): where one value on the page
+    // in force came from, built by the gateway from its own data. Owner-only, read-only;
+    // 404 `not_enabled` with the preview off, `field_not_declared` for a path the page
+    // does not declare.
+    memberDashboardLineage: (slug: string, member: string, path: string) =>
+      fetch('/api/members/' + encodeURIComponent(slug) + '/dashboard/lineage?member=' + encodeURIComponent(member) + '&path=' + encodeURIComponent(path))
+        .then(j) as Promise<DashboardLineage>,
+    // The person corrects a value the Bot writes. Owner-only and refused to an agent's
+    // internal-secret caller; checked against the field's declared type like a
+    // `dashboard_write`.
+    // `typedOn`: the page the person typed against, by name (`package:<slug>` or
+    // `template:<id>`) and version. Any other page in force refuses it (409 stale_page).
+    memberDashboardCorrect: (slug: string, member: string, field: string, value: unknown, reason: string, typedOn: { page: string; version: number }) =>
+      post('/api/members/' + encodeURIComponent(slug) + '/dashboard/correct?member=' + encodeURIComponent(member), { field, value, reason, page: typedOn.page, page_version: typedOn.version })
+        .then(j) as Promise<{ ok: boolean; field: string }>,
     // A ROOT session's own dynamic dashboard, the same body as `memberDashboard`.
     // Keyed by the slot: the gateway reads every field from that session's own work
     // ledger and crew log, and answers 404 `not_root_session` for a dispatched or

@@ -648,6 +648,8 @@ describe('every api method issues one well-formed /api request', () => {
     sharedCrewSessions: [{ creator: 'mine', q: 'sw-1', cursor: 'sw-2', limit: 50 }],
     sharedCrewCancelWork: ['sw-1', 3],
     sessionArchiveRead: ['sw-1', CALLER_SIGNAL],
+    // A correction names the page it was typed on, as a typed object.
+    memberDashboardCorrect: ['sw-1', 'sw-2', 'sw-3', 'sw-4', '', { page: 'template:sw-5', version: 1 }],
   }
 
   it('covers the whole surface (guards against the table silently shrinking)', () => {

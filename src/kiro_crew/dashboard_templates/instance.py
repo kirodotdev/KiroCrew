@@ -118,6 +118,7 @@ __all__ = [
     "edit",
     "history",
     "instance_dir",
+    "instance_write_lock",
     "is_session_key",
     "PinnedPackage",
     "keeps_older_package_rule",
@@ -380,6 +381,14 @@ def package_save_lock(slug: str) -> Iterator[None]:
     if is_session_key(slug):
         raise InstanceError("a session dashboard has no package to save")
     with _locked(instance_dir(slug), lock_file=_PACKAGE_SAVE_LOCK_FILE):
+        yield
+
+
+@contextmanager
+def instance_write_lock(slug: str) -> Iterator[None]:
+    """The lock every new instance version commits under, for a writer outside this
+    module whose check of the page in force must not race a version landing."""
+    with _locked(instance_dir(slug)):
         yield
 
 

@@ -928,6 +928,18 @@ _DELIVERY_SINKS: tuple[tuple[str, str, str], ...] = (
         "redactor is handed in by the route rather than chosen here, so the module "
         "applies the gateway's own redactor and cannot substitute a weaker one.",
     ),
+    (
+        "A person's correction of a Bot's dashboard value, and one value's lineage",
+        "dashboard/handlers/member_dashboard_lineage.py",
+        "The one-line reason a person gives when correcting a value (`POST /api/members/"
+        "{slug}/dashboard/correct`), on its way into the Bot's crew log, where the "
+        "lineage shows it and the Bot's next turn reads it. The reason is scrubbed on "
+        "the way IN with the platform redactor, so what the log keeps is already "
+        "redacted; the value itself passes the same check a Bot's `dashboard_write` "
+        "does, which scrubs it there. The lineage read (`GET .../dashboard/lineage`) "
+        "hands every value it returns through the page's own redaction, handed in by "
+        "the route, so it cannot apply a weaker one.",
+    ),
     ("Slack code-channel classifier", "slack/code_channels/classifier.py", "Its model prompt."),
     ("Slack code-channel diagnostics", "slack/code_channels/client.py", "Logs; credentials only."),
     ("Slack code-channel bar", "slack/code_channels/workspace/context_bar.py", "Its labels."),

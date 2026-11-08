@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { RotateCw, SendHorizontal } from 'lucide-react'
+import { PencilRuler, RotateCw, SendHorizontal } from 'lucide-react'
 import { api, type DashboardManifest } from '../../api/client'
 import { apiErrorCode, isNotFoundError } from '../../api/apiError'
 import { retryPolicy } from '../../api/queryClient'
@@ -22,6 +22,13 @@ import CrewDashboardBehindBand from './CrewDashboardBehindBand'
 import CrewDashboardDownload from './CrewDashboardDownload'
 import { applyPushedRead, withIslandRead, type DashboardRead } from './dashboardDownloadFile'
 import { CREW_DASHBOARD_SANDBOX } from '../../lib/crewDashboardSandbox'
+import { usePreviewFlag } from '../../hooks/usePreviewFlag'
+import { useServerPreviewFlag } from '../../hooks/usePreviewFlagServerSync'
+import { PREVIEW_DASHBOARD_EDIT_MODE } from '../../utils/previewFlags'
+import { EDIT_MESSAGE_TYPE, type ChangeRequestOutcome } from './dashboardEdit'
+
+// Edit mode is held behind its preview and loaded only when the person turns it on.
+const CrewDashboardEditLayer = lazy(() => import('./CrewDashboardEditLayer'))
 
 // The grant set lives in lib/crewDashboardSandbox.ts so the artifact viewer can
 // open a crewmate's report in the same sandbox without loading this page.
@@ -211,7 +218,17 @@ function postRefill(win: Window, html: string): boolean {
 
 /** Which page a document is: a change to any part of this is a new document. */
 function pageKey(page: Loaded): string {
-  return `${page.instanceVersion}:${page.templateId}:${page.templateVersion}`
+  // The edit bridge is part of the DOCUMENT: a read composed with it is a new document,
+  // never a refill of one composed without it, which could never gain the bridge.
+  return `${page.instanceVersion}:${page.pageRevision}:${page.templateId}:${page.templateVersion}${page.editBridge ? ':edit' : ''}`
+}
+
+/** Whether two reads are the same PAGE, so the newer one is new values for it. A package
+ *  saved again restarts at version 1 but at a later apply (`pageRevision`, Dashboard
+ *  edit mode only), so that is a new page too: it probates and gets its own document,
+ *  and the page on screen keeps its own correction name until it is replaced. */
+function samePage(a: Loaded, b: Loaded): boolean {
+  return a.instanceVersion === b.instanceVersion && a.pageRevision === b.pageRevision
 }
 
 interface Loaded {
@@ -223,6 +240,9 @@ interface Loaded {
   /** Whether this page may run script. Carried WITH the page rather than read
    *  from the latest response, so the grants always match the markup mounted. */
   scripts: boolean
+  /** Whether the gateway composed edit mode's bridge into this html (preview
+   *  `dashboard_edit_mode`), read off the html itself so it names what is mounted. */
+  editBridge: boolean
   /** The SURFACE this page belongs to: the package slug it was read for, or `''` for
    *  the crewmate's template instance.
    *
@@ -234,6 +254,22 @@ interface Loaded {
   dashboard: string
   /** Which staged page this is, on a preview read; 0 on the live page. */
   stagedMs: number
+  /** A package page's apply counter (`page_revision`, Dashboard edit mode only), 0
+   *  when not sent. Only goes up, unlike a package version, which a slug deleted and
+   *  saved again restarts at 1. */
+  pageRevision: number
+}
+
+/** `page_revision` off a page read, 0 when the gateway did not send one (preview off). */
+function pageRevisionOf(data: unknown): number {
+  const value = (data as { page_revision?: unknown }).page_revision
+  return typeof value === 'number' ? value : 0
+}
+
+/** The page as a correction names it to the gateway: `package:<slug>@<apply counter>`
+ *  or `template:<id>` (`member_dashboard_lineage._page_in_force`). */
+export function dashboardPage(page: Pick<Loaded, 'dashboard' | 'templateId' | 'pageRevision'>): string {
+  return page.dashboard ? `package:${page.dashboard}@${page.pageRevision}` : `template:${page.templateId}`
 }
 
 /**
@@ -274,8 +310,11 @@ export function dashboardQueryKey(target: DashboardTarget): readonly string[] {
     : [SESSION_DASHBOARD_QUERY_PREFIX, target.slot]
 }
 
-export default function CrewDynamicDashboard({ target, displayName, avatar, onAct, onActKeep, onSend, preview = false, onPreviewGone, onPreviewLoaded, onOpenProfileTab, dashboardSlug = '', relayWheel = false }: {
+export default function CrewDynamicDashboard({ target, displayName, avatar, onAct, onActKeep, onSend, onChangeRequest, preview = false, onPreviewGone, onPreviewLoaded, onOpenProfileTab, dashboardSlug = '', relayWheel = false }: {
   target: DashboardTarget
+  /** Send the person's own chat message to this Bot (Dashboard edit mode's change
+   *  request). Resolves whether it went. Absent: the request box says there is no chat. */
+  onChangeRequest?: (text: string) => Promise<ChangeRequestOutcome>
   /** Report the frame's horizontal wheel runs to the host (see `relayWheel` in
    *  lib/widgetSrcdoc). Only a host that listens may ask: the relay cancels the
    *  browser's back swipe over the frame. The Mates side panel does. */
@@ -317,6 +356,21 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   dashboardSlug?: string
 }) {
   const frameRef = useRef<HTMLIFrameElement | null>(null)
+  /** Dashboard edit mode: offered only with its preview on, on a Bot's live page, and
+   *  only once the GATEWAY holds it on. The gateway composes the edit bridge into the
+   *  document per read, so a read made before it accepted the toggle has none; the
+   *  read key and the document identity both carry it, so the accepted toggle fetches
+   *  a page with the bridge and mounts that document in place of the old one. */
+  const editLocal = usePreviewFlag(PREVIEW_DASHBOARD_EDIT_MODE)
+  const editComposed = useServerPreviewFlag(PREVIEW_DASHBOARD_EDIT_MODE)
+  const editPreview = editLocal && editComposed
+  const [editing, setEditing] = useState(false)
+  /** The edit layer's open pick and unsent drafts, held here because the layer is
+   *  unmounted whenever the page under it is replaced (`EditDrafts`). One map per
+   *  Bot's page and per Edit session: Done starts the next session empty. */
+  const draftsFor = dashboardQueryKey(target).join()
+  const [editDrafts, setEditDrafts] = useState(() => ({ for: draftsFor, map: new Map<string, unknown>() }))
+  if (editDrafts.for !== draftsFor) setEditDrafts({ for: draftsFor, map: new Map() })
   /** A gap recovery that did not arrive. The page keeps its values; this says they
    *  are older than the record, which nothing else on screen can say: the read
    *  that would have moved them never came. */
@@ -362,7 +416,8 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   const timingLabel =
     target.kind === 'member' ? `member:${target.slug}` : `session:${target.slot}`
   const { data, dataUpdatedAt, isLoading, isError, isFetching, error, refetch } = useQuery({
-    queryKey: [...dashboardQueryKey(target), locale, staged ? 'preview' : 'live'],
+    // 'preview' / 'live' stays LAST: the preview hand-over reads the key's tail.
+    queryKey: [...dashboardQueryKey(target), locale, ...(editComposed ? ['edit'] : []), staged ? 'preview' : 'live'],
     queryFn: async () => {
       // A live load only; a staged/preview read is a person action, not the
       // every-open path #20952 is about, so it is not timed.
@@ -752,8 +807,10 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
       // the owner agent's egress sends `false`, so an older gateway keeps the
       // behaviour it shipped with instead of going silently static.
       scripts: (data as { scripts?: boolean }).scripts !== false,
+      editBridge: data.rendered_html.includes(EDIT_MESSAGE_TYPE),
       dashboard: identity,
       stagedMs: 'staged_ms' in data && typeof data.staged_ms === 'number' ? data.staged_ms : 0,
+      pageRevision: pageRevisionOf(data),
     }
     // Keyed on the INSTANCE VERSION. Contract v3 says every change bumps it, so it is
     // the server's own statement that this is a different page, and a different page is
@@ -765,7 +822,7 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
     // unreachable guard is one a later reader trusts to be doing the work.
     setCandidate(prev => {
       if (!prev) return next
-      if (prev.instanceVersion !== next.instanceVersion) return next
+      if (!samePage(prev, next)) return next
       return prev.html === next.html && prev.stagedMs === next.stagedMs ? prev : next
     })
     // A re-render of the SAME version is new VALUES, not a new page -- which is most
@@ -777,7 +834,7 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
     //
     setGood(prev => {
       if (!prev) return prev
-      if (prev.instanceVersion !== next.instanceVersion) return prev
+      if (!samePage(prev, next)) return prev
       return prev.html === next.html && prev.stagedMs === next.stagedMs ? prev : next
     })
     // Recorded on EVERY read, before and regardless of either promotion above. This is
@@ -867,6 +924,14 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   const failed = mint.failed || mint.stalled
   const runsScript = Boolean(mayRunScript && shown?.scripts)
   const grantKey = crewDashboardSandbox(runsScript)
+  // Edit needs the frame's bridge to answer: a page that runs no script, or one
+  // rendered without the bridge, would sit under a capture layer that nothing answers.
+  // Not over an older page kept on screen while a newer version waits (or failed): the
+  // gateway traces against the active version's manifest, which may bind a field elsewhere.
+  // An open edit layer stays mounted (its drafts live in it) but is paused: it takes
+  // no new picks and re-reads no lineage until the newer page is shown.
+  const retainsOlder = !!candidate && !!shown && !samePage(candidate, shown)
+  const editable = editPreview && runsScript && Boolean(shown?.editBridge)
 
   /**
    * A NEW DOCUMENT LOADS OFF SCREEN, AND THE OPEN FRAME IS REPLACED ONLY WHEN IT IS UP.
@@ -1041,6 +1106,11 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   // Refills and pushes keep the mounted document; only a replacement must mint
   // and load before exporting. Do not require the preview-only ready beacon.
   const visibleIsCurrent = isCurrentDashboardDocument({ srcdoc, mint, url, stageUrl, source: urlSource, drawn })
+  // A promoted page is not yet the one on screen while its document mints, fails or
+  // loads off screen: the old frame stays up, so Inspect waits (and an open layer
+  // stays paused) until the document on screen is the page `shown` names.
+  const inspectPaused = retainsOlder || !visibleIsCurrent
+  const canInspect = editable && !inspectPaused
   const mountedStagedMs = staged && shown && url && !pending && !failed && isDrawn
     && urlSource.url === url && urlSource.srcdoc === srcdoc
     ? shown.stagedMs
@@ -1133,7 +1203,7 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   // probation was protecting: a static document cannot fail the way probation catches,
   // because the host fills its bindings itself and no script of its own has to run.
   const probating = Boolean(
-    candidate && good && candidate.instanceVersion !== good.instanceVersion && candidate.scripts,
+    candidate && good && !samePage(candidate, good) && candidate.scripts,
   )
   const timer = useRef<number | null>(null)
 
@@ -1141,7 +1211,7 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   // two paths cannot both act on one candidate.
   useEffect(() => {
     if (!candidate || !good) return
-    if (candidate.instanceVersion === good.instanceVersion) return
+    if (samePage(candidate, good)) return
     if (candidate.scripts) return
     setGood(candidate)
     setReverted(false)
@@ -1377,12 +1447,25 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   return (
     <div className="group relative h-full min-h-0 flex flex-col" data-testid="crew-dashboard-frame" data-preview={preview ? 'true' : undefined}>
       {cardSendBadge}
-      {target.kind === 'member' && !preview && (
+      {target.kind === 'member' && !preview && !(editable && editing) && (
+        // Not while editing: the edit bar holds this corner, and its Done sits here.
         // The bot's live page only: a staged preview is not the page anyone keeps,
         // and a session's page is not a bot's Dashboard. Floated over the page's
         // top-right corner and shown on hover, so it takes no row of its own; a
         // device with no hover and a keyboard focus both keep it visible.
         <div className="absolute right-2 top-2 z-10 flex max-w-[80%] items-start justify-end gap-2" style={badgeRows ? { top: `${2.25 * badgeRows}rem` } : undefined}>
+          {canInspect && url && !editing && (
+            <Btn
+              onClick={() => setEditing(true)}
+              data-testid="crew-dashboard-edit"
+              // Shown at rest: every use of edit mode starts here, so it is not
+              // hidden behind a hover the way Download is.
+              className="border border-border bg-bg-elevated text-text shadow-sm"
+            >
+              <PencilRuler size={13} className="lucide-inline" aria-hidden />
+              {i18nT('pages.membersPage.dashboardEdit.edit')}
+            </Btn>
+          )}
           <CrewDashboardDownload
             name={displayName}
             ready={visibleIsCurrent}
@@ -1564,6 +1647,27 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
             {i18nT('pages.membersPage.webview_retry')}
           </Btn>
         </div>
+      )}
+      {editable && editing && url && target.kind === 'member' && !preview && (
+        <Suspense fallback={null}>
+          <CrewDashboardEditLayer
+            frameRef={frameRef}
+            frameKey={`${grantKey}-${url}`}
+            slug={target.slug}
+            member={target.member}
+            botName={displayName}
+            manifest={shown.manifest}
+            board={shown.dashboard || shown.templateId}
+            // The page as the gateway names it: a correction carries it, since a
+            // template's counter and a package's version can be the same number.
+            page={dashboardPage(shown)}
+            instanceVersion={shown.instanceVersion}
+            onSend={onChangeRequest}
+            onDone={() => { setEditDrafts({ for: draftsFor, map: new Map() }); setEditing(false) }}
+            paused={inspectPaused}
+            drafts={editDrafts.map}
+          />
+        </Suspense>
       )}
       {url ? [
         <iframe

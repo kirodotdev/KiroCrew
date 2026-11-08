@@ -379,6 +379,52 @@ async def test_a_clean_slug_the_caller_names_is_still_served(wired: Any) -> None
 
 
 @pytest.mark.asyncio
+async def test_with_edit_mode_on_the_body_names_the_apply_counter(
+    wired: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A correction names its page as ``package:<slug>@<page_revision>``: a slug deleted
+    and saved again starts at version 1 again, the record's apply counter does not.
+    Off, the body is what it was without the preview."""
+    from kiro_crew import dashboard_edit_mode
+
+    monkeypatch.setattr(dashboard_edit_mode, "edit_mode_on", lambda cfg=None: False)
+    _status, off = await _call(md.api_member_dashboard, _request(wired.app, "GET", PATH))
+    assert "page_revision" not in off
+    monkeypatch.setattr(dashboard_edit_mode, "edit_mode_on", lambda cfg=None: True)
+    real = md._package_read
+    monkeypatch.setattr(md, "_package_read", lambda slug: (*real(slug)[:2], 7))
+    status, on = await _call(md.api_member_dashboard, _request(wired.app, "GET", PATH))
+    assert status == 200 and on["page_revision"] == 7
+
+
+def test_the_page_and_its_apply_counter_come_from_one_record_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Read after the page, an apply that lands in between would pair the page on
+    screen with its replacement's counter, and a correction typed on it would pass."""
+    reads: list[str] = []
+    record = SimpleNamespace(instance_version=7)
+
+    def read(slug: str) -> Any:
+        reads.append(slug)
+        return record
+
+    monkeypatch.setattr(md.instance, "read", read)
+    monkeypatch.setattr(md.instance, "pinned_package", lambda r: ("pinned", r))
+    monkeypatch.setattr(md.instance, "keeps_older_package_rule", lambda r: False)
+    assert md._package_read(SLUG) == (("pinned", record), False, 7)
+    assert reads == [SLUG]
+    # The older two-value answer is the same read, for the callers that need no counter.
+    assert md._package_in_force(SLUG) == (("pinned", record), False)
+
+
+def test_the_apply_counter_falls_back_to_the_package_version() -> None:
+    """The number ``dashboard_package._package_model`` checks a correction against."""
+    assert md._page_revision(7, 3) == 7
+    assert md._page_revision(0, 3) == 3
+
+
+@pytest.mark.asyncio
 async def test_a_bound_package_so_named_costs_the_page_and_not_the_tab(
     wired: Any, library: Any
 ) -> None:

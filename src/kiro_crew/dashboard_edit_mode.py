@@ -16,7 +16,8 @@ This module holds what more than one gateway file needs to agree on:
 
 from __future__ import annotations
 
-import re
+import string
+from html.parser import HTMLParser
 from typing import Any, Final, Mapping
 
 #: The feature preview name under ``dashboard.feature_previews``.
@@ -25,8 +26,11 @@ PREVIEW: Final[str] = "dashboard_edit_mode"
 #: The attribute that names one component (block) of a page.
 BLOCK_ATTRIBUTE: Final[str] = "data-dashboard-block"
 
-#: A component id: a short slug, so it is safe as an attribute value and as text.
-BLOCK_ID_RE: Final[re.Pattern[str]] = re.compile(r"\A[a-z0-9][a-z0-9_-]{0,47}\Z")
+#: Longest component id, in characters.
+MAX_BLOCK_ID_LEN: Final[int] = 48
+
+_LOWER_DIGITS: Final[frozenset[str]] = frozenset(string.ascii_lowercase + string.digits)
+_BLOCK_CHARS: Final[frozenset[str]] = _LOWER_DIGITS | frozenset("_-")
 
 #: Components one page may name. A page is a handful of cards; more is a page that
 #: tags every element, which no flip or comment can use.
@@ -35,12 +39,25 @@ MAX_BLOCKS: Final[int] = 64
 #: Longest field path a pick may name, in characters.
 MAX_PATH_LEN: Final[int] = 200
 
-#: A ``data-dashboard-block`` attribute in page markup, in either quote or bare.
-_BLOCK_ATTR_RE = re.compile(r"data-dashboard-block\s*=\s*(?:\"([^\"]*)\"|'([^']*)'|([^\s\"'>=`]+))")
+#: Longest root field or ``.key`` step of a field path, and digits in an ``[n]`` step.
+_MAX_NAME_LEN: Final[int] = 64
+_MAX_INDEX_DIGITS: Final[int] = 4
 
-#: One step of a field path after its root: ``.key``, ``[3]`` or ``[*]``.
-_STEP_RE = re.compile(r"\.([A-Za-z0-9_]{1,64})|\[(\d{1,4}|\*)\]")
-_ROOT_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")
+_ROOT_CHARS: Final[frozenset[str]] = frozenset(string.ascii_lowercase + string.digits + "_")
+_KEY_CHARS: Final[frozenset[str]] = frozenset(string.ascii_letters + string.digits + "_")
+
+
+def is_block_id(value: Any) -> bool:
+    """Whether *value* is a component id: 1-48 of ``a-z 0-9 _ -``, led by ``a-z 0-9``.
+
+    A short ASCII slug, so it is safe as an attribute value and as text.
+    """
+    return (
+        isinstance(value, str)
+        and 1 <= len(value) <= MAX_BLOCK_ID_LEN
+        and value[0] in _LOWER_DIGITS
+        and all(ch in _BLOCK_CHARS for ch in value)
+    )
 
 
 def edit_mode_on(cfg: Any = None) -> bool:
@@ -59,13 +76,39 @@ def edit_mode_on(cfg: Any = None) -> bool:
                 cfg = KiroCrewConfig.load()
         except Exception:
             return False
-    previews = getattr(getattr(cfg, "dashboard", None), "feature_previews", None)
+    from kiro_crew import edition_locks
+
+    # Through the edition lock, like every preview reader: an LTS build reads it off.
+    previews = edition_locks.feature_previews(
+        getattr(getattr(cfg, "dashboard", None), "feature_previews", None)
+    )
     return isinstance(previews, Mapping) and previews.get(PREVIEW) is True
 
 
+class _BlockIds(HTMLParser):
+    """The ``data-dashboard-block`` values on START TAGS, in page order.
+
+    A selector in a script (``querySelector('[data-dashboard-block="x"]')``), a style
+    rule or a comment names no component: the parser reads script and style bodies as
+    text and comments as comments, so only an attribute on an element counts.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.ids: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        for name, value in attrs:
+            if name == BLOCK_ATTRIBUTE:
+                self.ids.append(value or "")
+
+
 def block_ids(html: str) -> list[str]:
-    """Every component id *html* names, in page order, duplicates kept."""
-    return [a or b or c for a, b, c in _BLOCK_ATTR_RE.findall(html)]
+    """Every component id *html* names on an element, in page order, duplicates kept."""
+    parser = _BlockIds()
+    parser.feed(html)
+    parser.close()
+    return parser.ids
 
 
 def block_id_refusal(html: str) -> str:
@@ -79,7 +122,7 @@ def block_id_refusal(html: str) -> str:
         return f"names {len(ids)} components; at most {MAX_BLOCKS} are allowed"
     seen: set[str] = set()
     for block in ids:
-        if BLOCK_ID_RE.fullmatch(block) is None:
+        if not is_block_id(block):
             return (
                 f"has a {BLOCK_ATTRIBUTE} value that is not a component id: use 1-48 "
                 "lowercase letters, digits, '-' or '_', starting with a letter or digit"
@@ -95,30 +138,48 @@ def parse_field_path(path: Any) -> tuple[str, list[str | int]] | None:
 
     ``accepted`` -> ``("accepted", [])``; ``items[2].accepted`` ->
     ``("items", [2, "accepted"])``; ``items[*]`` -> ``("items", ["*"])``.
+
+    The root is 1-64 of ``a-z 0-9 _`` led by ``a-z``. Each step is ``.key`` (1-64 of
+    ``A-Z a-z 0-9 _``), ``[n]`` (1-4 ASCII digits) or ``[*]``. ``parseFieldPath`` in
+    ``website/src/pages/members/dashboardEdit.ts`` walks the same grammar, and
+    ``test/fixtures/dashboard_edit_paths.json`` holds both to it.
     """
     if not isinstance(path, str) or not path or len(path) > MAX_PATH_LEN:
         return None
-    root = _ROOT_RE.match(path)
-    if root is None:
+    end = len(path)
+    if path[0] not in string.ascii_lowercase:
         return None
+    at = 1
+    while at < end and at < _MAX_NAME_LEN and path[at] in _ROOT_CHARS:
+        at += 1
+    root = path[:at]
     steps: list[str | int] = []
-    at = root.end()
-    while at < len(path):
-        step = _STEP_RE.match(path, at)
-        if step is None:
-            return None
-        key, index = step.group(1), step.group(2)
-        if key is not None:
-            steps.append(key)
-        elif index == "*":
-            steps.append("*")
+    while at < end:
+        if path[at] == ".":
+            start = at = at + 1
+            while at < end and at - start < _MAX_NAME_LEN and path[at] in _KEY_CHARS:
+                at += 1
+            if at == start:
+                return None
+            steps.append(path[start:at])
+        elif path[at] == "[":
+            close = path.find("]", at + 1)
+            if close < 0:
+                return None
+            inner = path[at + 1 : close]
+            if inner == "*":
+                steps.append("*")
+            elif 1 <= len(inner) <= _MAX_INDEX_DIGITS and inner.isascii() and inner.isdigit():
+                steps.append(int(inner))
+            else:
+                return None
+            at = close + 1
         else:
-            steps.append(int(index))
-        at = step.end()
+            return None
     # `[*]` is a count over a list, so it can only be the last step.
     if "*" in steps[:-1]:
         return None
-    return root.group(0), steps
+    return root, steps
 
 
 def walk(value: Any, steps: list[str | int]) -> tuple[bool, Any]:

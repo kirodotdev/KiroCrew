@@ -108,7 +108,10 @@ def _page_in_force(slug: str) -> tuple[dict[str, Any], str, int]:
         package_slug, version, content = _older_page(slug)
     else:
         raise _NoPage(NOT_COMPOSED)
-    package = _dashboard.parse_package(_dashboard.canonical_package_content(content))
+    # A read of stored bytes: the write-only component-id check never refuses it.
+    package = _dashboard.parse_package(
+        _dashboard.canonical_package_content(content, check_block_ids=False)
+    )
     if package.get("bound_to") != f"crewmate:{slug}":
         raise _NoPage("the page in force is not bound to you, so it is not drawn")
     return package, package_slug, version

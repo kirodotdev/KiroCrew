@@ -1344,6 +1344,14 @@
       "hint": "Lets a chat hand tasks to a crew and track them on a Board."
     },
     {
+      "id": "developer.dashboard-edit-mode",
+      "label": "Dashboard edit mode",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.dashboard-edit-mode",
+      "description": "Adds an Inspect button to a Bot's Dashboard: point at a value to see where it came from, click a component to ask the Bot to change it, and correct a value the Bot wrote.",
+      "hint": "Kiro Crew traces each value from its own records; the page only says which field is under the pointer. Off, every Dashboard is as before."
+    },
+    {
       "id": "developer.decisions-jev",
       "label": "Decisions (Jev)",
       "tab": "developer",
