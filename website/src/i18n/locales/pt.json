@@ -21682,7 +21682,7 @@
         "label": "Importar / Exportar"
       },
       "instances": {
-        "description": "Gerencie crews remotas por túneis SSH; alterne entre elas no cabeçalho superior",
+        "description": "Gerencie crews remotas por SSH ou AWS Session Manager; alterne entre elas no cabeçalho superior",
         "label": "Crew remota"
       },
       "notifications": {

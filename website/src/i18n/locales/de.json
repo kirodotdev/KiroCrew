@@ -21179,7 +21179,7 @@
         "label": "Import / Export"
       },
       "instances": {
-        "description": "Remote-Crews über SSH-Tunnel verwalten; über die obere Kopfzeile zwischen ihnen wechseln",
+        "description": "Remote-Crews über SSH oder AWS Session Manager verwalten; über die obere Kopfzeile zwischen ihnen wechseln",
         "label": "Remote-Crew"
       },
       "notifications": {

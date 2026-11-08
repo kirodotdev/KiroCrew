@@ -10126,7 +10126,7 @@
         "label": "Import / Export"
       },
       "instances": {
-        "description": "Manage remote crews over SSH tunnels; switch between them from the top header",
+        "description": "Manage remote crews over SSH or AWS Session Manager; switch between them from the top header",
         "label": "Remote Crew"
       },
       "notifications": {

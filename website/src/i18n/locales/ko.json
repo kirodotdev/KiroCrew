@@ -20676,7 +20676,7 @@
         "label": "가져오기 / 내보내기"
       },
       "instances": {
-        "description": "SSH 터널로 원격 크루 관리, 상단 헤더에서 전환",
+        "description": "SSH 또는 AWS Session Manager로 원격 크루 관리, 상단 헤더에서 전환",
         "label": "원격 크루"
       },
       "notifications": {
