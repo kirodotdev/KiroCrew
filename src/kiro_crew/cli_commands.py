@@ -806,6 +806,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _internal_secret,
         _peer_refusal,
         _spawn,
+        _spawn_done_status,
         _spawn_row_text,
         _spawn_run,
     )

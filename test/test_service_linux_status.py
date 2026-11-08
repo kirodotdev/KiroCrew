@@ -18,6 +18,7 @@ from service_helpers import (  # noqa: F401 -- fixtures are found by name
     _OURS_UNIT_TEXT,
     _RUNNING,
     _UNIT,
+    _booted_with_systemd,
     _clear_sudo_user,
     _fake_systemctl,
     _no_host_env_file,
