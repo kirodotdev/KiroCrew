@@ -10,6 +10,9 @@
     "pi-acp": "0.0.34"
   },
   "overrides": {
-    "undici": "8.12.2"
+    "undici": "8.12.2",
+    "pi-acp": {
+      "zod": "4.6.7"
+    }
   }
 }
