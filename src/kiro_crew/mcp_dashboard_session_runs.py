@@ -454,6 +454,14 @@ def _create_refusal_remedy(refused: DashboardError, payload: dict[str, Any]) -> 
     vouches. The binder that does vouch runs only for a chat with no messages, which
     is why a NEW chat with this session's agent is a remedy that works.
     """
+    # The create route's refusals of a ``backend`` that cannot start here
+    # (``messaging_api/spawn._requested_backend``), named by the code the tool
+    # description promises, so a conductor can branch on it.
+    if refused.code in ("unknown_backend", "backend_not_installed", "backend_restart_required"):
+        return (
+            f" (code `{refused.code}`). Pick a backend from that list, or omit `backend` "
+            "to run on the default harness."
+        )
     if refused.code != "memory_delegation_denied":
         return ""
     if payload.get("agent_kind") == "template":

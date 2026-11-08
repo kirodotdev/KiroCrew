@@ -294,6 +294,33 @@ class TestTheTools:
         )
         assert creates and creates[-1]["backend"] == "codex"
 
+    def test_a_backend_refusal_names_its_code(self):
+        from kiro_crew.mcp_dashboard import TABLE
+        from kiro_crew.mcp_tools.dashboard_client import InMemoryDashboardClient
+        from kiro_crew.mcp_tools.table import Caller, ToolContext
+
+        def _refuse(_req):
+            from kiro_crew.mcp_tools.dashboard_client import DashboardError
+
+            raise DashboardError(
+                {"error": "backend 'nonesuch' is not available", "code": "unknown_backend"}
+            )
+
+        dash = InMemoryDashboardClient(
+            {
+                "GET /api/chat/slots": [{"key": "chat-1-100", "title": "Caller"}],
+                "GET /api/chat/folders": [],
+                "POST /api/session-control/create": _refuse,
+            }
+        )
+        out = TABLE.call(
+            "session_create",
+            {"title": "w", "backend": "nonesuch"},
+            ToolContext(dash, Caller.strict("dashboard:chat-1-100")),
+        )
+        assert out.startswith("Error: could not create a session")
+        assert "(code `unknown_backend`)" in out
+
     def test_session_create_refuses_a_pick_with_crew(self):
         out, creates = self._call(
             "session_create",
