@@ -16,9 +16,11 @@
  * When any renewal stops on SIGNED_OUT (the gateway reads the Kiro sign-in on
  * every mint), every renewal stops and every relay Crew window closes. This is
  * noticed at the next renewal, not at the moment of sign-out.
- * shortcut: an account switch isn't caught, because the next mint succeeds as
- * the new person. A follow-up PR adds a non-secret per-sign-in marker to the
- * token answer and closes every window when it changes.
+ *
+ * An account switch is caught per window: each window keeps the gateway's
+ * non-secret sign-in marker from its first grant and sends it on every
+ * renewal. The gateway refuses SIGN_IN_CHANGED when the vault now holds
+ * another account, and that one window closes at its own next renewal.
  */
 
 // The relay's endpoint ID grammar has one definition, in the window module.
@@ -42,10 +44,14 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
   async function startRenewal(endpointId, holder, crew) {
     let firstCode = null;
     const mint = async () => {
-      const answer = await requestToken(endpointId);
+      // This window's own sign-in marker, from its first grant. The gateway
+      // refuses SIGN_IN_CHANGED when the vault now holds another account. No
+      // marker is shared between windows.
+      const answer = await requestToken(endpointId, crew.signInMarker || null);
       if (answer && answer.ok) {
         crew.crewUrl = answer.crewUrl;
         crew.name = answer.name;
+        if (!crew.signInMarker && answer.signInMarker) crew.signInMarker = answer.signInMarker;
         return answer.grant;
       }
       const code = (answer && answer.code) || "UNAVAILABLE";
@@ -53,7 +59,10 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
       return { code: RENEWAL_CODE[code] || code, retryAfter: answer ? answer.retryAfter : null };
     };
     const onOutcome = (o) => {
-      if (o && o.code === "SIGNED_OUT" && o.stopped === true) closeAll("SIGNED_OUT");
+      if (!o || o.stopped !== true) return;
+      if (o.code === "SIGNED_OUT") closeAll("SIGNED_OUT");
+      // An account switch closes only the window this renewal drives.
+      if (o.code === "SIGN_IN_CHANGED") closeOne(endpointId, renewal, "SIGN_IN_CHANGED");
     };
     const renewal = createRenewal({ endpointId, mint, holder, onOutcome, log });
     const first = await renewal.start();
@@ -78,6 +87,15 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
     }
   }
 
+  // Close one window, only while `renewal` still drives it. Its close
+  // listener removes the entry.
+  function closeOne(endpointId, renewal, reason) {
+    const entry = windows.get(endpointId);
+    if (!entry || entry.renewal !== renewal) return;
+    try { entry.win.close(); } catch { /* already gone */ }
+    say(endpointId, `closed (${reason})`);
+  }
+
   function wire(entry) {
     entry.renewal.attach(entry.win);
     entry.win.onVisibilityChange((hidden) => entry.renewal.setHidden(hidden));
@@ -85,7 +103,7 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
 
   async function openNew(endpointId) {
     const holder = createTokenHolder();
-    const crew = { crewUrl: "", name: "" };
+    const crew = { crewUrl: "", name: "", signInMarker: null };
     const at = epoch;
     const { renewal, error } = await startRenewal(endpointId, holder, crew);
     if (!renewal) {
@@ -109,7 +127,7 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
       say(endpointId, "UNAVAILABLE");
       return { ok: false, error: "UNAVAILABLE" };
     }
-    windows.set(endpointId, { win, holder, renewal });
+    windows.set(endpointId, { win, holder, renewal, crew });
     say(endpointId, "opened");
     return { ok: true };
   }
@@ -118,8 +136,17 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
   // ended): mint again on the same holder, which the window already reads,
   // and reload. A refusal leaves the window as it is and answers its code.
   async function restart(endpointId, entry) {
-    const { renewal, error } = await startRenewal(endpointId, entry.holder, {});
+    // The same window, so the same sign-in: its first mint sends its marker.
+    const crew = { signInMarker: entry.crew ? entry.crew.signInMarker : null };
+    const { renewal, error } = await startRenewal(endpointId, entry.holder, crew);
     if (!renewal) {
+      // The account changed since the window opened: close it, and the next
+      // click opens as the new account.
+      if (error === "SIGN_IN_CHANGED" && windows.get(endpointId) === entry) {
+        try { entry.win.close(); } catch { /* already gone */ }
+        say(endpointId, "closed (SIGN_IN_CHANGED)");
+        return { ok: false, error };
+      }
       say(endpointId, error);
       return { ok: false, error };
     }
@@ -131,6 +158,7 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
       return { ok: false, error: "UNAVAILABLE" };
     }
     entry.renewal = renewal;
+    entry.crew = crew;
     wire(entry);
     entry.win.reload();
     entry.win.focus();

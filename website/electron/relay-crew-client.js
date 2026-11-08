@@ -22,7 +22,7 @@ const DEFAULT_TIMEOUT_MS = 35_000;
 const REFUSAL_CODES = new Set([
   "SIGNED_OUT", "NOT_SET_UP", "CREW_ACCESS_NOT_GRANTED", "REMOTE_ACCESS_DISABLED",
   "ACCESS_DENIED", "CREW_OFFLINE", "THROTTLED", "INVALID_REQUEST",
-  "SERVICE_ERROR", "UNREACHABLE", "BAD_ANSWER",
+  "SERVICE_ERROR", "UNREACHABLE", "BAD_ANSWER", "SIGN_IN_CHANGED",
 ]);
 
 const refused = (code, retryAfter = null) => ({ ok: false, code, retryAfter });
@@ -33,7 +33,7 @@ const finiteOrNull = (n) => (Number.isFinite(n) ? n : null);
  *   | {ok: false, code: string, retryAfter: number|null}>}
  */
 async function requestRelayCrewToken({
-  backendUrl, endpointId, getSecret, fetchFn = (url, init) => fetch(url, init),
+  backendUrl, endpointId, signInMarker = null, getSecret, fetchFn = (url, init) => fetch(url, init),
   timeoutMs = DEFAULT_TIMEOUT_MS,
 }) {
   const target = dialTarget(backendUrl);
@@ -48,7 +48,9 @@ async function requestRelayCrewToken({
     res = await fetchFn(`${target.origin}${TOKEN_PATH}`, {
       method: "POST",
       headers: { "Content-Type": "application/json", "X-Local-Secret": secret },
-      body: JSON.stringify({ endpointId }),
+      // The window's sign-in marker, on a renewal only: the gateway refuses
+      // SIGN_IN_CHANGED when the vault now holds another account.
+      body: JSON.stringify(typeof signInMarker === "string" && signInMarker ? { endpointId, signInMarker } : { endpointId }),
       redirect: "error",
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -72,6 +74,8 @@ async function requestRelayCrewToken({
       },
       crewUrl: body.crewUrl,
       name: typeof body.name === "string" ? body.name : "",
+      // Names the sign-in (not a secret). Kept out of the grant, so renewal never sees it.
+      signInMarker: typeof body.signInMarker === "string" && body.signInMarker ? body.signInMarker : null,
     };
   }
   const code = body && typeof body.code === "string" ? body.code : "";
