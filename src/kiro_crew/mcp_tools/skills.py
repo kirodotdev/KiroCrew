@@ -31,6 +31,14 @@ from kiro_crew.validation import (
     validate_tool_args,
 )
 
+#: What skill_search says when the gateway refuses the chat it named. It adds
+#: nothing the uniform 404 does not already say: the refusal covers every query
+#: and key, so another search in this chat gets the same answer.
+_SLOT_REFUSAL = (
+    "the gateway refused skill reads for this chat (slot_not_found), so every "
+    "query and key gets this answer; it does not mean the skill is missing"
+)
+
 
 def schemas() -> list[dict[str, Any]]:
     """Descriptors for the skills tools."""
@@ -212,6 +220,10 @@ def skill_search(name: str, args: dict[str, Any]) -> str:
                 result = mcp_core._get(
                     "/api/skills/-/discover?" + urlencode(params), session_key=session
                 )
+            if result.get("code") == "slot_not_found":
+                # The gateway's uniform isolation 404. Its "not found" reads as
+                # a missing skill, and agents retry other keys or queries.
+                raise RuntimeError(_SLOT_REFUSAL)
             if result.get("error"):
                 raise RuntimeError(result["error"])
             matches = result.get("matches", [])
