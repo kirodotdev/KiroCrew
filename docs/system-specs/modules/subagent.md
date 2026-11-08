@@ -3789,6 +3789,10 @@ backend (`agent_sdk/spec_hooks.py:turn_spec_hooks`):
   turn is gated: the run's spec hooks join the Hooks page's on the permission
   request. The informational `EVENT_TOOL_CALL` fire is skipped on such a turn, so
   each hook runs once.
+- On claude (`ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS` alone) the turn is not
+  gated: it gets the spec's hooks on every event but `PreToolUse`
+  (`spec_hooks.OBSERVER_HOOK_EVENTS`) and keeps the informational fire, and a
+  spec that cannot be read leaves it with none.
 
 The tool name is cached on `EVENT_TOOL_CALL` by `tool_call_id` and looked up
 when the result arrives. The `Running: ` prefix is stripped so both hooks

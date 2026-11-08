@@ -180,6 +180,27 @@ itself is not read back; the floor is the evidence. Whether it forwards a `PreTo
 in this repository, and that is the prerequisite for Crew gating *every* Claude tool
 call rather than every call Claude asks about.
 
+### The agent spec's own hooks
+
+The harness is handed no agent spec, so nothing in it runs the spec's `hooks`. Crew's
+turn loop fires the events that cannot refuse a tool call instead: `postToolUse`,
+`userPromptSubmit`, `agentSpawn` and `stop` (`ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS`,
+`agent_sdk/spec_hooks.py`), on the chat and subagent turn loops, through the same hook
+store, gates and sandboxed spawn as a Hooks-page hook. A call whose frame has kind
+`execute` (the Bash tool) is named `execute_bash` for a matcher and on the hook's
+stdin, so the default agent's `audit.log` hook records Claude's shell calls too. It
+fires once per call, on the call's terminal update.
+
+`preToolUse` is left out. A pre-approved call never asks (see above), so a Crew-fired
+gating hook would be skipped on exactly the calls it most needs to see. A new session
+whose spec carries one gets a `notice` row saying it does not run, and the mirror rules
+the hooks concern `no-channel`. The backend card says only that much: its `hooks` line
+narrows to `hooks_pre_tool_use` ("the preToolUse hooks ... will not run",
+`backend_mcp_ability.HOOKS_PRE_TOOL_USE_CARD_ID`), while `kirocrew doctor` keeps the
+route-level `no channel yet: hooks`. Nothing gates on the spec here, so Claude stays out of
+`ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS`: a spec that cannot be read leaves the turn with
+no spec hooks, never a blocked call.
+
 ### MCP tools on a Claude session
 
 The `claude-agent-acp` adapter reads **no** agent file: the `mcpServers` array on

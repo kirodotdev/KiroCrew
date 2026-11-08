@@ -15,6 +15,7 @@ from kiro_crew.agent_sdk.spec_hooks import (
     OverlongHookCommand,
     crew_fired_spec_hooks,
     merge_user_hook_files,
+    observer_spec_hooks,
     overlong_spec_hook_commands,
     project_hook_files_present,
     session_agent,
@@ -160,7 +161,9 @@ async def _prepare_spec_hooks(
 
     Only for a backend whose capabilities say Crew fires the spec's hooks: kiro-cli
     runs the field itself, and firing it here too would run every hook twice, so
-    every other session gets ``([], False, None)``.
+    every other session gets ``([], False, None)``. A backend where Crew fires
+    only the hooks that cannot refuse a call (claude) gets those, from
+    :func:`_prepare_observer_spec_hooks`.
 
     On a new session, a spec that sets a key nothing carries to this backend gets
     one notice row, and so does a spec with ``confirm: true`` hooks, which Crew
@@ -175,6 +178,8 @@ async def _prepare_spec_hooks(
     if not capabilities_of(client).crew_fires_spec_hooks:
         if is_new and spec_hooks_run_nowhere(client):
             await _notice_spec_hooks_run_nowhere(state, slot, client, agent)
+        if capabilities_of(client).crew_fires_spec_observer_hooks:
+            return await _prepare_observer_spec_hooks(state, slot, client, agent, is_new=is_new)
         return [], False, None
     cwd = getattr(client, "cwd", "")
     work_dir = cwd if isinstance(cwd, str) and cwd else None
@@ -258,6 +263,95 @@ async def _prepare_spec_hooks(
         if is_kas:
             await _surface_withheld_project_hook_files(state, slot, client)
     return hooks, False, work_dir
+
+
+def _pre_tool_hooks_run_nowhere_notice(agent: str) -> str:
+    """The session-start notice for ``preToolUse`` spec hooks on an observer-only backend."""
+    return (
+        f"ℹ️ Agent {agent} has hooks on preToolUse. This backend does not run an "
+        "agent's preToolUse hooks, so they have no effect in this session. Its "
+        "other hooks run."
+    )
+
+
+def _spec_hooks_unread_notice(agent: str) -> str:
+    """The session-start notice for a spec whose hooks could not be read."""
+    return (
+        f"ℹ️ The hooks of agent {agent} could not be read, so none run in this "
+        "session. The gateway log names the reason."
+    )
+
+
+async def _prepare_observer_spec_hooks(
+    state: "DashboardState",
+    slot: "_ChatSlot",
+    client: Any,
+    agent: str,
+    *,
+    is_new: bool,
+) -> tuple[list, bool, str | None]:
+    """:func:`_prepare_spec_hooks` on a backend where Crew fires the spec's hooks on
+    the events that cannot refuse a tool call (claude).
+
+    The spec's ``preToolUse`` hooks are left out: the harness approves some calls
+    without a permission request, so such a hook could not gate them, and a new
+    session whose spec carries one gets a notice saying they do not run. Nothing
+    here gates, so the turn is never blocked: an agent that cannot be named, or a
+    spec that cannot be read, leaves the turn with no spec hooks, and the latter
+    gets a notice on a new session.
+    """
+    cwd = getattr(client, "cwd", "")
+    work_dir = cwd if isinstance(cwd, str) and cwd else None
+    agent = session_agent(client, agent)
+    if not agent:
+        return [], False, work_dir
+    held = getattr(slot, "_active_turn_session_key", "")
+    session_key = held if isinstance(held, str) else ""
+    project_dir = spec_project_dir(client)
+    try:
+        hooks, _lost, unconfirmable = await asyncio.to_thread(
+            functools.partial(crew_fired_spec_hooks, agent, project_dir, session_key=session_key)
+        )
+    except Exception:  # noqa: BLE001 - no spec hook gates here, so the turn runs without
+        logger.warning(
+            "agent spec hooks for %r could not be read; none run this turn",
+            agent,
+            exc_info=True,
+        )
+        if is_new:
+            append_and_surface(
+                state,
+                slot,
+                "notice",
+                _redact_display_text(_spec_hooks_unread_notice(agent)),
+                "msg msg-info",
+                meta={"kind": SPEC_HOOKS_NOTICE_KIND},
+            )
+        return [], False, work_dir
+    observed = observer_spec_hooks(hooks)
+    if is_new:
+        if len(observed) < len(hooks):
+            append_and_surface(
+                state,
+                slot,
+                "notice",
+                _redact_display_text(_pre_tool_hooks_run_nowhere_notice(agent)),
+                "msg msg-info",
+                meta={"kind": SPEC_HOOKS_NOTICE_KIND},
+            )
+        if unconfirmable:
+            append_and_surface(
+                state,
+                slot,
+                "notice",
+                _redact_display_text(_spec_confirm_hooks_notice(agent, unconfirmable)),
+                "msg msg-info",
+            )
+        await _surface_overlong_hook_commands(state, slot, agent, project_dir, session_key)
+        await _surface_withheld_project_hooks(
+            state, slot, client, agent, user_hooks_run=bool(observed)
+        )
+    return observed, False, work_dir
 
 
 #: How many too-long hooks the notice names before it counts the rest.
