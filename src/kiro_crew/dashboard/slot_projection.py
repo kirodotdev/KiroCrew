@@ -211,8 +211,10 @@ class SlotProjection:
                 break
             # A ``/clear`` starts the session over: a change or issue named
             # before it belongs to the dropped conversation, so its chip goes
-            # with it, as the plan pill does. The rows stay in the transcript;
-            # only the derivation stops at the boundary.
+            # with it. The rows stay in the transcript; only the derivation
+            # stops at the boundary. Unlike the plan pill, which resets only on
+            # a clear that ran, the boundary is the typed ``/clear`` row, so a
+            # clear that was queued or refused also drops the earlier chips.
             if is_clear_command_row(msg):
                 break
             if not isinstance(msg, dict) or msg.get("role") in non_durable_roles:
