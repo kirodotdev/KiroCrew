@@ -1041,6 +1041,52 @@ class TestSetupCliLoggingServiceErrorFile:
         assert "kc-info-record" in self.console.getvalue()
 
 
+class TestChatConsoleShowsErrorsOnly:
+    """``kirocrew chat`` without ``-v`` keeps its own records below ERROR out of
+    the terminal; ``gateway.log`` still gets them."""
+
+    @pytest.fixture(autouse=True)
+    def _console(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr("kiro_crew.cli._fd_targets_file", lambda fd, path: False)
+        self.console = io.StringIO()
+
+        def _basic_config(**_kwargs):
+            logging.getLogger().addHandler(logging.StreamHandler(self.console))
+
+        _floor_monkeypatch.setattr(logging, "basicConfig", _basic_config)
+
+    def test_chat_warning_reaches_the_log_file_only(self):
+        _setup_cli_logging("chat", 0)
+        logging.getLogger("kiro_crew.test_chat").warning("kc-warn-record")
+        logging.getLogger("kiro_crew.test_chat").error("kc-error-record")
+        logging.getLogger("kiro_crew.cli_chat").warning("chat-warn-record")
+        logging.getLogger("kiro_crew.sandbox").warning("SECURITY: sandbox-warn-record")
+        logging.getLogger("third_party_lib").warning("lib-warn-record")
+        _stop_log_queue_listener()
+        console = self.console.getvalue()
+        assert "kc-warn-record" not in console
+        assert "kc-error-record" in console
+        assert "chat-warn-record" in console
+        assert "sandbox-warn-record" in console
+        assert "lib-warn-record" in console
+        text = (config_dir() / "gateway.log").read_text(encoding="utf-8")
+        assert text.count("kc-warn-record") == 1
+
+    def test_verbose_chat_echoes_its_records(self):
+        _setup_cli_logging("chat", 1)
+        logging.getLogger("kiro_crew.test_chat").info("kc-info-record")
+        assert "kc-info-record" in self.console.getvalue()
+
+    def test_chat_without_a_log_file_keeps_the_echo(self, _floor_monkeypatch):
+        def _deny(*_a, **_k):
+            raise PermissionError(1, "Operation not permitted")
+
+        _floor_monkeypatch.setattr("kiro_crew.cli._AppendOnlyLogFileHandler", _deny)
+        _setup_cli_logging("chat", 0)
+        logging.getLogger("kiro_crew.test_chat").warning("kc-warn-record")
+        assert "kc-warn-record" in self.console.getvalue()
+
+
 class TestSetupCliLoggingForeground:
     """The classic topology must be unchanged when stderr is a real console."""
 
