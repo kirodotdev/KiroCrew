@@ -11490,6 +11490,7 @@
       "loading": "読み込み中…",
       "local_changes_not_yet_published_to": "ローカル変更はまだ次の場所に公開されていません:",
       "move_to_folder": "フォルダーに移動",
+      "folder_chip_unfiled": "フォルダー",
       "no_lifecycle_events_yet": "まだライフサイクルイベントはありません。",
       "not_found": "見つかりません。",
       "not_in_a_folder_click_to_file": "フォルダーにはありません — クリックしてファイルします",

@@ -12258,6 +12258,7 @@
       "loading": "Загрузка…",
       "local_changes_not_yet_published_to": "Локальные изменения ещё не опубликованы в",
       "move_to_folder": "Переместить в папку",
+      "folder_chip_unfiled": "папка",
       "no_lifecycle_events_yet": "Событий жизненного цикла пока нет.",
       "not_found": "Не найдено.",
       "not_in_a_folder_click_to_file": "Без папки — нажми, чтобы поместить в папку",
