@@ -5899,10 +5899,11 @@ This section records which module owns which part, so a change lands in its owne
 | `job_sdk.py` | The facade, plus `JobSDK`, the per-app `JobStore`, the process-wide SDK registry, the interruption message `reconcile` composes (`_interrupt_error`), the process identity (`_ORIGIN`) and the tunables only they read |
 | `job_sdk_records.py` | The run record (`JobRun`), its lifecycle states and interruption causes, the params bounds and the ingest redaction (`_validated_params`, `_redact`), the `JobHandle` a runner holds, and the Job SDK exceptions |
 | `job_sdk_returns.py` | What a runner hands back: `_undriven_result`, `_stop_returned_work`, `_close_quietly`, and the registration-time `_lazy_call_shape` |
+| `job_sdk_retention.py` | The per-kind retention cap (§26.1): `_NO_RETENTION`, the capped kinds' `_MAX_DEDUPE_KEY` and the `JobSDK` member `sweep_retention` |
 
 Imports only point down. `manifest_sections` imports `KEBAB_RE` from `manifest_names`;
-`manifest_containment`, `manifest_contributes`, `job_sdk_records` and `job_sdk_returns`
-import no owner, and no owner imports its facade, even for type checking. Each facade
+`manifest_containment`, `manifest_contributes`, `job_sdk_records`, `job_sdk_returns` and
+`job_sdk_retention` import no owner, and no owner imports its facade, even for type checking. Each facade
 imports every name its owners define
 at its own import, private names included, so every `from kiro_crew.apps.manifest
 import ...` and every `kiro_crew.apps.job_sdk.<name>` read keeps one path and the same
@@ -5933,7 +5934,60 @@ fails. `test_setup_hooks_contract.py` excludes `manifest_sections.py`, where eve
 
 Writers: `apps/manifest.py`, `apps/manifest_names.py`, `apps/manifest_containment.py`,
 `apps/manifest_sections.py`, `apps/manifest_contributes.py`, `apps/job_sdk.py`,
-`apps/job_sdk_records.py`, `apps/job_sdk_returns.py`.
+`apps/job_sdk_records.py`, `apps/job_sdk_returns.py`, `apps/job_sdk_retention.py`.
+
+### 26.1 Retention is a per-kind count cap, opt-in
+
+`JobStore` writes one JSON file per run, and by itself removes one only on app
+disable, so a kind's file count grows with every run. `register(kind, fn,
+retention=N)` bounds it: after each terminal write of that kind, the SDK removes
+the oldest terminal records of that kind until at most `N` remain. `0`, the
+default, keeps every record, so a kind that never opts in behaves as before the
+cap existed.
+
+- **What is never removed.** Any non-terminal record, a run this process is
+  still executing (the live table `cancel` and `reconcile` read), and a run that
+  finished but whose own sweep has not run yet (`JobSDK._unswept`, filled at the
+  live-table pop and emptied when that run's sweep ends). A held terminal record
+  takes one of the `N` places; the others are ranked. Holding the run that just
+  finished, instead of ranking it, matters because the record stamps are whole
+  seconds and a sort alone could rank it below an older run that ties; holding
+  every unswept run is what stops two runs finishing at once from each removing
+  the other. The sweep reads the held set after its scan, so a run that finishes
+  during the scan is held too. Which of several runs finishing at once the cap
+  keeps depends on the order their sweeps run in; once every sweep has run, at
+  most `N` terminal records remain.
+- **Order.** Oldest first by `(finished_at, updated_at, created_at)`. There is no
+  new record field.
+- **Finished means status.** The cap judges a run by `is_terminal`, so a kind
+  whose app keeps working on a run after its status turns terminal (Code Review
+  Sage's posting) must not set it. A liveness predicate for such a kind is
+  [#33058](https://github.com/kirodotdev/KiroCrew/issues/33058).
+- **When.** Inline, on the terminal thread, after the live-table pop. The sweep
+  never raises: a failure is logged and the run's terminal record stands. Sweeps
+  of one SDK are serialized, so each sees the store the previous one pruned, and
+  a run leaves `_unswept` before its sweep lets the next one scan. A
+  disabled SDK removes nothing: each delete checks `_closed` under the
+  lock disable sets it with, so a worker that outlives disable cannot remove a
+  re-enabled SDK's records.
+- **Reading `jobs/`.** The sweep scans with `JobStore._iter_runs_nolink`, which
+  opens each record with `jsonl_util.open_regular_nofollow`, because the
+  directory is app-writable: a planted link, a non-regular or oversized file, a
+  name that is not a run id, or a body whose `run_id` differs from its filename is
+  skipped, neither counted nor removed. It does not use the agent-facing
+  `safe_read_file_bytes_nolink`, whose path screen refuses an app data dir the
+  security lists protect, aws-control's among them. To keep a capped kind's
+  record under the scan's size limit, `start` refuses a `dedupe_key` longer than `_MAX_DEDUPE_KEY`
+  (512) characters, the one record field a caller supplies without another
+  length bound, and the start route answers 400 `invalid_dedupe_key`.
+- **Evidence.** Each removal is audited as `jobs.job_evicted`. `reconcile`
+  refuses to write a record that is gone by the time it writes, so it never
+  brings back a run the cap removed. The start route answers with the record as
+  it stood at the start (`JobSDK._start_run`) when the record is gone by the time
+  it reads it back, so a fast run the cap already removed is not a 500.
+- **Consumer.** aws_control's two backup kinds register with `retention=100`,
+  at or above every reader's window (the Backup row reads 20 of a kind,
+  `_jobs/recent` serves at most 100).
 
 ## 27. The app manager is composed by lifecycle owner
 
