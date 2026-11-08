@@ -1,9 +1,9 @@
 """The MCP gateway broker's lifecycle in this process.
 
 Launch-approval load, filtering and deferred persistence, the agent-overlay
-rewrite, the broker start and stop, the npm pre-resolve prefetch and its refresh
-window, and the dashboard callbacks that enable, disable or re-stub the broker
-live.
+rewrite, the broker start, its retry after a failed start, and its stop, the npm
+pre-resolve prefetch and its refresh window, and the dashboard callbacks that
+enable, disable or re-stub the broker live.
 
 Composed by :mod:`kiro_crew.slack.gateway`, whose globals its functions run on;
 see :mod:`kiro_crew.slack.gateway_runtime`.
@@ -15,11 +15,14 @@ from typing import TYPE_CHECKING, Awaitable, Callable
 
 if TYPE_CHECKING:
     from kiro_crew.slack.gateway import (
+        L4_GATEWAYD,
+        LADDER,
         GatewayManager,
         GatewayOrchestrator,
         GatewaySpec,
         KiroCrewConfig,
         LaunchApprovals,
+        Path,
         asyncio,
         contextlib,
         filter_target_env,
@@ -259,34 +262,107 @@ async def _init_mcp_gateway(
     self._mcp_resolve_prefetch = asyncio.create_task(
         self._mcp_resolve_prefetch_loop(dict(target_env))
     )
+    sharing = bool(cfg_gw.enabled)
     if await manager.start():
-        self._mcp_gateway_manager = manager
-        # App installs and enables write agent specs after this rewrite; this is
-        # how they reach the overlay without a restart. The hook lives exactly as
-        # long as the broker: ``_stop_mcp_broker`` clears it.
-        from kiro_crew.mcp_gateway.overlay_refresh import set_overlay_refresher
+        self._mark_mcp_broker_ready(manager, approvals, socket_path, stubs, sharing)
+        return
+    # The manager arms its watchdog only on a start that spawned or adopted a
+    # daemon, so after a False start nothing inside it ever starts again. The
+    # retry lives here instead, and keeps this manager in its own handle so
+    # ``_mcp_gateway_manager`` still means "a broker is up".
+    self._mcp_gateway_pending = manager
+    self._mcp_gateway_start_retry = asyncio.create_task(
+        self._retry_mcp_gateway_start(manager, approvals, socket_path, stubs, sharing),
+        name="mcp-gateway-start-retry",
+    )
 
-        set_overlay_refresher(self._refresh_mcp_overlays)
-        # Admission already uses the in-memory, fail-closed filtered map.
-        # Persistence waits for the process readiness boundary and cannot
-        # extend the boot path.
-        self._schedule_mcp_launch_approval_persist(approvals)
-        # Report the stub set and the sharing decision. There is one
-        # trigger now (something is stubbed), so the useful line is WHAT it
-        # serves: "N routed" beside a live daemon explains itself, and the
-        # sharing suffix stops "sharing: off" next to a running broker from
-        # reading as a contradiction.
-        #
-        # Counts ``stubs``, not the configured list. The two differ whenever a
-        # stub change is recorded for the next gateway start, and this line is
-        # read during exactly that diagnosis ("why is my stub not live?") --
-        # reporting the configured count there would answer it wrongly.
-        logger.info(
-            "mcp-gateway: broker ready (socket=%s) for %d stubbed server(s), " "backend sharing %s",
-            socket_path,
-            len(stubs),
-            "on" if cfg_gw.enabled else "off",
-        )
+
+def _mark_mcp_broker_ready(
+    self: GatewayOrchestrator,
+    manager: GatewayManager,
+    approvals: LaunchApprovals,
+    socket_path: Path,
+    stubs: frozenset[str],
+    sharing: bool,
+) -> None:
+    """Publish a broker whose start succeeded, at boot or on a retry."""
+    self._mcp_gateway_manager = manager
+    # Wired at boot with whatever was up then, so a broker a retry brings up
+    # later reaches the dashboard only through this.
+    if self.dashboard_state is not None:
+        self.dashboard_state._mcp_gateway_manager = manager
+    # App installs and enables write agent specs after this rewrite; this is
+    # how they reach the overlay without a restart. The hook lives exactly as
+    # long as the broker: ``_stop_mcp_broker`` clears it.
+    from kiro_crew.mcp_gateway.overlay_refresh import set_overlay_refresher
+
+    set_overlay_refresher(self._refresh_mcp_overlays)
+    # Admission already uses the in-memory, fail-closed filtered map.
+    # Persistence waits for the process readiness boundary and cannot
+    # extend the boot path.
+    self._schedule_mcp_launch_approval_persist(approvals)
+    # Report the stub set and the sharing decision. There is one
+    # trigger now (something is stubbed), so the useful line is WHAT it
+    # serves: "N routed" beside a live daemon explains itself, and the
+    # sharing suffix stops "sharing: off" next to a running broker from
+    # reading as a contradiction.
+    #
+    # Counts ``stubs``, not the configured list. The two differ whenever a
+    # stub change is recorded for the next gateway start, and this line is
+    # read during exactly that diagnosis ("why is my stub not live?") --
+    # reporting the configured count there would answer it wrongly.
+    logger.info(
+        "mcp-gateway: broker ready (socket=%s) for %d stubbed server(s), backend sharing %s",
+        socket_path,
+        len(stubs),
+        "on" if sharing else "off",
+    )
+
+
+def _mcp_gateway_start_retry_delay(self: GatewayOrchestrator, attempt: int) -> float:
+    """The wait before broker start retry number ``attempt``, on the L4 schedule.
+
+    The same rung the manager's watchdog respawns on: 1s doubling to a 60s cap,
+    with equal jitter so gateways that failed together do not retry in step.
+    """
+    return LADDER.layer(L4_GATEWAYD).backoff_secs(attempt)
+
+
+async def _retry_mcp_gateway_start(
+    self: GatewayOrchestrator,
+    manager: GatewayManager,
+    approvals: LaunchApprovals,
+    socket_path: Path,
+    stubs: frozenset[str],
+    sharing: bool,
+) -> None:
+    """Start ``manager`` again until it comes up, then publish it.
+
+    The SAME manager is started each time, so its lifetime stand-down budget and
+    its election gates hold across attempts: two gateways on one socket cannot
+    trade it by retrying. No attempt cap, like the watchdog's respawn; the only
+    other exit is ``_stop_mcp_broker`` cancelling this task.
+    """
+    logger.warning(
+        "mcp-gateway: broker start failed; retrying on the L4 schedule, stubbed "
+        "servers use per-session exec meanwhile (socket=%s)",
+        socket_path,
+    )
+    attempt = 0
+    while True:
+        attempt += 1
+        await asyncio.sleep(self._mcp_gateway_start_retry_delay(attempt))
+        # Shielded: a stop cancels this task, and a cancel landing inside a
+        # start that is terminating its daemon would skip the SIGKILL and reap
+        # after the handle is already cleared. The start finishes under its
+        # lifecycle lock instead, and the stop's ``manager.shutdown()`` waits
+        # for that lock.
+        if await asyncio.shield(manager.start()):
+            break
+    # No await between these two, so a stop always finds the manager in one
+    # handle or the other.
+    self._mcp_gateway_pending = None
+    self._mark_mcp_broker_ready(manager, approvals, socket_path, stubs, sharing)
 
 
 def _mcp_resolve_refresh_secs(self: GatewayOrchestrator) -> float:
@@ -389,7 +465,19 @@ async def _refresh_mcp_resolutions(self: GatewayOrchestrator) -> dict:
 
 
 async def _stop_mcp_broker(self: GatewayOrchestrator) -> None:
-    """Stop the MCP gateway broker if running and clear the handle."""
+    """Stop the MCP gateway broker if running and clear the handle.
+
+    A start still being retried is cancelled first, so it cannot publish a
+    broker after this returns, and its manager is shut down too: a daemon an
+    attempt spawned before the cancel is held there and would otherwise outlive
+    the gateway.
+    """
+    retry = self._mcp_gateway_start_retry
+    self._mcp_gateway_start_retry = None
+    if retry is not None and not retry.done():
+        retry.cancel()
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await retry
     task = self._mcp_resolve_prefetch
     self._mcp_resolve_prefetch = None
     if task is not None and not task.done():
@@ -401,9 +489,12 @@ async def _stop_mcp_broker(self: GatewayOrchestrator) -> None:
     from kiro_crew.mcp_gateway.overlay_refresh import set_overlay_refresher
 
     set_overlay_refresher(None)
-    mgr = self._mcp_gateway_manager
+    managers = (self._mcp_gateway_pending, self._mcp_gateway_manager)
+    self._mcp_gateway_pending = None
     self._mcp_gateway_manager = None
-    if mgr is not None:
+    for mgr in managers:
+        if mgr is None:
+            continue
         try:
             await mgr.shutdown()
         except Exception:
@@ -443,7 +534,9 @@ async def _apply_mcp_gateway_enabled(self: GatewayOrchestrator, enabled: bool) -
         lock = asyncio.Lock()
         self._mcp_overlay_refresh_lock = lock
     async with lock:
-        if self._mcp_gateway_manager is not None:
+        # A start still being retried counts as a broker here: left running, it
+        # would drive the old manager against the socket the new one starts on.
+        if self._mcp_gateway_manager is not None or self._mcp_gateway_pending is not None:
             await self._stop_mcp_broker()
         if serving:
             await self._init_mcp_gateway(stub_servers=serving)
