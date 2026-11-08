@@ -529,6 +529,7 @@ _OWNER_MODULES = frozenset(
         "agent_switch",
         "app_admission",
         "chat_send",
+        "conductor_close",
         "continue_turn",
         "followup_card",
         "handover_drain",
