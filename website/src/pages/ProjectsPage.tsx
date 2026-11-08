@@ -502,7 +502,10 @@ export default function ProjectsPage() {
             <div className="w-10 h-1 bg-bg-elevated rounded-full overflow-hidden shrink-0">
               <div className={`h-full rounded-full ${r.status === 'failed' ? 'bg-danger' : 'bg-accent'}`} style={{ width: `${pct}%` }} />
             </div>
-            <button aria-label={r.running ? i18nT('pages.projectsPage.cancel') : i18nT('pages.projectsPage.delete')} disabled={busyRuns.has(r.task_id)} className="px-1 text-muted text-[11px] cursor-pointer hover:text-danger transition-all shrink-0 bg-transparent border-none disabled:opacity-50 disabled:cursor-default" onClick={e => { e.stopPropagation(); void runAction(() => (r.running ? api.cancelTaskRunner(r.task_id) : api.deleteTaskRun(r.task_id)), load, r.task_id) }}>{r.running ? <Square className="lucide-inline" /> : <X className="lucide-inline" />}</button>
+            {/* `aria-disabled` while the request runs, not `disabled`: the press
+                that started it holds focus here, and a native disabled button
+                would drop it to <body>. `runAction` ignores a second press. */}
+            <button aria-label={r.running ? i18nT('pages.projectsPage.cancel') : i18nT('pages.projectsPage.delete')} aria-disabled={busyRuns.has(r.task_id)} aria-busy={busyRuns.has(r.task_id)} className="px-1 text-muted text-[11px] cursor-pointer hover:text-danger transition-all shrink-0 bg-transparent border-none aria-disabled:opacity-50 aria-disabled:cursor-default" onClick={e => { e.stopPropagation(); void runAction(() => (r.running ? api.cancelTaskRunner(r.task_id) : api.deleteTaskRun(r.task_id)), load, r.task_id) }}>{r.running ? <Square className="lucide-inline" /> : <X className="lucide-inline" />}</button>
           </div>
         )
       })}
