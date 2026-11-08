@@ -406,6 +406,8 @@ async def agent_socket_gate(request: web.Request, *, internal: bool) -> web.Stre
         # current owner, the answer every one of its requests is held to below.
         if request.method != "GET":
             return _refuse(request, REFUSE_ROUTE, "the session query is GET only")
+        # A granted capability decision, recorded like the internal-route grant below.
+        _log_auth(request, "agent-ipc", "granted", f"session query {binding.server}")
         return web.json_response({"session_key": session_key})
     if request.headers.get("X-Session-Key", "") != session_key:
         return _refuse(
