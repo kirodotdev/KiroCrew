@@ -2,6 +2,11 @@ import { i18nT } from '../i18n/t'
 
 const CMD_PREFIX = '(command\\s+|builtin\\s+)?'
 const FILE_READERS = `${CMD_PREFIX}(cat|less|head|tail|tac|more)`
+/** PowerShell's reader and its alias, and cmd's `type`, in command position (line
+ *  start, or after `;`, `|`, `&`, `(` or `{`) so `Add-Type` and `-Type` do not
+ *  count. Used with the `im` flags: both shells match command names
+ *  case-insensitively, and a block is tested whole. */
+const WIN_FILE_READERS = /(?:^\s*|[;|&({]\s*)(get-content|gc|type)/.source
 
 /**
  * Catalog KEYS for the human-readable reason shown in the approval dialog
@@ -58,10 +63,19 @@ const PER_LINE_PATTERNS: Partial<Record<ReasonId, RegExp[]>> = {
     new RegExp(`${FILE_READERS}\\s+.*\\.(aws|ssh|gnupg|config\\/gcloud)\\b`),
     new RegExp(`${FILE_READERS}\\s+.*\\/(credentials|id_rsa|id_ed25519|private\\.key)\\b`),
     new RegExp(`${FILE_READERS}\\s+(\\S*\\/)?\\.\\.?env\\b`),
+    new RegExp(`${WIN_FILE_READERS}\\s+.*[\\\\/](\\.(aws|ssh|gnupg)|gcloud)\\b`, 'im'),
+    new RegExp(`${WIN_FILE_READERS}\\s+.*[\\\\/](credentials|id_rsa|id_ed25519|private\\.key)\\b`, 'im'),
+    new RegExp(`${WIN_FILE_READERS}\\s+(-\\w+\\s+)*(\\S*[\\\\/])?\\.\\.?env\\b`, 'im'),
   ],
   system_credentials: [new RegExp(`${FILE_READERS}\\s+\\/etc\\/(shadow|passwd)`)],
-  env_dump: [/env\s*\|\s*grep\s+.*(secret|key|token|pass|cred|aws)/i],
-  env_single: [/printenv\s+(AWS_SECRET|AWS_SESSION|GITHUB_TOKEN|NPM_TOKEN)/i],
+  env_dump: [
+    /env\s*\|\s*grep\s+.*(secret|key|token|pass|cred|aws)/i,
+    /\b(get-childitem|gci|dir|ls)\s+env:.*\|.*(secret|key|token|pass|cred|aws)/i,
+  ],
+  env_single: [
+    /printenv\s+(AWS_SECRET|AWS_SESSION|GITHUB_TOKEN|NPM_TOKEN)/i,
+    /\$env:(AWS_SECRET|AWS_SESSION|GITHUB_TOKEN|NPM_TOKEN)/i,
+  ],
   encodes_credentials: [/base64.*\.(aws|ssh|pem|key)\b/],
 }
 
@@ -71,7 +85,11 @@ const FULL_BLOCK_PATTERNS: Partial<Record<ReasonId, RegExp[]>> = {
     /(curl|wget)\s[\s\S]*?`[^`]*`/,
   ],
   pipes_to_url: [/(curl|wget)\s[\s\S]*?-d\s+@-/],
-  uploads_to_url: [/(curl|wget)\s[\s\S]*?-d\s+@[^\s]/],
+  uploads_to_url: [
+    /(curl|wget)\s[\s\S]*?-d\s+@[^\s]/,
+    // `curl` and `wget` are Invoke-WebRequest aliases in Windows PowerShell 5.1.
+    /\b(invoke-webrequest|iwr|invoke-restmethod|irm|curl|wget)\s[\s\S]*?-infile\s+\S/i,
+  ],
 }
 
 export interface SensitiveMatch {

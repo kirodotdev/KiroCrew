@@ -72,7 +72,7 @@ const EditableCodeBlock = memo(function EditableCodeBlock(
   }, [])
 
   const terminalEnabled = useTerminalEnabled()
-  const showRunBtn = complete && terminalEnabled && !!lang && SHELL_LANGS.has(lang)
+  const showRunBtn = complete && terminalEnabled && !!lang && SHELL_LANGS.has(lang.toLowerCase())
 
   const editBtn = (
     <button
