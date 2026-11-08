@@ -235,8 +235,7 @@ class Backend:
     # these into one fresh forwarded subscribe (first parker as forwarder,
     # the rest as riders); a refusal means the server retained the lease, so
     # they join the still-live entry locally.
-    _lease_replacement_subscribes: dict[str, list[tuple[str, Any]]] = field(
-        default_factory=dict)
+    _lease_replacement_subscribes: dict[str, list[tuple[str, Any]]] = field(default_factory=dict)
     # Identity-capable servers only: the caller whose subscribe the server
     # GRANTED, keyed ``(uri, stub_uuid)`` and recorded at response time — the
     # only moment the grant principal is known for certain. A release for a
@@ -244,8 +243,7 @@ class Backend:
     # teardown, and never a last-writer map: a claim rekey after the grant
     # makes both identify the wrong principal and revoke a co-tenant's live
     # subscription). Dropped when the grant is released or the entry pruned.
-    _grant_callers: dict[tuple[str, str], "CallerContext"] = field(
-        default_factory=dict)
+    _grant_callers: dict[tuple[str, str], "CallerContext"] = field(default_factory=dict)
     # URIs whose upstream subscription is known RETAINED with no subscriber
     # left to route to — a gateway-originated release was refused. Updates for
     # these are dropped WITHOUT recording a hazard: the frames are a
@@ -544,6 +542,42 @@ class Backend:
     _parse_ui_contents = _backend_mcp_apps._parse_ui_contents
 
 
+def _restore_default_work_dir(work_dir: str, server_name: str) -> None:
+    """Recreate the gateway's default work dir when it is *work_dir* and has vanished.
+
+    Every stub the rewriter writes registers ``workspace_root()/_default`` as its
+    ``--work-dir``, and only the rewrite pass creates it, so once it is removed
+    every cold spawn would fail on its cwd until a restart re-runs the rewrite.
+
+    The rule is deliberately narrow. *work_dir* arrives in a stub's register
+    frame, which in-sandbox code can forge, so only the gateway's own default is
+    ever created and never a path the frame chooses. Only the last directory is
+    created, so a workspace root that is gone (an unmounted volume) is not rebuilt
+    elsewhere and the spawn fails as it would without this. Every failure is
+    left to the spawn to report. Blocking, so the caller runs it off the loop.
+    """
+    if os.path.isdir(work_dir):
+        return
+    # Deferred: ``config.loader`` imports the rewriter's path helpers.
+    from kiro_crew.config.loader_locations import workspace_root
+
+    try:
+        default = workspace_root(create=False) / "_default"
+    except (OSError, ValueError):
+        return
+    if os.path.normcase(str(default)) != os.path.normcase(work_dir):
+        return
+    try:
+        default.mkdir(exist_ok=True)
+    except OSError:
+        return
+    logger.warning(
+        "MCP backend [%s]: recreated the missing default work dir %s",
+        server_name,
+        default,
+    )
+
+
 async def spawn_backend(
     pool_key: "PoolKey",
     command: str,
@@ -624,6 +658,11 @@ async def spawn_backend(
     # server exits only when that relaunch can still work. Derived from the
     # key's own command, so PoolKey-safe like the marker.
     spawn_env[POOLED_RESPAWN_COMMAND_ENV] = command
+    # The child runs in ``work_dir``. The gateway's own default work dir is put
+    # back if it vanished; any other missing cwd fails the spawn below. This
+    # runs before the temp allocation, so a spawn cancelled while it waits
+    # holds no per-process temp dir that only the spawn-failure branch reclaims.
+    await asyncio.to_thread(_restore_default_work_dir, work_dir, pool_key.server_name)
     # Per-process temp containment. Safe re: the pooled-backend
     # PoolKey invariant for the same reason as the marker above -- the value
     # is derived from the key's own digest plus a token generated AFTER
@@ -862,6 +901,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _LOST_SESSION_ERROR_MESSAGE,
         _REHANDSHAKE_RETRY_METHODS,
         _REHANDSHAKE_STUB_SENTINEL,
+        INITIALIZE_DEADLINE_REASON,
         _inject_inflight_capability,
         _is_lost_session_error,
         _parse_initialize_response,

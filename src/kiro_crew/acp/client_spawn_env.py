@@ -9,7 +9,8 @@ Each function here whose first parameter is ``self`` is an ``AcpClient`` method:
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_agent``, ``_agent_env_snapshot``, ``_mcp_ref_spec``.
+Instance fields written: ``_agent``, ``_agent_env_snapshot``, ``_mcp_json_names``,
+``_mcp_ref_spec``.
 
 Instance fields read: ``_native_skill_projection``, ``_session_key``,
 ``_stub_session_token``, ``_work_dir``.
@@ -40,6 +41,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_PROCESS_NAMES,
     NODE_ADAPTER_ENTRY_SEGMENTS,
 )
+from kiro_crew.agent_sdk.mcp_json_reach import mcp_json_server_names
 from kiro_crew.env import augmented_path, describe_search_path
 from kiro_crew.identity_stores import IDENTITY_STORE_ROOTS
 from kiro_crew.kiro_cli import known_kiro_cli_dirs, resolve_kiro_cli
@@ -779,7 +781,8 @@ def _prepare_spawn_workspace(self: AcpClient) -> None:
     The snapshot half is best-effort and comes SECOND for that reason. It
     cannot fail the spawn (see :meth:`_read_mcp_ref_spec`), and it is skipped
     outright when the mkdir raises -- a session with no work dir has no
-    diagnostic to report.
+    diagnostic to report. It carries the names of the ``mcp.json`` servers the
+    spec's opt-in mounts, a read that never raises either.
     """
     ensure_directory(self._work_dir)  # 0700 only when it is in the data home
     # A stored skill-view name is never the agent to launch: it maps back to
@@ -792,6 +795,7 @@ def _prepare_spawn_workspace(self: AcpClient) -> None:
     except RetiredSkillView as exc:
         raise AcpError(str(exc)) from exc
     self._mcp_ref_spec = self._read_mcp_ref_spec()
+    self._mcp_json_names = mcp_json_server_names(self._mcp_ref_spec, self.backend, self._work_dir)
 
 
 def _agent_env_for_spawn(self: AcpClient) -> dict[str, str]:

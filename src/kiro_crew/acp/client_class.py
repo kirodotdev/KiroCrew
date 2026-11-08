@@ -284,14 +284,14 @@ class AcpClient:
         # that re-enters on a live session does not judge it again. Cleared with the
         # session, never by the re-seed, which happens DURING the start that confirms.
         self._confirmed_capability_session = ""
-        # This session's agent spec, snapshotted once per spawn for the
-        # unresolved-ref guard alone (see _guard_unresolved_mcp_refs). Held for
-        # the same reason as the array above and read at the same kind of site:
-        # the guard runs where the wire array is composed, which is shared with
-        # kiro-cli, so the read cannot happen there. None = not snapshotted (or
-        # unreadable), which makes the guard a no-op rather than a disk read on
-        # the loop. Cleared on reset so the next spawn re-reads the spec.
+        # This session's agent spec, snapshotted once per spawn for the unresolved-ref
+        # guard (see _guard_unresolved_mcp_refs), and the mcp.json servers its opt-in
+        # mounts, read in the same hop. Held for the reason the array above is: the
+        # guard runs where the wire array is composed, shared with kiro-cli, so the
+        # read cannot happen there. None = not snapshotted (or unreadable), which makes
+        # the guard a no-op. Cleared on reset so the next spawn re-reads both.
         self._mcp_ref_spec: dict[str, Any] | None = None
+        self._mcp_json_names: tuple[str, ...] = ()
         # What the pre-spawn freshness gate verified for THIS child, captured in
         # _spawn and re-verified in _initialize_session once the child has read its
         # spec. _spawn is the only writer and it runs before any handshake, so the

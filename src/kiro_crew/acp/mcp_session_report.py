@@ -41,6 +41,7 @@ the two have different caps for that reason.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -418,18 +419,25 @@ class KasMcpReadiness:
             self.seen.update(self.advertised_by_tag)
 
     @property
-    def failure(self) -> str:
+    def failed_name(self) -> str:
+        """The first required server, in required order, whose state ends the start."""
         for name in self.required:
-            state = self.states.get(name)
-            if state in (
+            if self.states.get(name) in (
                 "failed",
                 "disabled",
                 "authorization failed",
                 STATE_CONNECTED_WITHOUT_PROVENANCE,
             ):
-                detail = self.errors.get(name)
-                return f"{name}: {state}" + (f" ({detail})" if detail else "")
+                return name
         return ""
+
+    @property
+    def failure(self) -> str:
+        name = self.failed_name
+        if not name:
+            return ""
+        detail = self.errors.get(name)
+        return f"{name}: {self.states[name]}" + (f" ({detail})" if detail else "")
 
     @property
     def pending_names(self) -> tuple[str, ...]:
@@ -759,7 +767,8 @@ class McpSessionReport:
 
         The guard's claim, not a stronger one: Crew's projection delivers none of
         them, and the harness may still mount a same-named server from its own
-        configuration, which neither the guard nor this report reads.
+        configuration beyond the ``mcp.json`` files the spec opts in to, which
+        neither the guard nor this report reads.
 
         Sanitized and capped on the same terms as a server name: a ref is
         config-derived, so an installed app chooses the text, and it reaches a log
@@ -781,25 +790,34 @@ class McpSessionReport:
                 seen.append(ref)
         self.unresolved_refs = tuple(seen[:_BUCKET_CAP])
 
-    def record_declared(self, spec: Any) -> None:
+    def record_declared(self, spec: Any, mcp_json: Iterable[str] = ()) -> None:
         """Record the servers the agent spec *spec* declares and leaves enabled.
 
         Set rather than accumulated, like :meth:`record_unresolved_refs`: it is
         read from the one spec the session started on. A muted server (any
         ``disabled`` but an absent or literal ``false``, the same rule the launch
-        uses) is not expected to start, so it is left out. Names
+        uses) is not expected to start, so it is left out. *mcp_json* names the
+        servers the spec's opt-in mounts from the user's ``mcp.json``
+        (``agent_sdk.mcp_json_reach.mcp_json_server_names``), which the host starts
+        and reports like the spec's own; they follow the spec's. Names
         are sanitized and capped like a frame's, so they compare equal to the
         names the frames report.
         """
         servers = spec.get("mcpServers") if isinstance(spec, dict) else None
-        seen: list[str] = []
-        for raw, entry in servers.items() if isinstance(servers, dict) else ():
-            if mcp_entry_is_muted(entry):
-                continue
-            name = sanitize_sink_text(str(raw), _NAME_CAP)
-            if name and name not in seen:
-                seen.append(name)
-        self.declared = tuple(seen[:_BUCKET_CAP])
+        names = [
+            str(raw)
+            for raw, entry in (servers.items() if isinstance(servers, dict) else ())
+            if not mcp_entry_is_muted(entry)
+        ]
+        names += [raw for raw in mcp_json if isinstance(raw, str)]
+        # Called on the event loop: an insertion-ordered dict dedupes in linear
+        # time, where a list scan per name grows with the square of the count.
+        seen: dict[str, None] = {}
+        for raw in names:
+            name = sanitize_sink_text(raw, _NAME_CAP)
+            if name:
+                seen[name] = None
+        self.declared = tuple(seen)[:_BUCKET_CAP]
         self.declared_omitted = max(0, len(seen) - _BUCKET_CAP)
 
     def declared_unreported(self) -> tuple[str, ...]:

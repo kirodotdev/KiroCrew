@@ -88,7 +88,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_audit_denied_off_loop": ("function", False, "bc403500636d", "runtime_host_requests"),
     # Both take ``request_identity``: the vault identity the ``session/new`` went out
     # under, for the KAS catalog recorder (``kas_model_catalog``).
-    "_collect_late_start": ("function", False, "1c91d322411d", "runtime_session_create"),
+    "_collect_late_start": ("function", False, "52e41b8027d5", "runtime_session_create"),
     "_compose_death_summary": ("function", False, "d296f1f5d821", "runtime_liveness"),
     "_confirm_member_projection": ("function", True, "c694d7c95d1b", "runtime_session_setup"),
     "_copy_native_launch_sources": ("function", False, "b4bc0bbb71ed", "runtime_session_setup"),
@@ -99,11 +99,11 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_exit_reason": ("function", False, "5ea8f751c789", "runtime_liveness"),
     "_exit_watch_loop": ("function", True, "b60c5fea256e", "runtime_liveness"),
     "_failed_start_cleanup": ("function", True, "b60c5fea256e", "runtime_spawn_launch"),
-    "_finish_create_session": ("function", True, "417fe88faef2", "runtime_session_create"),
+    "_finish_create_session": ("function", True, "0c17bc8d458e", "runtime_session_create"),
     "_finish_session_init": ("function", False, "eb69f6ac3aa6", "runtime_session_registry"),
     "_flush_dropped_frames": ("function", False, "bc10f150ea47", "runtime_frame_accounting"),
     "_flush_roster_overflow": ("function", False, "bc10f150ea47", "runtime_frame_accounting"),
-    "_guard_unresolved_mcp_refs": ("function", False, "124371616ca9", "runtime_session_setup"),
+    "_guard_unresolved_mcp_refs": ("function", False, "417a1661421e", "runtime_session_setup"),
     "_handshake_client_capabilities": ("function", True, "16d9fe32838b", "runtime_spawn_launch"),
     "_harness": ("property", False, "482ead03a978", "runtime_class"),
     "_initialize_handshake": ("function", True, "9a2155299a08", "runtime_spawn_launch"),
