@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_switch_command import LiveDefaultAgent
 from kiro_crew.config import live
 from kiro_crew.config.sections import _normalize_threshold_pair
 from kiro_crew.history import mint_row_mid
@@ -75,12 +76,6 @@ if TYPE_CHECKING:
     from kiro_crew.session import SessionManager
 
 logger = logging.getLogger(__name__)
-
-# Canonical kiro-cli agent fallback so iMessage sessions load kirocrew-core
-# (spawn_run etc.) instead of kiro-cli's bare built-in default when neither an
-# explicit override nor agent.default_agent is configured. Mirrors the other
-# channels' _DEFAULT_KIROCREW_AGENT.
-_DEFAULT_KIROCREW_AGENT = "kirocrew"
 
 # /stop's three replies. The cancel is COOPERATIVE (it only writes
 # session/cancel), so the turn stops at its next safe point: "stopping".
@@ -134,7 +129,8 @@ class IMessageDispatcher:
         # construction cycle forbids doing it here); the config applier pushes
         # the reloaded allow-list at it.
         self.transport: "IMessageTransport | None" = None
-        self._conv = ConversationState(seed_fn=self._seed_gen)
+        self._default_agent = LiveDefaultAgent()
+        self._conv = ConversationState(seed_fn=self._seed_gen, bucket_fn=self._resolve_agent)
         # Held on self: the watcher holds the owner WEAKLY, so a subscription
         # dropped here would be collected and the applier would silently stop
         # firing.
@@ -264,7 +260,7 @@ class IMessageDispatcher:
         if session_key is None:
             return  # folded into the running turn
         conversation_id = f"imessage:{handle}"
-        agent = self._resolve_agent()
+        agent = self._resolve_agent(handle)
 
         renderer = IMessageRenderer(
             self.client,
@@ -429,14 +425,16 @@ class IMessageDispatcher:
 
     # -- Helpers ------------------------------------------------------------
 
-    def _resolve_agent(self) -> str:
-        return self.agent or self.cfg.agent.default_agent or _DEFAULT_KIROCREW_AGENT
+    def _resolve_agent(self, handle: str | None = None) -> str:
+        return self.agent or self._default_agent.for_route(
+            self._conv, handle, self.cfg, self._live_cfg
+        )
 
     def _session_key(self, handle: str) -> str:
         gen = self._conv.current_gen(handle)
         return build_dm_session_key(
             "imessage",
-            self._resolve_agent(),
+            self._resolve_agent(handle),
             handle,
             gen=gen,
             dm_scope=str(self.cfg.messaging.dm_scope),
@@ -446,7 +444,7 @@ class IMessageDispatcher:
         return seed_generation(
             self.sessions,
             channel="imessage",
-            agent=self._resolve_agent(),
+            agent=self._resolve_agent(handle),
             user_id=handle,
             dm_scope=str(self.cfg.messaging.dm_scope),
         )

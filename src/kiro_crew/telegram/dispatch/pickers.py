@@ -451,12 +451,18 @@ async def _handle_agent(
         await self._reply(chat_id, "No agent list available on this machine.", thread=thread)
         return
     current = self._agent_picks.get(route)
-    current_label = next((label for aid, label in choices if aid == current), current or "Default")
+    # With no pick the conversation runs the default it pinned, and the Default
+    # row names the live default; while the two differ no row is marked.
+    running = self._configured_agent(route)
+    marked = current if current or running == self._configured_agent() else None
+    current_label = next(
+        (label for aid, label in choices if aid == marked), current or f"Default ({running})"
+    )
     header = f"Current agent: {current_label}\nPick one:"
     if arg.strip():
         header = f"/agent takes no argument — pick from the list.\n\n{header}"
     keyboard = [
-        [{"text": f"{'• ' if aid == current else ''}{label}", "callback_data": f"g:{index}"}]
+        [{"text": f"{'• ' if aid == marked else ''}{label}", "callback_data": f"g:{index}"}]
         for index, (aid, label) in enumerate(choices)
     ]
     # Make truncation VISIBLE instead of silent (the reported harm). More
@@ -493,7 +499,10 @@ async def _apply_agent(
     conversation (switching back returns to it); it lands on the new agent's
     latest saved conversation or a fresh one, so the reply promises neither.
     """
+    # A reset goes to the live default; the comparison is with what the route's
+    # current conversation runs, its pinned default included.
     configured = self._configured_agent()
+    running = self._configured_agent(route)
     # *label* is the pressed button's text, so the reply names what the user
     # chose rather than a ``crew-<hex>`` spec id.
     label = label or agent_id or f"Default ({configured})"
@@ -502,7 +511,16 @@ async def _apply_agent(
     # and must not reseed — the in-memory generation can be ahead of disk after
     # a rotation or a /new whose save failed, and a reseed would hand the next
     # message back to the conversation the user already left.
-    if (agent_id or configured) == (self._agent_picks.get(route) or configured):
+    if (agent_id or configured) == (self._agent_picks.get(route) or running):
+        # A reset still drops the pick, with no reseed, so a pick equal to the
+        # default never stays pinned.
+        if not agent_id:
+            self._agent_picks.set(route, "")
+            self._conv.repin(route, configured)
+        elif agent_id != configured:
+            # Picked explicitly while only the pinned default runs it: kept past the
+            # next rotation, with the key unchanged.
+            self._agent_picks.set(route, agent_id)
         return f"ℹ️ Already using {label}."
     outcome = switch_channel_agent(
         self._agent_picks,
