@@ -963,9 +963,8 @@ def delete_won(
             return False
         # The observed file is gone or recreated: the write target drifted away
         # from a session the user permanently deleted. Log at WARNING so the
-        # refused merge into the drifted target is visible — the drift's cause
-        # (why ``linked_session_key`` lapses) is not yet understood, so this line
-        # is the only operator signal that it happened.
+        # refused merge into the drifted target is visible: this line is the
+        # only operator signal that it happened.
         logger.warning(
             "Skipping history save for %s (slot=%s): write target drifted from "
             "deleted session %s; refusing to merge its rows into the new target",
