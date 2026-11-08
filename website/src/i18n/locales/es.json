@@ -11716,7 +11716,8 @@
       "updated_from_the_registry": "Se actualizó {{name}} desde el registro.",
       "updated_needs_session_approval_consent": "{{name}} está desactivada porque ahora pide controlar tus chats. Revisa el permiso en los detalles de la aplicación y actívala.",
       "refresh_store": "Actualizar la tienda",
-      "refreshing_store": "Actualizando la tienda…"
+      "refreshing_store": "Actualizando la tienda…",
+      "store_catalog_unreachable": "No se pudo acceder al catálogo oficial de apps, así que la tienda muestra su lista sin conexión. Comprueba que el gateway pueda acceder a internet y vuelve a actualizar."
     },
     "artifactDeployPage": {
       "0_00_mo": "~$0.00/mes",

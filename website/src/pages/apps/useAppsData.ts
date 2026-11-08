@@ -343,6 +343,7 @@ export const REGISTRY_STALE_MS = 5 * 60_000
 export async function registryQueryFn(): Promise<{
   apps: RegistryApp[]
   rawApps: unknown[]
+  catalogUnavailable: boolean
   categoryOrder: string[]
   editorialSections: EditorialBlock[]
 }> {
@@ -420,6 +421,9 @@ export async function registryQueryFn(): Promise<{
     return {
       apps: (rawApps as RegistryApp[]).map(normalizeRegistryApp),
       rawApps,
+      // True when the server could not read the official catalog and answered
+      // with its offline listing; the store's refresh reports it.
+      catalogUnavailable: res.catalogUnavailable === true,
       categoryOrder: publishedOrder,
       editorialSections: publishedSections,
     }

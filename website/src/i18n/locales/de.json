@@ -11467,7 +11467,8 @@
       "updated_from_the_registry": "{{name}} aus der Registry aktualisiert.",
       "updated_needs_session_approval_consent": "{{name}} ist deaktiviert, weil die App neu darum bittet, deine Chats zu steuern. Prüfe die Berechtigung in den App-Details und aktiviere sie dann.",
       "refresh_store": "Store aktualisieren",
-      "refreshing_store": "Store wird aktualisiert…"
+      "refreshing_store": "Store wird aktualisiert…",
+      "store_catalog_unreachable": "Der offizielle App-Katalog war nicht erreichbar, daher zeigt der Store seine Offline-Liste. Prüfe, ob das Gateway das Internet erreicht, und aktualisiere dann erneut."
     },
     "artifactDeployPage": {
       "0_00_mo": "~0,00 $/Mon.",

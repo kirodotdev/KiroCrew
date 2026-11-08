@@ -105,7 +105,7 @@ export function createAppsEndpoints({ get, post, put, del, j, jfetch: fetch, ses
     // narrows it to its own local RegistryApp shape at the call site. Typing it as
     // unknown[] here would break those structural assignments across files.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    listRegistry: () => fetch('/api/apps/registry').then(j) as Promise<{ apps: any[]; serverPlatform: { os: string; arch: string }; categoryOrder?: string[]; editorialSections?: unknown[] }>,
+    listRegistry: () => fetch('/api/apps/registry').then(j) as Promise<{ apps: any[]; catalogUnavailable?: boolean; serverPlatform: { os: string; arch: string }; categoryOrder?: string[]; editorialSections?: unknown[] }>,
     listRegistries: () => fetch('/api/apps/registries').then(j) as Promise<{ registries: ExternalRegistryRow[]; pinned?: ExternalRegistryRow[] }>,
     updateRegistries: (registries: { name: string; repo: string; branch: string; trust?: string }[]) => put('/api/apps/registries', { registries }).then(j) as Promise<{ ok: boolean; registries: ExternalRegistryRow[]; newlyTrustedHosts: string[] }>,
     // Drops the server's on-disk caches of the published documents (catalog /
