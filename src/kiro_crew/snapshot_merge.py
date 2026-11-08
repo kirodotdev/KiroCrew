@@ -19,7 +19,6 @@ import re
 import stat as _stat
 import tempfile
 import threading
-from contextlib import closing
 from pathlib import Path
 from typing import Any, Callable
 
@@ -228,29 +227,28 @@ def _validate_identifier(name: str) -> str:
 
 
 def _merge_memory(src_db: Path, dst_db: Path) -> None:
-    # Integrity check on source DB before ATTACH.
-    #
-    # `closing`, not a bare `with sqlite3.connect(...)`: a connection used as a context
-    # manager commits or rolls back the TRANSACTION and leaves the connection OPEN. The
-    # handle it kept on src_db made the caller's extraction temp dir undeletable on
-    # Windows, which is how this surfaced.
+    # The integrity check runs on the attached database, so the staged name is resolved
+    # once and a database swapped in at that name after the check is never imported.
+    # SQLite takes only a path, never a descriptor.
     facade = _facade()
-    try:
-        with closing(facade.sqlite3.connect(str(src_db))) as check_conn:
-            result = check_conn.execute("PRAGMA integrity_check;").fetchone()[0]
-        if result != "ok":
-            print(f"  ⚠️  Source DB integrity check failed: {result} — skipping merge")
-            return
-    except Exception as e:
-        print(f"  ⚠️  Source DB unreadable: {e} — skipping merge")
-        return
-
     conn = facade.sqlite3.connect(str(dst_db))
-    conn.execute("BEGIN")
     attached = False
     try:
-        conn.execute("ATTACH DATABASE ? AS src", (str(src_db),))
-        attached = True
+        # Before BEGIN: an unreadable live DB raises here, not as the source's; no snapshot held.
+        conn.execute("SELECT count(*) FROM main.sqlite_schema").fetchone()
+        conn.execute("BEGIN")
+        try:
+            conn.execute("ATTACH DATABASE ? AS src", (str(src_db),))
+            attached = True
+            result = conn.execute("PRAGMA src.integrity_check;").fetchone()[0]
+        except Exception as e:
+            conn.rollback()
+            print(f"  ⚠️  Source DB unreadable: {e} — skipping merge")
+            return
+        if result != "ok":
+            conn.rollback()
+            print(f"  ⚠️  Source DB integrity check failed: {result} — skipping merge")
+            return
         for table, cols, where in [
             (
                 "semantic_memory",
