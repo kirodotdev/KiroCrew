@@ -1395,11 +1395,18 @@ both halves:
   another uid or not usable: a file must be readable (config writes replace it
   through a sibling), a directory readable, writable and searchable, and a
   symlink is not followed. It adds one repair line,
-  `sudo find <home> -xdev ! -user <user> \( -type d -o -links 1 \) -exec chown -h <user> {} + && chmod -R u+rwX <home>`:
+  `sudo find -P <home> -xdev ! -user <user> \( -type d -o -links 1 \) -execdir chown -h <user> {} \; && chmod -R u+rwX <home>`:
   as root it changes only entries another account owns, on the home's own
   filesystem, never a symlink's target, and never a non-directory with a second
   hard link (a link planted in the home to a root-owned file would otherwise
-  hand that file to this account). The gateway logs it
+  hand that file to this account). The walk never follows a symlink (`-P`), and
+  each `chown` runs from inside the entry's own directory on `./<name>`
+  (`-execdir`), so a parent directory swapped for a symlink to a system path
+  after the walk entered it is not followed. Two limits: GNU find refuses
+  `-execdir` while `PATH` holds a relative entry (`sudo`'s `secure_path` avoids
+  it), and `-links 1` is tested during the walk, so a file swapped for a hard link
+  before its `chown` is still re-owned where the kernel allows that link (Linux's
+  `fs.protected_hardlinks` forbids it, macOS does not). The gateway logs it
   once after it reports ready, off the event loop (`warn_if_data_home_not_owned`,
   never on the boot path), `kirocrew doctor` prints it under Data Home as an issue, `/api/status`
   carries it as `data_home_access`, and `POST /api/agents` refuses with 409
