@@ -487,7 +487,12 @@ def test_real_spawn_recycles_and_propagates_failures(tmp_path, monkeypatch, fail
         "def probe(src, *args):\n"
         "    global calls\n"
         "    calls += 1\n"
-        "    Path(src).with_suffix('.calls').write_text(str(calls))\n"
+        # A broken pool terminates sibling workers mid-write; the rename keeps
+        # a killed writer from leaving an empty counter for the read below.
+        "    counter = Path(src).with_suffix('.calls')\n"
+        "    partial = counter.with_suffix('.partial')\n"
+        "    partial.write_text(str(calls))\n"
+        "    os.replace(partial, counter)\n"
         f"    if Path(src).stem == '23' and {failure!r} != 'none':\n"
         f"        if {failure!r} == 'death': os._exit(7)\n"
         f"        if {failure!r} == 'memory': bytearray(launcher.MEMORY_BYTES)\n"
