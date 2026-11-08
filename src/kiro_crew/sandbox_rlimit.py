@@ -863,13 +863,26 @@ def run_limited(
     :func:`popen_limited`: this wrapper never hands back a handle, so no
     cancellation registry can be keyed on the child and the lost-cancel hazard
     that hook exists to close cannot arise. Add one when a caller needs it.
+
+    On Windows the spawn goes through
+    :func:`kiro_crew.platform_compat.run_killing_tree_on_timeout`, so a ``timeout``
+    also ends the child's descendants and the call returns at about the timeout
+    instead of when the last process holding its pipes exits.
     """
     cmd, preexec = _prepare_limited_spawn(argv, profile, kwargs, "run_limited")
     reported = list(argv)
+    # Windows only: the stdlib's timeout arm kills just the child and then waits
+    # for every descendant holding its pipes. POSIX keeps subprocess.run.
+    tree_timeout = platform_compat.IS_WINDOWS
     try:
         for delay in _INTERPRETER_ENOENT_DELAYS:
             try:
-                result = subprocess.run(cmd, preexec_fn=preexec, **kwargs)
+                if tree_timeout:
+                    result = platform_compat.run_killing_tree_on_timeout(
+                        cmd, preexec_fn=preexec, **kwargs
+                    )
+                else:
+                    result = subprocess.run(cmd, preexec_fn=preexec, **kwargs)
                 break
             except FileNotFoundError as exc:
                 if not _retry_interpreter_enoent(exc, cmd, delay):
@@ -880,7 +893,12 @@ def run_limited(
             # popen_limited: whatever this raises reaches the caller unchanged,
             # so a genuinely broken install still reports the error it reports
             # today -- just ~4s later.
-            result = subprocess.run(cmd, preexec_fn=preexec, **kwargs)
+            if tree_timeout:
+                result = platform_compat.run_killing_tree_on_timeout(
+                    cmd, preexec_fn=preexec, **kwargs
+                )
+            else:
+                result = subprocess.run(cmd, preexec_fn=preexec, **kwargs)
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
         exc.cmd = reported
         raise

@@ -374,9 +374,10 @@ def _report_node(
     node = shutil.which("node")
     if node:
         try:
-            node_ver_result = subprocess.run(
+            node_ver_result = platform_compat.run_killing_tree_on_timeout(
                 # The RESOLVED path, as ``cli._node_ok`` does: on Windows ``which``
-                # can answer ``node.CMD``, which a bare ``node`` cannot spawn.
+                # can answer ``node.CMD``, which a bare ``node`` cannot spawn, and
+                # the timeout then also ends the .CMD's child.
                 [node, "-v"],
                 capture_output=True,
                 text=True,
