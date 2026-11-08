@@ -45,7 +45,8 @@ def _make_gateway():
     gateway.subagent_mgr.running = []
     gateway.subagent_mgr.queued_count_for = MagicMock(return_value=0)
     gateway.subagent_mgr.queued_count_for_async = AsyncMock(return_value=0)
-    gateway.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+    # The cron run's live session: a completion continues it (``is_new`` False).
+    gateway.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), False, False))
     gateway.sessions.release = MagicMock()
     gateway.sessions.reset = AsyncMock()
     gateway.sessions.cancel_current = AsyncMock()

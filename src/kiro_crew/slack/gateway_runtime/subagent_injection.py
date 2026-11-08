@@ -1286,12 +1286,14 @@ async def _finish_subagent_cron_or_notify(
     """Inject a completion into its cron parent, then ring the bell for any parent.
 
     A parent with no conversation to inject into is delivered by the bell alone,
-    and an announce whose every carried member the parent's blocking spawn tool
-    returned in a turn that has landed is not injected again. One whose turn
-    still holds the session is parked until that turn releases it
-    (``_inline_verdict``). ``injection_counted`` says the caller already counted
-    this injection in ``_cron_injecting`` (a parked completion re-routed at its
-    turn's release), so this route does not count it a second time.
+    and so is a cron parent whose session is gone, recorded undelivered: a
+    ``cron:`` key is stateless, so a session started for it would hold none of the
+    run and take the result as a new task. An announce whose every carried member
+    the parent's blocking spawn tool returned in a turn that has landed is not
+    injected again. One whose turn still holds the session is parked until that
+    turn releases it (``_inline_verdict``). ``injection_counted`` says the caller
+    already counted this injection in ``_cron_injecting`` (a parked completion
+    re-routed at its turn's release), so this route does not count it a second time.
     """
     # Cron parent — inject result back into the cron session.
     # Track pending injections to avoid resetting the session while
@@ -1323,10 +1325,17 @@ async def _finish_subagent_cron_or_notify(
         # end that turn first, when the completion is delivered.
         collected = verdict == INLINE_CONFIRMED
         try:
-            if not collected:
+            # A gone parent starts no session. Asked before the claim, and read off
+            # the claim, which waits out the cron turn: a parent that ended meanwhile
+            # is a new session then.
+            parent_gone = not collected and not self.sessions.has_session(parent_key)
+            if not collected and not parent_gone:
                 _memory_store = await session_store_for_turn(self.ctx_builder, parent_key)
                 client, is_new, _resumed = await self.sessions.get_or_create(parent_key)
                 acquired = True
+                if is_new:
+                    await self.sessions.reset(parent_key)
+                parent_gone = is_new
                 collected = (
                     _inline_verdict(self.subagent_mgr, self.sessions, carried)[0]
                     == INLINE_CONFIRMED
@@ -1339,6 +1348,13 @@ async def _finish_subagent_cron_or_notify(
                 )
                 # The blocking tool's return value carried it.
                 info._report_delivered = True
+            elif parent_gone:
+                logger.warning(
+                    "Subagent %s: cron parent %s has no live session; only the bell has it",
+                    info.id,
+                    parent_key,
+                )
+                info._report_undelivered = True
             else:
                 _provider = self._cfg.agent.provider if hasattr(self, "_cfg") else "acp"
                 if self.ctx_builder:
