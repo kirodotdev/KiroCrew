@@ -20,7 +20,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.acp.skill_projection_parts.inheritance_overlay import (
+from kiro_crew.acp.skill_projection import (
     _UNREADABLE_SETTINGS_ERRORS,
     _settings,
 )
