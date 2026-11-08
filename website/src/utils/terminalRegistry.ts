@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from 'react'
 import type { Terminal } from '@xterm/xterm'
 import type { FitAddon } from '@xterm/addon-fit'
+import { shellBaseName } from './fenceShell'
 
 /**
  * sessionId → shell-ready WebSocket. Each terminal tab owns one entry.
@@ -165,6 +166,18 @@ export function onTerminalReady(
   return () => { set?.delete(listener) }
 }
 
+/** Whether a session's shell submits a line on CR rather than LF. Under ConPTY a
+ *  bare LF reaches the console as Ctrl+Enter, which PSReadLine binds to
+ *  InsertLineAbove: a multi-line snippet lands in reverse order and is never
+ *  submitted. CR is the Enter key. Only PowerShell is matched: an unknown shell
+ *  keeps LF, today's behavior. */
+function submitsWithEnter(sessionId: string): boolean {
+  const shell = shells.get(sessionId)
+  if (!shell) return false
+  const name = shellBaseName(shell)
+  return name === 'powershell' || name === 'pwsh'
+}
+
 /**
  * Send a line of code to a specific terminal session. Returns false if that
  * session has no open shell-ready socket. Commands confirmed verbatim can
@@ -180,7 +193,7 @@ export function sendToTerminalSession(
     const input = options?.preserveTrailingWhitespace
       ? code + (/[\r\n]$/.test(code) ? '' : '\n')
       : code.trimEnd() + '\n'
-    ws.send(new TextEncoder().encode(input))
+    ws.send(new TextEncoder().encode(submitsWithEnter(sessionId) ? input.replace(/\r?\n/g, '\r') : input))
     return true
   } catch {
     return false
