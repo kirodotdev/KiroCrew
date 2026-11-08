@@ -36,7 +36,10 @@ from kiro_crew.dashboard.chat_utils import (
     is_system_injection_item,
     releases_past_subagent_hold,
 )
-from kiro_crew.dashboard.chat_utils_injected_rows import AUTOMATION_STEER_META
+from kiro_crew.dashboard.chat_utils_injected_rows import (
+    AUTOMATION_STEER_META,
+    WORKFLOW_FOLLOWUP_KIND,
+)
 from kiro_crew.dashboard.chat_utils_slots import dashboard_slot_key
 from kiro_crew.dashboard.queue_edit_hold import edit_hold_blocks_user_turn
 from kiro_crew.dashboard.recovery_replays import replays_of
@@ -960,6 +963,10 @@ async def _start_next_queued_turn(
     # own bubble. Never merges (a system-injection kind), so ``consumed`` holds
     # it alone.
     is_automation_notice = any(item.get("kind") == AUTOMATION_NOTICE_KIND for item in consumed)
+    # The gateway's follow-up prompt after a workflow result: structural kind
+    # again, so it drains as the same `inject` row its idle twin writes
+    # (`_ChatSlot.enqueue_or_run_prompt`). Never merges (a system-injection kind).
+    is_workflow_followup = any(item.get("kind") == WORKFLOW_FOLLOWUP_KIND for item in consumed)
     # A requeued automation steer (a work-ledger wake the turn never took): its
     # entry names the `meta.nudge` its row carries, so it drains as the same
     # nudge row it was steered as, never as the person's `user` row. Never
@@ -980,6 +987,7 @@ async def _start_next_queued_turn(
         or is_app_message
         or is_automation_notice
         or is_automation_steer
+        or is_workflow_followup
     ):
         # A user message after the last completion takes over from the armed
         # synthesis and ends its batch, so its count starts over. Only the
@@ -1028,6 +1036,7 @@ async def _start_next_queued_turn(
             or is_app_message
             or is_automation_notice
             or is_automation_steer
+            or is_workflow_followup
             or responsive_chat.reusable_row(slot, consumed, next_msg) is not None,
         }
         # The client rebuilds the drained entry as a user row from this frame
@@ -1085,7 +1094,7 @@ async def _start_next_queued_turn(
         row_role = "nudge"
     elif is_subagent:
         row_role = "subagent"
-    elif is_cron or is_recovery or is_app_message or is_automation_notice:
+    elif is_cron or is_recovery or is_app_message or is_automation_notice or is_workflow_followup:
         row_role = "inject"
     else:
         row_role = "user"
@@ -1101,7 +1110,7 @@ async def _start_next_queued_turn(
         # `_prepare_messages` replace the stored meta on HTTP rebuild,
         # dropping `injectKind` and the row's collapse/fold exemptions.
         row_cls = app_inject_row(app_label or "app")[1]
-    elif is_recovery or is_automation_notice:
+    elif is_recovery or is_automation_notice or is_workflow_followup:
         row_cls = "msg msg-inject"
     else:
         row_cls = "msg msg-u"
@@ -1276,6 +1285,8 @@ async def _start_next_queued_turn(
             _inject_kind = "mcp_app"
         elif is_automation_notice:
             _inject_kind = "automation_notice"
+        elif is_workflow_followup:
+            _inject_kind = "workflow"
         elif synthetic_payload:
             _inject_kind = "recovery"
         else:

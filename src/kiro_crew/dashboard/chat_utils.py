@@ -736,6 +736,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         SYNTHETIC_RECOVERY_KIND,
         TRANSIENT_RETRY_KIND,
         USAGE_LIMIT_KIND,
+        WORKFLOW_FOLLOWUP_KIND,
         RecoveryPayload,
         _dequeue_next_message,
         _dequeue_next_system_message,
