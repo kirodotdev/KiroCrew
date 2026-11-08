@@ -959,6 +959,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # `learn.py` and `spawn.py` are absent because they call no redactor (the
         # spawn reads that redact are in its `spawn_parts` owners) -- the allowlist
         # is checked for stale entries too.
+        # `app_tools.py` relays an app's answer to a declared agent tool and redacts it
+        # before returning it, the same classification as its sibling domains.
+        "mcp_tools/app_tools.py",
         "mcp_tools/apps.py",
         "mcp_tools/artifacts.py",
         "mcp_tools/control.py",

@@ -33,12 +33,12 @@ removes what it names:
   `issue_radar_crew_record`): their descriptors, handlers and `TOOL_APPS` rows in
   `mcp_tools/apps.py`, their schemas in `validation_parts/`, the crew route constants in
   `mcp_core.py`, and the three internal-secret path rows in
-  `dashboard/server_internal_paths.py`. The data-only `apps.builtin_agent_tools` seam
-  cannot carry them: these handlers resolve the crew from a strictly-identified session,
-  take integer and list arguments, sanitize a public progress line and post to the
-  in-process `/api/apps/issue-radar` routes rather than the app's `/apps/<app>/api` proxy
-  namespace. Moving them needs a seam that lets a built-in ship handler code into the
-  credential-holding MCP server, which is a maintainer's trust-model decision.
+  `dashboard/server_internal_paths.py`. App code never runs in the credential-holding
+  MCP server (ruling 2 in #26967, comment 6713005850); the seam these tools move onto is
+  the manifest `agentTools` block (`app-kit-platform.md`, section 30.1), where the app
+  serves each call from its own routes. They stay core until the app serves that route,
+  together with the strictly-identified crew session the crew tools resolve and the
+  `radar` crew-log fold below.
 - **The `radar/recorded` crew-log entry type's note**, which names the tool that writes
   it.
 - **The four tool-less model-call key shapes** in `session_work_dir._DERIVED_SESSION_SHAPES`:

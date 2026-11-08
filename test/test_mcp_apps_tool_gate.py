@@ -1,11 +1,11 @@
 """An app's tools are advertised only while the app is enabled.
 
 The nine tools of the ``apps`` domain under :mod:`kiro_crew.mcp_tools` reach
-four built-in apps -- Issue Radar, Dev Fleet, Ops Mission Control and Design
-Tweak -- whose gateway routes refuse a call with HTTP 403 while the app is
-disabled (Dev Fleet's routes and the app reverse proxy Design Tweak sits behind
-name the refusal ``app_not_enabled``, Ops Mission Control ``app_disabled``,
-Issue Radar carries no code). ``tools/list`` therefore omits a tool while its
+three built-in apps -- Issue Radar, Dev Fleet and Ops Mission Control -- whose
+gateway routes refuse a call with HTTP 403 while the app is disabled (Dev Fleet's
+routes name the refusal ``app_not_enabled``, Ops Mission Control ``app_disabled``,
+Issue Radar carries no code). A tool an app declares in its manifest is the
+``app_tools`` domain's, gated by the same rule (``test_app_agent_tools.py``). ``tools/list`` therefore omits a tool while its
 app is disabled: a session with none of the apps enabled sees none of them,
 instead of tools that can only refuse.
 
@@ -22,7 +22,6 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew.apps import builtin_agent_tools
 from kiro_crew.apps import manager as apps_manager
 from kiro_crew.mcp_tools import apps as apps_tools
 from kiro_crew.mcp_tools import build_tool_list, build_tool_names, dispatch
@@ -32,19 +31,12 @@ ISSUE_RADAR_TOOLS = frozenset(
 )
 DEV_FLEET_TOOLS = frozenset({"pod_up", "pod_restart", "pod_down", "pod_status", "pod_ls"})
 OPS_MISSION_CONTROL_TOOLS = frozenset({"ops_mission_control_api"})
-#: The tools a built-in declares as data (``apps.builtin_agent_tools``), by app.
-DECLARED_TOOLS: dict[str, frozenset[str]] = {
-    app: frozenset(t.name for t in builtin_agent_tools.agent_tools() if t.app == app)
-    for app in {t.app for t in builtin_agent_tools.agent_tools()}
-}
 APP_TOOLS = {
     "issue-radar": ISSUE_RADAR_TOOLS,
     "dev-fleet": DEV_FLEET_TOOLS,
     "ops-mission-control": OPS_MISSION_CONTROL_TOOLS,
-    **DECLARED_TOOLS,
 }
 ALL_APP_TOOLS = ISSUE_RADAR_TOOLS | DEV_FLEET_TOOLS | OPS_MISSION_CONTROL_TOOLS
-ALL_APP_TOOLS |= frozenset().union(*DECLARED_TOOLS.values())
 
 
 def _write_installed(name: str, *, enabled: bool) -> Path:
@@ -188,22 +180,13 @@ def test_tool_apps_name_the_apps_whose_routes_gate_the_calls() -> None:
     Issue Radar pins its rows against its own ``APP_NAME`` in its ``tests/``, so the
     core reads none of its code; here they are the literal the app id is.
     """
-    from kiro_crew.apps import builtins
     from kiro_crew.apps.builtins.dev_fleet import agent_pod_api
     from kiro_crew.apps.builtins.ops_mission_control.backend import store as omc_store
 
-    root = Path(builtins.__file__).parent
-    manifest_names = {
-        tool.name: json.loads(
-            (root / tool.app.replace("-", "_") / "app.json").read_text(encoding="utf-8")
-        )["name"]
-        for tool in builtin_agent_tools.agent_tools()
-    }
     expected = {
         **{tool: "issue-radar" for tool in ISSUE_RADAR_TOOLS},
         **{tool: agent_pod_api.APP_NAME for tool in DEV_FLEET_TOOLS},
         **{tool: omc_store.APP_NAME for tool in OPS_MISSION_CONTROL_TOOLS},
-        **manifest_names,
     }
     assert apps_tools.TOOL_APPS == expected
     assert set(expected.values()) == set(APP_TOOLS)

@@ -629,6 +629,12 @@ def _register_mcp_routes(app: web.Application) -> None:
     # trust class as ``invoke``: loopback + ``X-Internal-Secret`` only, listed in
     # ``_STRICT_INTERNAL_API_PATHS``, no browser caller, headless server too.
     app.router.add_post("/api/browser/op", handlers.api_browser_op)
+    # The forwarding leg of a tool an installed app declares (manifest
+    # ``agentTools``): the ``kirocrew-core`` server posts the call, the handler hands it
+    # to the declaring app's own route. Same trust class as ``/api/browser/op``.
+    app.router.add_post(
+        "/api/app-tools/call", _deferred("app_agent_tools", "api_app_agent_tool_call")
+    )
     # The parked ``browser`` tool's hand-back poll while the person holds the browser.
     app.router.add_post("/api/browser/handback", handlers.api_browser_handback)
     # The parked ``ask`` op's poll: an outcome word, never what the person typed.

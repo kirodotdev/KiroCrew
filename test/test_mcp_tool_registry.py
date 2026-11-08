@@ -105,13 +105,19 @@ def test_legacy_monitor_descriptors_route_structured_watches_correctly() -> None
     assert "retain" in stop
 
 
+#: Domains whose tools come from installed apps' manifests: a fresh home declares none,
+#: and a declared tool may carry its own ``title`` (``test_app_agent_tools.py``).
+_MANIFEST_DOMAINS = frozenset({"app_tools"})
+
+
 @pytest.mark.parametrize("domain", DOMAIN_MODULES)
 def test_descriptor_shape(domain: str) -> None:
     """kiro-cli drops a tool whose descriptor is missing any of the three keys."""
     descriptors = _domain(domain).schemas()
-    assert descriptors, f"{domain} declares no tools"
+    assert descriptors or domain in _MANIFEST_DOMAINS, f"{domain} declares no tools"
+    optional = {"title"} if domain in _MANIFEST_DOMAINS else set()
     for spec in descriptors:
-        assert set(spec) == {"name", "description", "inputSchema"}, spec.get("name")
+        assert set(spec) - optional == {"name", "description", "inputSchema"}, spec.get("name")
         assert spec["name"] and isinstance(spec["name"], str)
         assert spec["description"].strip(), spec["name"]
         assert spec["inputSchema"]["type"] == "object", spec["name"]

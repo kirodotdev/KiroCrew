@@ -23,6 +23,30 @@ from typing import Any
 
 from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX  # noqa: F401
 from kiro_crew.apps.desktop_manifest import DesktopConfig
+from kiro_crew.apps.manifest_agent_tools import (  # noqa: F401
+    _BLOCK_KEYS,
+    _ITEM_KEYS,
+    _OBJECT_KEYS,
+    _SCALAR_KEYS,
+    _TOOL_KEYS,
+    DEFAULT_RESULT_CHARS,
+    MAX_AGENT_TOOLS_PER_APP,
+    MAX_ARRAY_ITEMS,
+    MAX_RESULT_CHARS,
+    MAX_STRING_ARGUMENT_CHARS,
+    MAX_TOOL_DESCRIPTION_CHARS,
+    MAX_TOOL_PROPERTIES,
+    MAX_TOOL_TITLE_CHARS,
+    ROUTE_RE,
+    TOOL_NAME_RE,
+    AgentToolDecl,
+    AgentToolsConfig,
+    _is_int,
+    _parse_tool,
+    _property_errors,
+    _schema_errors,
+    tool_namespace,
+)
 from kiro_crew.apps.manifest_containment import (  # noqa: F401
     _AGENT_TEMPLATE_PLACEHOLDER_RE,
     PATH_SCREEN_REFUSAL,
@@ -399,6 +423,7 @@ _KNOWN_FIELDS = frozenset(
         "contributes",
         "l10n",
         "desktop",
+        "agentTools",
     }
 )
 
@@ -478,6 +503,8 @@ class AppManifest:
 
     # --- Windows and global shortcuts the desktop shell hosts (desktop_manifest) ---
     desktop: DesktopConfig = field(default_factory=DesktopConfig)
+    # --- MCP tools the app serves from its own process (see manifest_agent_tools) ---
+    agentTools: AgentToolsConfig = field(default_factory=AgentToolsConfig)  # noqa: N815
 
     # --- Discovery ---
     tags: list[str] = field(default_factory=list)
@@ -758,6 +785,9 @@ class AppManifest:
         # surfaces / when-filter grammar.
         errors.extend(self.contributes.validate())
 
+        # Agent tools: shape, the core-enforced schema subset, and the app's namespace.
+        errors.extend(self.agentTools.validate(self.name))
+
         # A contributed command's `agent` is contained to the agents THIS app ships.
         # The prompt is app-authored, so letting it name any host agent would let an
         # app run its text under an agent carrying broader tool grants and
@@ -996,6 +1026,12 @@ class AppManifest:
             # signed `contributes.fileMenuItems[].endpoint`. Non-empty only, so manifests
             # that never declared it keep producing the identical payload.
             body["publishProvider"] = publish_provider_d
+        agent_tools_d = self.agentTools.to_dict()
+        if agent_tools_d:
+            # A tool's description is text every agent reads as an instruction, and
+            # `route` decides which of the app's routes its calls reach. Non-empty only,
+            # so manifests that never declared tools keep producing the identical payload.
+            body["agentTools"] = agent_tools_d
         return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
     # -----------------------------------------------------------------
@@ -1065,6 +1101,9 @@ class AppManifest:
         desktop_d = self.desktop.to_dict()
         if desktop_d:
             d["desktop"] = desktop_d
+        agent_tools_d = self.agentTools.to_dict()
+        if agent_tools_d:
+            d["agentTools"] = agent_tools_d
         if self.tags:
             d["tags"] = self.tags
         if self.jobFamilies:
@@ -1224,6 +1263,7 @@ class AppManifest:
             contributes=contributes,
             l10n=L10nConfig.from_value(data.get("l10n")),
             desktop=DesktopConfig.from_value(data.get("desktop")),
+            agentTools=AgentToolsConfig.from_value(data.get("agentTools")),  # noqa: N815
             tags=[
                 str(t) for t in (data["tags"] if isinstance(data.get("tags"), list) else []) if t
             ],

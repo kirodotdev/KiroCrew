@@ -26,11 +26,12 @@ shrink. Each row is deleted in the change that removes what it names:
   allowlist (`mcp_tools/apps.py`), its `MCP_CORE_SCHEMAS` validation row
   (`validation_parts/`), its channel deny of `POST /rotation/arm` (`channel.py`), its title
   (`data/mcp_tool_titles.json`) and the exact internal-secret admission of the routes it
-  reaches (`dashboard/server_internal_paths.py`). The built-in agent-tool seam
-  (`app-kit-platform.md`, section 30.1) carries only one POST route under the app proxy,
-  and this tool is a GET/POST dispatcher over `/api/apps/ops-mission-control`, so it stays
-  core until an app-contributed tool seam can carry it with the same name and permission
-  key. `apps.builtin_adoption_checks.core_named_apps` reads `TOOL_APPS`, so until then the
+  reaches (`dashboard/server_internal_paths.py`). The app-contributed tool seam exists:
+  the manifest `agentTools` block (`app-kit-platform.md`, section 30.1) lists a tool
+  under the same name in `kirocrew-core` and forwards each call to one route the app
+  serves itself. The tool stays core until this app serves that route, which then holds
+  the GET/POST dispatcher over its allowlist and the per-operation channel deny.
+  `apps.builtin_adoption_checks.core_named_apps` reads `TOOL_APPS`, so until then the
   app is not adopted from its own repository.
 * **The `ops-mission-control` webhook source id** in `webhook_sources.py`: the core's
   governance vocabulary, which a policy names and an app may not choose for itself.
