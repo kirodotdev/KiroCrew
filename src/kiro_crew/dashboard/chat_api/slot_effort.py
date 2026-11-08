@@ -44,9 +44,15 @@ if TYPE_CHECKING:
     )
 
 
-async def _configured_backend_for_slot(slot: _ChatSlot) -> str:
-    """Resolve a cold slot through the same member-aware gate as the provider factory."""
-    config = await asyncio.to_thread(KiroCrewConfig.load)
+async def _configured_backend_for_slot(
+    slot: _ChatSlot, config: KiroCrewConfig | None = None
+) -> str:
+    """Resolve a cold slot through the same member-aware gate as the provider factory.
+
+    *config* is the one to select from; without it, ``config.json`` is read.
+    """
+    if config is None:
+        config = await asyncio.to_thread(KiroCrewConfig.load)
     from kiro_crew.crewmate_harness import crewmate_backend_pin
     from kiro_crew.members import select_provider_backend
 

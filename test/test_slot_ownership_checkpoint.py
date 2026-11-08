@@ -52,6 +52,7 @@ from slot_ownership_checkpoint_helpers import (  # noqa: F401 -- fixtures are re
     state_fixture,
 )
 
+from kiro_crew.config import KiroCrewConfig
 from kiro_crew.dashboard import slot_ownership
 from kiro_crew.dashboard.slot_ownership import (
     SLOT_ROUTE_POLICIES,
@@ -592,6 +593,8 @@ class TestRegenerateAndSwitchVariant:
         self, state, regen_run, monkeypatch
     ) -> None:
         """The checkpoint judged the app's slot; the handler must not act on its successor."""
+        # The gate asks only when the applied harness signs in via kiro-cli.
+        state.sessions._cfg = KiroCrewConfig.load()
         state.get_or_create_slot("s1", app=APP)
         replacement = _ChatSlot("s1")
         replacement._origin = SlotOrigin.USER

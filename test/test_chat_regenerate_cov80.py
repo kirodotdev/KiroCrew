@@ -28,6 +28,7 @@ from aiohttp.test_utils import make_mocked_request
 from chat_regenerate_cov80_helpers import state_fixture  # noqa: F401
 from chat_regenerate_cov80_helpers import _client, _make_regen_app
 
+from kiro_crew.config import KiroCrewConfig
 from kiro_crew.dashboard import chat_regenerate
 from kiro_crew.dashboard.chat_regenerate import (
     api_chat_slot_edit_resend,
@@ -148,6 +149,8 @@ async def test_regenerate_never_crosses_a_newer_user_turn(state) -> None:
 async def test_readiness_latch_blocks_before_the_dispatch(state) -> None:
     """An unverified backend is rejected before any turn is dispatched or any
     replace target is armed."""
+    # The gate asks only when the applied harness signs in via kiro-cli.
+    state.sessions._cfg = KiroCrewConfig.load()
     slot = state.get_or_create_slot("s1")
     slot.append("user", "hi")
     slot.append("assistant", "hello v1")
@@ -832,6 +835,8 @@ async def test_edit_resend_rejected_while_a_turn_is_in_flight(state) -> None:
 
 @pytest.mark.asyncio
 async def test_edit_resend_readiness_latch_blocks_before_the_truncation(state) -> None:
+    # The gate asks only when the applied harness signs in via kiro-cli.
+    state.sessions._cfg = KiroCrewConfig.load()
     slot = state.get_or_create_slot("s1")
     slot.append("user", "first")
     blocked = web.json_response({"error": "kiro not verified"}, status=503)
