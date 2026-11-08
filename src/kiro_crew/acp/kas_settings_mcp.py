@@ -30,9 +30,12 @@ import logging
 import os
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS, mcp_entry_is_muted
+
+if TYPE_CHECKING:
+    from kiro_crew.acp.session_mcp import NativeSettingsUnreadable
 
 #: The key the active entry carries what this module read from the mcp.json /
 #: cli.json files under, until the wire envelope applies it. Crew-only:
@@ -66,20 +69,37 @@ def include_mcp_json(spec: Mapping[str, Any]) -> bool | None:
     return None
 
 
-def _file_servers(work_dir: str | Path | None) -> dict[str, Any]:
-    """The mcp.json servers KAS reads, the workspace entry winning a shared name."""
+def _unreadable_line(exc: NativeSettingsUnreadable) -> str:
+    """The session-start line for a settings file *exc* says could not be read."""
+    from kiro_crew.acp.session_mcp import _named_path
+
+    because = f" because {exc.reason}" if exc.reason else ""
+    return (
+        f"⚠ Kiro Crew could not read {exc.label} ({_named_path(exc.path)}){because}."
+        " Its MCP server settings may not apply to this session."
+    )
+
+
+def _file_servers(work_dir: str | Path | None, notices: list[str]) -> dict[str, Any]:
+    """The mcp.json servers KAS reads, the workspace entry winning a shared name.
+
+    Each file that cannot be read adds one line to *notices*, naming it and why.
+    """
     from kiro_crew.acp.session_mcp import NativeSettingsUnreadable, native_settings_sources
 
     try:
         sources = native_settings_sources(work_dir)
-    except NativeSettingsUnreadable:
+    except NativeSettingsUnreadable as exc:
+        notices.append(_unreadable_line(exc))
         # An unreadable workspace file must not lift the global file's
         # exclusions: those servers are the ones the gateway pools.
         logger.warning("KAS: MCP settings unreadable; only the global file's servers are named")
         try:
             sources = native_settings_sources(None) if work_dir else []
-        except NativeSettingsUnreadable:
-            # KAS cannot use a global file Crew cannot read either; nothing to name.
+        except NativeSettingsUnreadable as global_exc:
+            if global_exc.path != exc.path:
+                notices.append(_unreadable_line(global_exc))
+            # KAS cannot use a global file Crew cannot read either; no servers to name.
             return {}
     servers: dict[str, Any] = {}
     for source in sources:  # global first, so the project file overrides
@@ -153,6 +173,7 @@ def stamp_settings_mcp(
     work_dir: str | Path | None,
     declared: Iterable[str] = (),
     legacy_mcp_json: bool = False,
+    notices: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """The batch with what :func:`finish_settings_mcp` needs stamped on the ACTIVE entry.
 
@@ -165,8 +186,13 @@ def stamp_settings_mcp(
     projection: a name there may reach KAS in the session-level array instead
     of the block, and it is still the agent's. *legacy_mcp_json* marks an agent
     file that keeps the earlier behaviour (:mod:`kiro_crew.acp.kas_mcp_json_legacy`).
+    *notices* gets one session-start line per mcp.json file that could not be read.
     """
-    files = {n: e for n, e in _file_servers(work_dir).items() if isinstance(n, str) and n}
+    files = {
+        n: e
+        for n, e in _file_servers(work_dir, [] if notices is None else notices).items()
+        if isinstance(n, str) and n
+    }
     stamp = {
         "timeout": _default_timeout_ms(work_dir),
         "fileServers": {name: _glob_disabled_tools(entry) for name, entry in files.items()},

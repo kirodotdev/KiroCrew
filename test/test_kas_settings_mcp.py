@@ -148,6 +148,19 @@ class TestUndeclaredFileServers:
         assert without_excluded_stubs([{"name": "pooled"}], stamped) == []
         assert finish_settings_mcp(stamped[0])["excludedTools"] == ["@pooled"]
 
+    def test_each_unreadable_file_gets_one_notice_line(self, home, work):
+        utf16 = b"\xff\xfe" + json.dumps({"mcpServers": {"x": {}}}).encode("utf-16-le")
+        (home / "mcp.json").write_bytes(utf16)
+        (work / ".kiro" / "settings").mkdir(parents=True)
+        (work / ".kiro" / "settings" / "mcp.json").write_bytes(utf16)
+        notices: list[str] = []
+        stamp_settings_mcp([_agent()], "a", work, notices=notices)
+        assert [line.split(" (")[0] for line in notices] == [
+            "⚠ Kiro Crew could not read the project's MCP settings",
+            "⚠ Kiro Crew could not read the global MCP settings",
+        ]
+        assert all("saved as UTF-16; re-save it as UTF-8" in line for line in notices)
+
     def test_existing_exclusions_are_kept(self, home, work):
         _write(home / "mcp.json", {"mcpServers": {"extra": {}}})
         out = _finish(_agent(excludedTools=["fs_write"]), work)
