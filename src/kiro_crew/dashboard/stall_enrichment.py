@@ -189,7 +189,7 @@ def describe_loop_thread(thread_id: int | None) -> list[str]:
     """Return lines naming where the event-loop thread is right now.
 
     *thread_id* is the loop thread's ``threading.get_ident()``, recorded by the
-    watchdog's heartbeat; ``None`` (no heartbeat yet) yields no lines.  The
+    watchdog's start and heartbeat; ``None`` (neither yet) yields no lines.  The
     first line is the loop thread's innermost Python frame from
     :func:`sys._current_frames`, formatted and scrubbed by the frame redactor
     the diag recorder's stall capture uses.  When that frame is asyncio's
