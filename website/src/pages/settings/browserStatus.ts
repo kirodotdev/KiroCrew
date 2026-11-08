@@ -23,16 +23,16 @@ export function isUserBrowser(kind: BrowserKind | null | undefined): boolean {
  *
  *   - `installing`     an install job runs (the gateway's own at startup, or one
  *                      this tab asked for). Disabled spinner, indeterminate bar.
- *   - `install_failed` nothing is installed and the last job failed or was
- *                      interrupted. Red, Retry.
- *   - `not_installed`  nothing is installed and no job ran (a gateway that does
+ *   - `install_failed` an install is needed (`needsInstall`) and the last job
+ *                      failed or was interrupted. Red, Retry.
+ *   - `not_installed`  an install is needed and no job ran (a gateway that does
  *                      not install on its own). Install.
  *   - `waiting_allow`  Chrome shows its Allow prompt. Yellow, "Allow in Chrome".
  *   - `error`          the last attach failed. Red, Retry with the gateway's detail.
- *   - `disconnected`   installed, no browser attached. Connect.
+ *   - `disconnected`   no install needed, no browser attached. Connect.
  *   - `connected`      Disconnect.
  *
- * A failed job while the engine IS installed (a Redownload that did not finish)
+ * A failed job while no install is needed (a Redownload that did not finish)
  * does not take over the card: the browser still works, so it is reported on the
  * Engine row under More instead.
  */
@@ -45,9 +45,18 @@ export type PrimaryState =
   | 'disconnected'
   | 'connected'
 
+/**
+ * Whether the browser cannot start until an install: the engine is missing, or
+ * the browser is Kiro's Chromium and it is not downloaded (a Connect could only
+ * fail). While this holds, Install and its failures belong to the main card.
+ */
+export function needsInstall(status: BrowserStatusData): boolean {
+  return !status.installed || (status.browser?.kind === 'kiro_chromium' && status.chromium?.downloaded === false)
+}
+
 export function primaryState(status: BrowserStatusData, installPending = false): PrimaryState {
   if (installPending || status.install_job?.status === 'running') return 'installing'
-  if (!status.installed) {
+  if (needsInstall(status)) {
     // An interrupted job (the gateway stopped mid-install) did not finish either;
     // its `error_detail` says so and Retry is the move.
     const ended = status.install_job?.status

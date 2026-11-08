@@ -350,7 +350,7 @@ class HarnessSupervisor:
     def status(self) -> dict[str, Any]:
         """The Settings/live-card shape: install, browser, connection, detail."""
         state = install.install_state(self.home)
-        choice = self._choice
+        choice = self._choice if self.holds_browser else None
         if choice is None:
             choice = self._choose(state)
         return {
