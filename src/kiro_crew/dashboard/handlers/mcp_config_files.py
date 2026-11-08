@@ -1,10 +1,11 @@
 """Where the MCP config files are, and reading, refusing and writing them.
 
 The server-name check, the Kiro-global ``mcp.json`` path and the Kiro Crew one, the extra
-provider scopes an edition adds, the refusal of a commented (JSONC) file, the atomic write
-and its off-loop form, resolving which key of a file names a server, the synchronous
-config lock the cleanup sweep takes, and the coded error bodies the toggle routes answer
-when a file will not parse or write, or names no usable server.
+provider scopes an edition adds, the refusal of a commented (JSONC) file, the retrying read
+of the Kiro-global file, the atomic write and its off-loop form, resolving which key of a
+file names a server, the synchronous config lock the cleanup sweep takes, and the coded
+error bodies the toggle routes answer when a file will not parse, read or write, or names
+no usable server.
 
 Part of the ``kiro_crew.dashboard.handlers.mcp`` family: callers and tests reach every
 name here as ``kiro_crew.dashboard.handlers.mcp.<name>``, and a patch there reaches this
@@ -266,6 +267,28 @@ def _mcp_config_unreadable() -> web.Response:
     return web.json_response(
         {"error": "cannot read global mcp.json", "code": "config_unreadable"}, status=500
     )
+
+
+def _mcp_config_busy(route: str) -> web.Response:
+    """An MCP config file another process held past the read retry; the client retries.
+
+    Call this inside the ``except`` block, where ``exc_info`` still sees it.
+    """
+    logger.warning("%s: an MCP config file stayed held after retries", route, exc_info=True)
+    return web.json_response(
+        {"error": "MCP config is busy; retry", "code": "mcp_config_busy"}, status=503
+    )
+
+
+def _read_global_mcp_text() -> str:
+    """The global mcp.json's text, retrying the Windows sharing-violation window.
+
+    Blocking, and the retry is off on the event loop: callers offload it. A
+    ``PermissionError`` that outlasts the retry propagates to the caller.
+    """
+    from kiro_crew.atomic_write import read_bytes_with_retry
+
+    return read_bytes_with_retry(_GLOBAL_MCP_JSON).decode("utf-8")
 
 
 def _load_config_or_refusal(path: Path) -> dict[str, Any] | web.Response:

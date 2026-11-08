@@ -1,4 +1,4 @@
-"""The MCP probe and listing routes read ``~/.kiro/settings/mcp.json`` off the loop.
+"""The MCP routes read ``~/.kiro/settings/mcp.json`` off the loop.
 
 ``_run_mcp_probe``, ``GET /api/mcp``, ``GET /api/mcp/active`` and
 ``POST /api/mcp/probe`` each read the Kiro-global ``mcp.json`` for its
@@ -6,7 +6,9 @@ disabled / ``disabledTools`` state. Read on the event loop, a slow home
 directory (a network mount) stalled every session for the length of the read.
 These tests spy on the retrying read to record the thread it ran on, and check
 that a read still contended after its retries answers a coded 503; no real
-server is probed or spawned.
+server is probed or spawned. The toggle, remove and DELETE routes answer the
+same 503 before they write, and again when their agent-config sync meets a held
+``kirocrew.json``, which the sync now lets raise.
 """
 
 from __future__ import annotations
@@ -17,9 +19,12 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Awaitable, Callable
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from handlers_mcp_coverage_helpers import _request as _owner_request
+from handlers_mcp_coverage_helpers import sandbox_fixture  # noqa: F401
+from handlers_mcp_coverage_helpers import _write_global
 
 import kiro_crew.mcp_discovery as disc
 from kiro_crew import atomic_write
@@ -165,3 +170,109 @@ async def test_a_missing_global_file_still_reads_as_no_servers(
     resp = await _list_servers()
 
     assert resp.status == 200
+
+
+def _held(target: Path, reader_threads: list[int]) -> Callable[..., bytes]:
+    """The retrying read, with *target* held by another process past the retry.
+
+    Each read of *target* notes its thread in *reader_threads*.
+    """
+    real_read = atomic_write.read_bytes_with_retry
+
+    def _read(path: Any, **kwargs: Any) -> bytes:
+        if Path(path) == target:
+            reader_threads.append(threading.get_ident())
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_read(path, **kwargs)
+
+    return _read
+
+
+_MUTATIONS: dict[str, Callable[[], Awaitable[Any]]] = {
+    "api_mcp_toggle": lambda: mcp_mod.api_mcp_toggle(
+        _owner_request({"name": "srv", "enabled": False})
+    ),
+    "api_mcp_toggle_tool": lambda: mcp_mod.api_mcp_toggle_tool(
+        _owner_request({"server": "srv", "tool": "t", "enabled": False})
+    ),
+    "api_mcp_toggle_all": lambda: mcp_mod.api_mcp_toggle_all(_owner_request({"enabled": False})),
+    "api_mcp_remove": lambda: mcp_mod.api_mcp_remove(_owner_request({"name": "srv"})),
+    "api_mcp_server_detail_delete": lambda: mcp_mod.api_mcp_server_detail(
+        _owner_request(None, match_info={"name": "srv"}, method="DELETE")
+    ),
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", sorted(_MUTATIONS))
+async def test_a_mutation_route_answers_a_held_mcp_json_with_a_coded_503_and_writes_nothing(
+    sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, route: str
+) -> None:
+    from kiro_crew.dashboard.handlers import _shared
+
+    _write_global(sandbox, {"srv": {"command": "x"}})
+    before = sandbox.global_json.read_bytes()
+    reader_threads: list[int] = []
+    monkeypatch.setattr(
+        atomic_write, "read_bytes_with_retry", _held(sandbox.global_json, reader_threads)
+    )
+    no_manager = MagicMock()
+    no_manager.available.return_value = False
+    monkeypatch.setattr(_shared, "_capability_manager", lambda: no_manager)
+
+    resp = await _MUTATIONS[route]()
+
+    assert resp.status == 503
+    assert json.loads(resp.body)["code"] == "mcp_config_busy"
+    # Off the loop, where the retry runs: on the loop it is a single attempt.
+    assert reader_threads, "mcp.json was not read through the retrying read"
+    assert threading.get_ident() not in reader_threads, "mcp.json was read on the event loop"
+    assert sandbox.global_json.read_bytes() == before
+    assert sandbox.synced == [] and sandbox.batched == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", sorted(set(_MUTATIONS) - {"api_mcp_toggle_tool"}))
+async def test_a_route_whose_agent_sync_meets_a_held_agent_config_answers_a_coded_503(
+    sandbox: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, route: str
+) -> None:
+    from kiro_crew.dashboard.handlers import _shared
+
+    def _held_sync(*args: Any, **kwargs: Any) -> None:
+        raise PermissionError(13, "Permission denied", "kirocrew.json")
+
+    _write_global(sandbox, {"srv": {"command": "x"}})
+    monkeypatch.setattr(mcp_mod, "_sync_mcp_to_agent", _held_sync)
+    monkeypatch.setattr(mcp_mod, "_sync_mcp_to_agent_batch", _held_sync)
+    no_manager = MagicMock()
+    no_manager.available.return_value = False
+    monkeypatch.setattr(_shared, "_capability_manager", lambda: no_manager)
+
+    resp = await _MUTATIONS[route]()
+
+    assert resp.status == 503
+    assert json.loads(resp.body)["code"] == "mcp_config_busy"
+
+
+@pytest.mark.parametrize("batch", [False, True], ids=["single", "batch"])
+def test_a_held_agent_config_raises_out_of_the_sync_and_is_left_as_it_was(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, batch: bool
+) -> None:
+    from kiro_crew.dashboard.handlers import agents, mcp_agent_sync
+
+    agent_cfg = tmp_path / "kirocrew.json"
+    agent_cfg.write_text(json.dumps({"mcpServers": {}}), encoding="utf-8")
+    before = agent_cfg.read_bytes()
+    monkeypatch.setattr(agents, "_installed_agent_config", lambda: agent_cfg)
+    reader_threads: list[int] = []
+    monkeypatch.setattr(atomic_write, "read_bytes_with_retry", _held(agent_cfg, reader_threads))
+
+    # Skipping would answer "applied" while kiro-cli still loads the old spec.
+    with pytest.raises(PermissionError):
+        if batch:
+            mcp_agent_sync._sync_mcp_to_agent_batch_unlocked(["srv"], False)
+        else:
+            mcp_agent_sync._sync_mcp_to_agent_unlocked("srv", False)
+
+    assert reader_threads, "the agent config was not read through the retrying read"
+    assert agent_cfg.read_bytes() == before
