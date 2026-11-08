@@ -1195,7 +1195,7 @@ def _cron_preview(args: argparse.Namespace) -> None:
             data: dict,
             *,
             max_age_s: int | None = None,
-            source: str | None = None,
+            source: dict | None = None,
             points: list | None = None,
         ) -> dict:
             lineage = {

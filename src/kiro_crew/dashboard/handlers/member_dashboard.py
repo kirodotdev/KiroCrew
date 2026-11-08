@@ -37,6 +37,12 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard import conditional_get
 from kiro_crew.dashboard.handlers import member_dashboard_fields
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.handlers.member_dashboard_package import (  # noqa: F401  (_package_in_force: re-exported)
+    _bound_package_slug,
+    _package_in_force,
+    _package_read,
+    _page_revision,
+)
 from kiro_crew.dashboard.handlers.member_dashboard_render import _render
 from kiro_crew.dashboard.handlers.members import (
     _deny_app_caller,
@@ -325,43 +331,6 @@ async def _teammate_reader(request: web.Request, slug: str, operation: str) -> b
     return await _teammate_admitted(request, operation, slug=slug)
 
 
-def _bound_package_slug(member: str) -> str:
-    """The ``kind="dashboard"`` artifact bound to *member*, or ``""``.
-
-    :func:`~kiro_crew.artifact_store.dashboard_package.resolve_bound_slug` with this
-    route's own answer for the cases it raises on. It raises because its other caller
-    must tell "no package" from "cannot prove there is none" -- a write validated
-    against the wrong Model replaces a cell with a value of the wrong shape. THIS
-    caller is a read that draws a page, and the page it draws when the answer is empty
-    is the template instance every crewmate already has. So an unprovable answer is
-    answered the same way as an absent one: the crewmate keeps the page it has, and a
-    failed lookup costs a package page rather than showing the wrong one.
-
-    ``BindingAmbiguous`` arrives through the same ``except`` by being a subclass of
-    ``BindingLookupIncomplete``, and wants the same answer here for the same reason.
-
-    Blocking file IO: it lists the artifact library and reads each candidate. Callers
-    run it off the event loop.
-    """
-    try:
-        # ONE lookup, shared with the crewmate's `[DASHBOARD]` turn block, so the
-        # page the person sees and the page the crewmate is told about agree.
-        return dashboard_agentic.bound_package(members_mod.member_slug(member))
-    except Exception:
-        logger.debug("dashboard: %r's package binding could not be resolved", member, exc_info=True)
-        return ""
-
-
-def _package_in_force(slug: str) -> tuple[instance.PinnedPackage | None, bool]:
-    """``(pinned page, older rule)`` for *slug*, from its instance record.
-
-    The write path asks the same two questions (``dashboard_package.read_package_model``),
-    so the page and the write check name one Model. Blocking file IO.
-    """
-    record = instance.read(slug)
-    return instance.pinned_package(record), instance.keeps_older_package_rule(record)
-
-
 async def _run(fn: Callable[[], Any]) -> Any:
     """Run a blocking call off the event loop: file IO, or work over a whole page."""
     return await asyncio.to_thread(fn)
@@ -511,9 +480,10 @@ async def _serve(
     # keeps the rule of looking a package up by the crewmate's binding.
     pinned: instance.PinnedPackage | None = None
     older_rule = False
+    counter = 0
     if not staged_only:
         try:
-            pinned, older_rule = await _run(lambda: _package_in_force(slug))
+            pinned, older_rule, counter = await _run(lambda: _package_read(slug))
         except Exception as exc:
             return _refusal(exc)
         if pinned is not None:
@@ -585,6 +555,7 @@ async def _serve(
             asked_for=bool(request.query.get("dashboard", "")),
             pinned=pinned,
             teammate=teammate,
+            counter=counter,
         )
     if request.query.get("preview") == "1":
         # The STAGED page, which no version records. Served from the same route and
@@ -1025,6 +996,7 @@ def read_fields(
     *,
     slot: str | None = None,
     prime_wait: float | None = None,
+    session: str | None = None,
 ) -> Any:
     """One read of *manifest*'s field values for this crewmate, as the page gets them.
 
@@ -1044,11 +1016,9 @@ def read_fields(
     # A root session's page is read by its own slot and has no publish of its own,
     # whatever crew name the caller carries.
     own_slot = slot is None
-    if slot is None:
-        slot = _dashboard_slot(member, slug)
-        session = _write_session(slug, member)
-    else:
-        session = _newest_unit(slot)
+    # *session*: the unit a caller tracing the page's own read names (the page's unit).
+    slot = _dashboard_slot(member, slug) if slot is None else slot
+    session = session or (_write_session(slug, member) if own_slot else _newest_unit(slot))
     # The reader's OWN panel record, picked by the panel read route's own rule, so the
     # page shows what that route shows and a crew sharing this slot never fills it. A
     # root session publishes no panel, so it has no owner and reads an empty one.
@@ -1663,8 +1633,11 @@ async def _serve_package(
     asked_for: bool = True,
     pinned: instance.PinnedPackage | None = None,
     teammate: bool = False,
+    counter: int = 0,
 ) -> web.Response:
     """Serve the ``kind="dashboard"`` artifact *package_slug* as this crewmate's page.
+
+    *counter* is the record's apply counter, read with *pinned* (:func:`_package_read`).
 
     *pinned* is the page the crewmate's instance record put in force, read from the
     gateway's snapshot (``instance.pinned_package``); ``None`` keeps the older rule for
@@ -1932,6 +1905,15 @@ async def _serve_package(
             f"the page cannot be framed: {redact_via_context(str(exc))}",
             status=409,
         )
+    from kiro_crew import dashboard_edit_mode
+
+    # Dashboard edit mode only: the apply counter a correction names its page by. Off,
+    # the body is what it was without the preview.
+    # Taken from the record read that chose the page, never read again here: an apply
+    # landing while this page rendered would otherwise pair it with its replacement's.
+    revision: dict[str, int] = {}
+    if dashboard_edit_mode.edit_mode_on():
+        revision = {"page_revision": _page_revision(counter, version)}
     return web.json_response(
         {
             "instance_version": version,
@@ -1955,6 +1937,7 @@ async def _serve_package(
             # amendment's fourth reason, and why the profile has to be read too.
             "scripts": scripts,
             "locale": read.get("locale", locale) if isinstance(read, dict) else locale,
+            **revision,
         }
     )
 

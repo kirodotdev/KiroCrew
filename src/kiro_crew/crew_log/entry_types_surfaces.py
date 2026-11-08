@@ -17,7 +17,6 @@ from __future__ import annotations
 
 from kiro_crew.crew_log.entry_types_fields import (
     JSON_ARRAY,
-    JSON_FLOAT,
     JSON_INT,
     JSON_OBJECT,
     JSON_STRING,
@@ -213,10 +212,12 @@ CUSTOM_ERROR_LIMIT = 240
 #: page went out of date (``dashboard/stale_wake.py``). Each one is a model turn the
 #: person pays for, so each one is recorded on the Bot's own log.
 DASHBOARD_STALE_WAKE_ENTRY_TYPE = "dashboard/stale_wake"
-#: Characters a record's declared ``source`` keeps (feature preview
-#: ``dashboard_edit_mode``): what the script read, in its own words, e.g. a metric name.
-CUSTOM_SOURCE_LIMIT = 240
-#: Numbers a record's declared ``points`` keeps: the raw readings behind its value.
+#: Bytes a record's declared ``source`` may serialize to (feature preview
+#: ``dashboard_edit_mode``): what the script read, as it describes it.
+CUSTOM_SOURCE_BYTES = 2048
+#: The kinds a declared ``source`` may name. ``other`` needs a ``label``.
+CUSTOM_SOURCE_KINDS = ("cloudwatch", "http", "sql", "prometheus", "file", "other")
+#: ``[t, v]`` pairs a record's declared ``points`` keeps: the raw readings behind it.
 CUSTOM_POINTS_LIMIT = 120
 #: Characters each cell of the gateway's ``provenance`` stamp keeps.
 CUSTOM_PROVENANCE_LIMIT = 256
@@ -838,20 +839,23 @@ TYPES: tuple[EntryType, ...] = (
             ),
             Field(
                 "source",
-                JSON_STRING,
+                JSON_OBJECT,
                 note=(
-                    "What the script says it read, at most CUSTOM_SOURCE_LIMIT characters "
-                    "(feature preview dashboard_edit_mode). The script's claim, shown as "
-                    "declared by the script, never as provenance."
+                    "What the script says it read (feature preview dashboard_edit_mode): "
+                    "an object whose kind is one of CUSTOM_SOURCE_KINDS (a CloudWatch "
+                    "query, an HTTP call, a SQL label, a Prometheus query, a file, or "
+                    "other with a label), at most CUSTOM_SOURCE_BYTES serialized. The "
+                    "script's claim, shown as declared by the script, never as provenance."
                 ),
             ),
             Field(
                 "points",
                 JSON_ARRAY,
-                item_type=JSON_FLOAT,
+                item_type=JSON_ARRAY,
                 note=(
-                    "The raw readings behind the record, at most CUSTOM_POINTS_LIMIT "
-                    "finite numbers. Declared by the script."
+                    "The raw readings behind the record: at most CUSTOM_POINTS_LIMIT "
+                    "[t, v] pairs of finite numbers, t in epoch seconds. Declared by the "
+                    "script."
                 ),
             ),
             Field(
@@ -860,8 +864,9 @@ TYPES: tuple[EntryType, ...] = (
                 note=(
                     "Stamped by the GATEWAY, never read from the request: job (the cron "
                     "job id), run_at (when the record arrived), script (the job's "
-                    "path:function) and sha (the first 12 hex of the script file's "
-                    "sha256). Each cell at most CUSTOM_PROVENANCE_LIMIT characters."
+                    "path:function). No digest of the script: the file on disk when the "
+                    "record arrives may not be the code that ran. Each cell at most "
+                    "CUSTOM_PROVENANCE_LIMIT characters."
                 ),
             ),
         ),

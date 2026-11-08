@@ -4,6 +4,8 @@ import CrewDashboardLoading from './CrewDashboardLoading'
 import DashboardPreviewLabel from '../chat/DashboardPreviewLabel'
 import DashboardPreviewActions, { DashboardPreviewOutcomeNote, usePreviewHandover } from '../chat/DashboardPreviewActions'
 import { MEMBER_DASHBOARD_QUERY_PREFIX } from '../../hooks/useWebSocket'
+import type { ChangeRequestOutcome } from './dashboardEdit'
+import { useEditSession } from './useEditSession'
 
 const CrewDynamicDashboard = lazy(() => import('./CrewDynamicDashboard'))
 
@@ -18,7 +20,7 @@ const CrewDynamicDashboard = lazy(() => import('./CrewDynamicDashboard'))
  * The tab holds the dashboard alone and offers no view switch. The raw crew-log
  * record is a diagnostics surface, reached from the chat panel's own Crew log
  * view, so the thread's slot is not part of this tab's input. */
-export default function CrewDashboardTab({ slug, member, displayName, avatar, onAct, onActKeep, onSend, onOpenProfileTab, preview = false, onLeavePreview }: {
+export default function CrewDashboardTab({ slug, member, displayName, avatar, onAct, onActKeep, onSend, onChangeRequest, onOpenProfileTab, preview = false, onLeavePreview }: {
   slug: string
   member: string
   displayName: string
@@ -30,6 +32,8 @@ export default function CrewDashboardTab({ slug, member, displayName, avatar, on
   onActKeep?: (text: string) => void
   /** Send a reply the page offered into this crewmate's own thread (see `CrewDynamicDashboard`). */
   onSend?: (text: string) => Promise<'sent' | 'off' | 'refused' | 'failed' | 'unknown'>
+  /** Send the person's own message to this crewmate (Dashboard edit mode's change request). */
+  onChangeRequest?: (text: string) => Promise<ChangeRequestOutcome>
   /** Called when the person clicks the one-click-send badge to go straight to
    *  the Profile tab where its switch lives. */
   onOpenProfileTab?: () => void
@@ -50,6 +54,9 @@ export default function CrewDashboardTab({ slug, member, displayName, avatar, on
   // discard or the clock -- the tab moves to the live page the same way.
   const onPreviewGone = useCallback((gone: boolean) => { if (gone) leave('closed') }, [leave])
   const showPreview = preview && outcome === null
+  // Held here, not in the dashboard: the live page is remounted when a staged one is
+  // shown and again when it leaves, and Edit's unsent drafts must outlast both.
+  const editSession = useEditSession(slug)
   return (
     <div className="h-full min-h-0 flex flex-col" data-testid="crew-dashboard-tab">
       {showPreview && <DashboardPreviewLabel withActions name={name} />}
@@ -78,6 +85,8 @@ export default function CrewDashboardTab({ slug, member, displayName, avatar, on
             onAct={onAct}
             onActKeep={onActKeep}
             onSend={onSend}
+            onChangeRequest={onChangeRequest}
+            editSession={editSession}
             onOpenProfileTab={onOpenProfileTab}
             preview={showPreview}
             onPreviewGone={showPreview ? onPreviewGone : undefined}

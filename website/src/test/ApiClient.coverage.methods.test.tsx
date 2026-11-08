@@ -650,6 +650,8 @@ describe('every api method issues one well-formed /api request', () => {
     sessionArchiveRead: ['sw-1', CALLER_SIGNAL],
     // `removeMcpBodyField(row)`: the query string is the row's three fields.
     removeMcpBodyField: [{ server: 'sw-1', tool: 'sw-2', field: 'sw-3' }],
+    // A correction names the page it was typed on, as a typed object.
+    memberDashboardCorrect: ['sw-1', 'sw-2', 'sw-3', 'sw-4', '', { page: 'template:sw-5', version: 1 }],
   }
 
   it('covers the whole surface (guards against the table silently shrinking)', () => {

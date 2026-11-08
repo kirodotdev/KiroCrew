@@ -380,6 +380,7 @@ describe('Settings > Developer > Feature Previews', () => {
     'Reply threads on bot chat messages': true,
     'Explore': true,
     'Mark out-of-date Dashboard fields': true,
+    'Dashboard edit mode': true,
     'Send pending approvals to chat apps': true,
     'Agent Harness for worker chats': true,
     'Session Environments': true,

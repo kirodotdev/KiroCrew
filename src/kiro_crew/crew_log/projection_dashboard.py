@@ -5,6 +5,7 @@ dashboard's ``agentic`` values and ``mistakes`` book.
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -17,8 +18,12 @@ from kiro_crew.crew_log.entry_types import (
     CUSTOM_FAILURE_LIMIT,
     CUSTOM_MAX_AGE_MAX_S,
     CUSTOM_MAX_AGE_MIN_S,
+    CUSTOM_POINTS_LIMIT,
+    CUSTOM_PROVENANCE_LIMIT,
     CUSTOM_RECORD_BYTES,
     CUSTOM_RECORD_DEPTH,
+    CUSTOM_SOURCE_BYTES,
+    CUSTOM_SOURCE_KINDS,
     CUSTOM_TYPE_LIMIT,
     CUSTOM_TYPE_NAME_LIMIT,
     CUSTOM_WRITER_LIMIT,
@@ -39,11 +44,6 @@ from kiro_crew.crew_log.entry_types import (
     PANEL_OWNER_LIMIT,
     PANEL_TEMPLATE_LIMIT,
     PANEL_TITLE_LIMIT,
-)
-from kiro_crew.crew_log.entry_types_surfaces import (
-    CUSTOM_POINTS_LIMIT,
-    CUSTOM_PROVENANCE_LIMIT,
-    CUSTOM_SOURCE_LIMIT,
 )
 from kiro_crew.crew_log.projection_values import _as_int, _rows_in
 from kiro_crew.crew_log.schema import Entry
@@ -712,33 +712,83 @@ def _custom_step(state: dict[str, Any], entry: Entry) -> None:
     state.get("failures", {}).pop(writer, None)
 
 
+#: The widest integer a reading may be: one a float holds exactly (2**53). The custom
+#: fold's row charge is measured at the widest float, and an integer past this serializes
+#: wider (``10**200`` is 201 digits), so the charge would stop being an upper bound.
+_READING_INT_LIMIT: Final[int] = 2**53
+
+
+def _finite(value: Any) -> bool:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    if isinstance(value, int):
+        return -_READING_INT_LIMIT <= value <= _READING_INT_LIMIT
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        # A JSON integer past a float's range (``10**400``) is no reading: refused as
+        # bad points, never a 500.
+        return False
+
+
+def custom_points_ok(points: Any) -> bool:
+    """Whether *points* is a record's declared readings: 1 to ``CUSTOM_POINTS_LIMIT``
+    ``[t, v]`` pairs of finite numbers. Shared with the record route."""
+    return (
+        isinstance(points, list)
+        and 0 < len(points) <= CUSTOM_POINTS_LIMIT
+        and all(
+            isinstance(p, list) and len(p) == 2 and _finite(p[0]) and _finite(p[1]) for p in points
+        )
+    )
+
+
+def custom_source_refusal(source: Any) -> str:
+    """Why *source* is not a record's declared source, or ``""``. Shared with the route.
+
+    An object naming a ``kind`` from ``CUSTOM_SOURCE_KINDS`` (``other`` needs a
+    ``label``), at most ``CUSTOM_SOURCE_BYTES`` serialized and three levels deep, whose
+    optional ``console_url`` is an ``https://`` address. It is the script's claim and is
+    shown as one; the host never fetches the URL.
+    """
+    if not isinstance(source, Mapping):
+        return "source must be an object"
+    if source.get("kind") not in CUSTOM_SOURCE_KINDS:
+        return f"source.kind must be one of {', '.join(CUSTOM_SOURCE_KINDS)}"
+    if source.get("kind") == "other" and not (
+        isinstance(source.get("label"), str) and source["label"].strip()
+    ):
+        return "source.label is required when source.kind is other"
+    url = source.get("console_url")
+    if url is not None and not (isinstance(url, str) and url.startswith("https://")):
+        return "source.console_url must be an https:// address"
+    if custom_record_depth(source) > 3:
+        return "source nests deeper than 3 levels"
+    try:
+        size = len(json.dumps(source, ensure_ascii=False, allow_nan=False).encode("utf-8"))
+    except (TypeError, ValueError):
+        return "source must be plain JSON"
+    if size > CUSTOM_SOURCE_BYTES:
+        return f"source must serialize to at most {CUSTOM_SOURCE_BYTES} bytes"
+    return ""
+
+
 def _keep_provenance(row: dict[str, Any], data: Mapping[str, Any]) -> None:
     """Copy a record's declared ``source`` / ``points`` and the gateway's ``provenance``.
 
     Present only on records written with the ``dashboard_edit_mode`` preview on. Each
-    is re-clamped here, as every cell of this fold is, because the line is off disk.
+    is re-checked here, as every cell of this fold is, because the line is off disk.
     """
-    source = _panel_text(data.get("source"), CUSTOM_SOURCE_LIMIT)
-    if source:
-        row["source"] = source
-    points = data.get("points")
-    if (
-        isinstance(points, list)
-        and 0 < len(points) <= CUSTOM_POINTS_LIMIT
-        and all(
-            isinstance(p, (int, float))
-            and not isinstance(p, bool)
-            and p == p
-            and abs(p) != float("inf")
-            for p in points
-        )
-    ):
-        row["points"] = list(points)
+    source = data.get("source")
+    if isinstance(source, Mapping) and not custom_source_refusal(source):
+        row["source"] = dict(source)
+    if custom_points_ok(data.get("points")):
+        row["points"] = [list(p) for p in data["points"]]
     stamp = data.get("provenance")
     if isinstance(stamp, Mapping):
         kept = {
             key: _panel_text(stamp.get(key), CUSTOM_PROVENANCE_LIMIT)
-            for key in ("job", "run_at", "script", "sha")
+            for key in ("job", "run_at", "script")
         }
         if any(kept.values()):
             row["provenance"] = kept

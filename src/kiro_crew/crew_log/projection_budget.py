@@ -51,9 +51,11 @@ _SLOT_FOLD_ROW_BYTES: Final[dict[str, int]] = {
     # an item with title, summary and decision at their clamps; its acceptance and
     # artifacts have no clamp and are charged per container (``_work_opaque``)
     "work": 2_705,
-    # one agentic field: its value at DASHBOARD_VALUE_BYTES, plus the field name,
-    # the declared type, the stamp and the ownership digest
-    "agentic": 8_400,
+    # one agentic field a person corrected twice: its value at DASHBOARD_VALUE_BYTES and
+    # the replaced person write kept as ``prior`` (a second value at the ceiling, with
+    # its actor and seq), both reasons at their clamp in 4-byte characters, plus the
+    # field name, the declared type, the stamp and the digest (18,667 measured)
+    "agentic": 18_700,
     # one mistake group: code, field and reason at their clamps, the ownership
     # digest, two stamps and the bounded correction list (772 measured)
     "mistakes": 1_100,
@@ -69,8 +71,11 @@ _SLOT_FOLD_ROW_BYTES: Final[dict[str, int]] = {
     # text in 4-byte characters (9,144 measured)
     "objects": 9_200,
     # one custom record: its data at CUSTOM_RECORD_BYTES, plus the type name, the
-    # stamp, the seq, and the writer, member and ownership cells at their clamps
-    "custom": 8_900,
+    # stamp, the seq, and the writer, member and ownership cells at their clamps, and
+    # what Dashboard edit mode keeps beside it: the source at CUSTOM_SOURCE_BYTES,
+    # CUSTOM_POINTS_LIMIT readings at the widest float, the provenance at its clamps
+    # (18,070 measured)
+    "custom": 18_100,
     # a worker row with every text cell at its clamp -- slot and stop reason at
     # TEXT_LIMIT, task, agent, last line, report and close reason at
     # WORKERS_TEXT_LIMIT -- serializes to 2,034 bytes; a one-unit fixture can only

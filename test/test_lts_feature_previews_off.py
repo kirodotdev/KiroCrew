@@ -45,12 +45,13 @@ def all_on(tmp_path):
 
 
 def _readers() -> dict[str, bool]:
-    from kiro_crew import dashboard_agentic, session_harness_preview
+    from kiro_crew import dashboard_agentic, dashboard_edit_mode, session_harness_preview
     from kiro_crew.connections import crew_oauth
     from kiro_crew.dashboard import stale_wake
 
     return {
         "crew_oauth": crew_oauth.enabled(),
+        "dashboard_edit_mode": dashboard_edit_mode.edit_mode_on(KiroCrewConfig.load()),
         "dashboard_stale_fields": dashboard_agentic.stale_fields_enabled(),
         "dashboard_stale_wake": stale_wake.enabled(),
         "session_harness": session_harness_preview.session_harness_enabled(),

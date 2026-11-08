@@ -1344,6 +1344,14 @@
       "hint": "Turns on an in-development, developer-only harness for a new layout mechanism. Nothing you can see changes yet: the mechanism has no page of its own, so this exists only so it can be built and tested behind a switch."
     },
     {
+      "id": "developer.dashboard-edit-mode",
+      "label": "Dashboard edit mode",
+      "tab": "developer",
+      "route": "/settings/developer/feature-previews?highlight=developer.dashboard-edit-mode",
+      "description": "Adds an Inspect button to a Bot's Dashboard: point at a value to see where it came from, click a component to ask the Bot to change it, and correct a value the Bot wrote.",
+      "hint": "Kiro Crew traces each value from its own records; the page only says which field is under the pointer. Off, every Dashboard is as before."
+    },
+    {
       "id": "developer.decisions",
       "label": "Decisions",
       "tab": "developer",

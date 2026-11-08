@@ -185,6 +185,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         RECORD_QUOTA_WRITERS,
         RecordWriter,
         _cron_writer,
+        _lineage_body_refusal,
         _over_quota,
         _recent_records,
         _recent_records_guard,
@@ -193,9 +194,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _redacted_record,
         _refuse,
         _resolve_record_writer,
+        _script_label,
         _scrubbed,
         _scrubbed_under,
+        _stored_source,
         _unique_key,
+        cron_provenance,
         record_cron_failure,
         record_through_door,
     )
@@ -245,6 +249,8 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         CUSTOM_FAILED_ENTRY_TYPE,
         CUSTOM_MAX_AGE_MAX_S,
         CUSTOM_MAX_AGE_MIN_S,
+        CUSTOM_POINTS_LIMIT,
+        CUSTOM_PROVENANCE_LIMIT,
         CUSTOM_RECORD_BYTES,
         CUSTOM_RECORD_DEPTH,
         CUSTOM_TYPE_NAME_LIMIT,
@@ -252,8 +258,10 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.crew_log.projection_dashboard import (  # noqa: F401
         custom_max_age_ok,
+        custom_points_ok,
         custom_record_depth,
         custom_record_fits,
+        custom_source_refusal,
         custom_type_name_ok,
     )
     from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
