@@ -30,7 +30,7 @@ def _pause_store(tmp_path, _floor_monkeypatch):
     _floor_monkeypatch.setattr(crew_pause, "_path", lambda: path)
     _floor_monkeypatch.setattr(crew_pause, "_loaded_from", None)
     _floor_monkeypatch.setattr(crew_pause, "_records", {})
-    _floor_monkeypatch.setattr(crew_pause, "_RESUMING", set())
+    _floor_monkeypatch.setattr(crew_pause, "_resuming", {})
     _floor_monkeypatch.setattr(crew_pause, "_unsaved", False)
     _floor_monkeypatch.setattr(crew_mode, "_known_roots", set())
     _floor_monkeypatch.setattr(crew_mode, "persisted_parents", lambda: {})
@@ -40,6 +40,7 @@ def _pause_store(tmp_path, _floor_monkeypatch):
 def _forget_memory() -> None:
     """What a gateway restart does to the in-memory copy, before the preload has run."""
     crew_pause._records.clear()
+    crew_pause._resuming = {}
     crew_pause._loaded_from = None
 
 
@@ -517,6 +518,44 @@ def test_a_turn_ended_while_resume_hands_back_is_left_to_that_resume():
     assert crew_pause.owe_turn("w2") is False
     crew_pause.forget_resuming(["w1"])
     assert crew_pause.owe_turn("w1") is False
+
+
+def test_a_restart_before_resume_hands_back_holds_the_stopped_members_again(_pause_store):
+    crew_pause.pause("root", ["root", "w1", "w2"], ["root", "w1"])
+    crew_pause.resume("root")
+    # The gateway restarts before the hand-backs finish: that Resume is gone.
+    _restart()
+    rec = crew_pause.record("root")
+    assert rec is not None and rec["stopped"] == ["root", "w1"]
+    assert crew_pause.holds_turn("w1") and not crew_pause.holds_turn("w2")
+    # A turn of w1 reaching its gate is owed to the next Resume all, which continues it.
+    assert crew_pause.owe_turn("w1") is True
+    assert crew_pause.resume("root")["stopped"] == ["root", "w1"]
+    # w1's Continue is refused: it is held again in the write that ends the Resume.
+    crew_pause.forget_resuming(["root", "w1"], root="root", pending=["w1"])
+    assert "resuming" not in json.loads(_pause_store.read_text())
+    _restart()
+    assert crew_pause.record("root")["stopped"] == ["w1"] and crew_pause.holds_turn("w1")
+    crew_pause.resume("root")
+    crew_pause.forget_resuming(["w1"])
+    _restart()
+    assert crew_pause.record("root") is None
+
+
+def test_a_hand_back_the_file_refuses_is_reported_and_stored_by_the_next_write(monkeypatch):
+    crew_pause.pause("root", ["w1"], ["w1"])
+    crew_pause.resume("root")
+
+    def _fail(*_a: Any, **_k: Any) -> None:
+        raise OSError("disk full")
+
+    with monkeypatch.context() as mp:
+        mp.setattr(crew_pause, "atomic_write", _fail)
+        assert crew_pause.forget_resuming(["w1"]) is False
+    # w1 runs again in memory, and the next write stores the hand-back.
+    assert crew_pause.owe_turn("w1") is False
+    _restart()
+    assert crew_pause.record("root") is None
 
 
 @pytest.mark.asyncio
