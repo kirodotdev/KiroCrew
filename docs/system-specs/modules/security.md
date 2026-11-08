@@ -3580,7 +3580,11 @@ stub token names now, because a server under the mask cannot verify the signed t
 mapping itself and a warm-pool runtime is re-keyed after its servers start. The listener refuses
 `X-Internal-Secret` outright, serves no cookie, bypass or non-internal route, and has
 no TCP fallback. The gateway holds only sha256 digests of pickups and capabilities,
-in memory, dropped with the client that issued them. The `agent-ipc` leaf is on no
+in memory, dropped with the client that issued them. That drop is lock-free: the
+client's `weakref.finalize` callback (`CapabilityStore._retire`) only queues the
+pickup's digest, and the next `issue`, `redeem` or `verify` drops every queued one
+under the store lock before it reads (`_drop_retired`), because garbage collection can
+run the finalizer on a thread that already holds that non-reentrant lock. The `agent-ipc` leaf is on no
 mask; `test_agent_ipc.py` pins that for every enforced backend, beside `run/` and
 `.local_secret` staying masked. Refusal codes: `ipc_pickup_unknown`,
 `ipc_pickup_held`, `ipc_peer_not_in_session`, `ipc_peer_unverified`,
