@@ -470,3 +470,25 @@ async def test_the_session_query_names_only_the_holders_own_session(gate_app):
     assert no_cap[0] == 403 and no_cap[1]["code"] == agent_ipc.REFUSE_CAPABILITY
     assert wrong_cap[0] == 403 and wrong_cap[1]["code"] == agent_ipc.REFUSE_CAPABILITY
     assert post[0] == 403 and post[1]["code"] == agent_ipc.REFUSE_ROUTE
+
+
+@pytest.mark.asyncio
+async def test_a_granted_session_query_writes_one_granted_sel_row(gate_app, monkeypatch):
+    """The session query is a capability grant, so the operator's SEL records it."""
+    from kiro_crew.agent_ipc_wire import SESSION_PATH
+
+    app, sock = gate_app
+    rows: list[tuple[str, str, str]] = []
+    monkeypatch.setattr(
+        agent_ipc,
+        "_log_auth",
+        lambda request, user_id, outcome, error: rows.append((request.path, user_id, outcome)),
+    )
+    pickup = _issue(os.getppid())
+
+    def call():
+        _status, body = _post(REDEEM_PATH, sock, body={"pickup": pickup})
+        return _post(SESSION_PATH, sock, headers={CAPABILITY_HEADER: body["capability"]})
+
+    assert (await _serve(app, call))[0] == 200
+    assert rows == [(SESSION_PATH, "agent-ipc", "granted")]
