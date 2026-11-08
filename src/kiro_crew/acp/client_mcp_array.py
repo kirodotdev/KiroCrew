@@ -33,9 +33,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import weakref
 from typing import TYPE_CHECKING, Any, Collection
 
 from kiro_crew import acp_tool_gate
+from kiro_crew.acp.ipc_pickup import with_ipc_pickups
 from kiro_crew.acp.mcp_mount_check import schedule_mount_check
 from kiro_crew.acp.mcp_ref_guard import (
     warn_remote_header_secret_refs,
@@ -325,7 +327,7 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
         stubbed = frozenset()
     mirror = mirror_for(self.backend)
     if mirror is None:
-        return self._mirrorless_member_mounts(stubbed)
+        return _with_own_ipc_pickups(self, self._mirrorless_member_mounts(stubbed))
     # Recorded BEFORE the projection reads the governed flag, and beside the
     # array it authorizes: the session/new envelope reads this record, so an
     # array delivered under the exclusion always ships with it.
@@ -375,12 +377,40 @@ def _resolve_session_mcp_servers(self: AcpClient) -> list[dict[str, Any]]:
     # The restriction half of the projection's withhold set, from the SAME parse the
     # array came out of: the member append must not re-add a name this projection
     # refused on a transport where the withhold is the whole of the enforcement.
-    return self._append_member_panel_server(
-        self._append_member_dispatch_server(
-            out, projection.restricted_servers, projection.disabled_servers
+    return _with_own_ipc_pickups(
+        self,
+        self._append_member_panel_server(
+            self._append_member_dispatch_server(
+                out, projection.restricted_servers, projection.disabled_servers
+            ),
+            projection.restricted_servers,
+            projection.disabled_servers,
         ),
-        projection.restricted_servers,
-        projection.disabled_servers,
+    )
+
+
+def _with_own_ipc_pickups(client: AcpClient, servers: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """*servers* with this client's agent-socket pickups (``acp/ipc_pickup.py``).
+
+    The sessions an ``AcpClient`` drives (opencode, goose and the other backends the
+    shared runtime does not host) build their array here, so an enforced harness's
+    ``kirocrew-core`` gets its pickup on this path as it does on the runtime's. Bound
+    to this client's stub token and its own root pid, and dropped with the client.
+    """
+    client_ref = weakref.ref(client)
+
+    def _own_root_pid() -> int | None:
+        live_client = client_ref()
+        if live_client is None:
+            return None
+        return live_client._pid  # pid-owner-ok: the client reads its own root
+
+    return with_ipc_pickups(
+        servers,
+        backend=str(client.backend or ""),
+        session_token=client._stub_session_token,
+        runtime_pid=_own_root_pid,
+        owner=client,
     )
 
 

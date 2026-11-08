@@ -217,6 +217,14 @@ def _api_urlopen(
     socket belonging to THAT resolution (see :func:`_resolve_api_target`); the
     default keeps the standalone behavior for callers holding only a base.
     """
+    # A process holding an agent-socket capability sends every request there, with
+    # the capability in place of the secret, and nowhere else (agent_ipc_client).
+    # Imported here so the facade serves no name from outside its family.
+    from kiro_crew.agent_ipc_client import current_capability, open_with_capability
+
+    capability, agent_socket = current_capability(_api_port)
+    if capability:
+        return open_with_capability(req, timeout, capability=capability, socket_path=agent_socket)
     if unix_socket_path is None:
         unix_socket_path = _api_unix_socket()
     return loopback_urlopen(req, timeout=timeout, unix_socket_path=unix_socket_path or None)
@@ -573,6 +581,13 @@ def _http_error_body(exc: urllib.error.HTTPError) -> dict:
             "credential listener, are possible causes. This is not a "
             "second-gateway mix-up. The gateway's security event log marks "
             "these denials as received=absent."
+        )
+    elif code in ("ipc_capability_invalid", "ipc_session_unbound", "ipc_session_mismatch"):
+        # The agent-socket capability this server holds does not admit it: the
+        # gateway that issued it is gone, or so is the session it names.
+        message = (
+            "this tool server's connection to the gateway does not admit it for this "
+            "session. Start a new session and retry."
         )
     elif code == "caller_record_missing":
         message = (
