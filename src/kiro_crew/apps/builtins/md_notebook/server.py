@@ -353,7 +353,21 @@ def _gh_token_sync() -> Optional[str]:
             )
             if proc.returncode == 0:
                 value = proc.stdout.strip() or None
-        except (OSError, subprocess.SubprocessError):
+            else:
+                # Normally "not logged in". Never log stdout: on success it is the token.
+                logger.debug("md-notebook: gh login lookup exited %d", proc.returncode)
+        except (OSError, subprocess.SubprocessError) as exc:
+            # A trusted gh that cannot run or times out looks like "not logged in"
+            # to every caller, so say which it was.
+            code = getattr(exc, "winerror", None) or getattr(exc, "errno", None)
+            logger.warning(
+                "md-notebook: gh login lookup could not run %s: %s (code %s);"
+                " treated as not logged in for the next %d s",
+                gh,
+                type(exc).__name__,
+                code,
+                GH_TOKEN_TTL_SEC,
+            )
             value = None
     _gh_cache["value"] = value
     _gh_cache["at"] = time.monotonic()
