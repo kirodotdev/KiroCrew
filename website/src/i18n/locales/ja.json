@@ -17500,6 +17500,8 @@
       "status_error": "終了",
       "status_running": "実行中",
       "title": "セッション内訳",
+      "turn_n": "{{n}} ターン目",
+      "turn_short": "{{n}}",
       "tool_count_other": "ツール {{n}} 件",
       "unknown_agent": "サブエージェント",
       "unknown_model": "不明"

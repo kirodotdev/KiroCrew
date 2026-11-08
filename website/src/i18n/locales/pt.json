@@ -18440,6 +18440,8 @@
       "status_error": "encerrado",
       "status_running": "em execução",
       "title": "Detalhamento da sessão",
+      "turn_n": "Turno {{n}}",
+      "turn_short": "T{{n}}",
       "tool_count_one": "{{n}} ferramenta",
       "tool_count_many": "{{n}} ferramentas",
       "tool_count_other": "{{n}} ferramentas",
