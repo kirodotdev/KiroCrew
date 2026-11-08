@@ -9593,18 +9593,18 @@
     },
     "trustDropdown": {
       "trust": "Considera attendibile",
-      "trust_all_base": "Fidati di tutti i comandi <mono>{{base}}</mono>",
-      "trust_all_base_channel": "Fidati di tutti i comandi <mono>{{base}}</mono> per @{{role}} — fino al riavvio di {{productName}}",
-      "trust_all_base_hour": "Fidati di qualsiasi comando <mono>{{base}}</mono> per un’ora (fino alle {{time}})",
-      "trust_all_base_session": "Fidati di qualsiasi comando <mono>{{base}}</mono> per questa sessione",
-      "trust_all_base_today": "Fidati di qualsiasi comando <mono>{{base}}</mono> fino a mezzanotte ({{time}})",
+      "trust_all_base": "Fidati di tutti i comandi <mono/>",
+      "trust_all_base_channel": "Fidati di tutti i comandi <mono/> per @{{role}} — fino al riavvio di {{productName}}",
+      "trust_all_base_hour": "Fidati di qualsiasi comando <mono/> per un’ora (fino alle {{time}})",
+      "trust_all_base_session": "Fidati di qualsiasi comando <mono/> per questa sessione",
+      "trust_all_base_today": "Fidati di qualsiasi comando <mono/> fino a mezzanotte ({{time}})",
       "trust_all_tools": "Considera attendibili tutti gli strumenti di questa sessione",
       "trust_all_tools_channel": "Considera attendibili tutti gli strumenti di questo canale — persiste dopo il riavvio",
-      "trust_this_command": "Fidati di <mono>{{cmd}}</mono>",
-      "trust_this_command_channel": "Fidati di <mono>{{cmd}}</mono> per @{{role}} — fino al riavvio di {{productName}}",
-      "trust_this_command_hour": "Fidati di <mono>{{cmd}}</mono> per un’ora (fino alle {{time}})",
-      "trust_this_command_session": "Fidati di <mono>{{cmd}}</mono> per questa sessione",
-      "trust_this_command_today": "Fidati di <mono>{{cmd}}</mono> fino a mezzanotte ({{time}})"
+      "trust_this_command": "Fidati di <mono/>",
+      "trust_this_command_channel": "Fidati di <mono/> per @{{role}} — fino al riavvio di {{productName}}",
+      "trust_this_command_hour": "Fidati di <mono/> per un’ora (fino alle {{time}})",
+      "trust_this_command_session": "Fidati di <mono/> per questa sessione",
+      "trust_this_command_today": "Fidati di <mono/> fino a mezzanotte ({{time}})"
     },
     "tunnelStatus": {
       "connected": "Connesso",

@@ -9372,18 +9372,18 @@
     },
     "trustDropdown": {
       "trust": "Vertrauen",
-      "trust_all_base": "Allen <mono>{{base}}</mono>-Befehlen vertrauen",
-      "trust_all_base_channel": "Allen <mono>{{base}}</mono>-Befehlen für @{{role}} vertrauen — bis {{productName}} neu startet",
-      "trust_all_base_hour": "Jedem <mono>{{base}}</mono>-Befehl eine Stunde lang vertrauen (bis {{time}})",
-      "trust_all_base_session": "Jedem <mono>{{base}}</mono>-Befehl in dieser Sitzung vertrauen",
-      "trust_all_base_today": "Jedem <mono>{{base}}</mono>-Befehl bis Mitternacht vertrauen ({{time}})",
+      "trust_all_base": "Allen <mono/>-Befehlen vertrauen",
+      "trust_all_base_channel": "Allen <mono/>-Befehlen für @{{role}} vertrauen — bis {{productName}} neu startet",
+      "trust_all_base_hour": "Jedem <mono/>-Befehl eine Stunde lang vertrauen (bis {{time}})",
+      "trust_all_base_session": "Jedem <mono/>-Befehl in dieser Sitzung vertrauen",
+      "trust_all_base_today": "Jedem <mono/>-Befehl bis Mitternacht vertrauen ({{time}})",
       "trust_all_tools": "Allen Werkzeugen in dieser Sitzung vertrauen",
       "trust_all_tools_channel": "Allen Werkzeugen in diesem Kanal vertrauen — bleibt nach Neustarts bestehen",
-      "trust_this_command": "<mono>{{cmd}}</mono> vertrauen",
-      "trust_this_command_channel": "<mono>{{cmd}}</mono> für @{{role}} vertrauen — bis {{productName}} neu startet",
-      "trust_this_command_hour": "<mono>{{cmd}}</mono> eine Stunde lang vertrauen (bis {{time}})",
-      "trust_this_command_session": "<mono>{{cmd}}</mono> in dieser Sitzung vertrauen",
-      "trust_this_command_today": "<mono>{{cmd}}</mono> bis Mitternacht vertrauen ({{time}})"
+      "trust_this_command": "<mono/> vertrauen",
+      "trust_this_command_channel": "<mono/> für @{{role}} vertrauen — bis {{productName}} neu startet",
+      "trust_this_command_hour": "<mono/> eine Stunde lang vertrauen (bis {{time}})",
+      "trust_this_command_session": "<mono/> in dieser Sitzung vertrauen",
+      "trust_this_command_today": "<mono/> bis Mitternacht vertrauen ({{time}})"
     },
     "tunnelStatus": {
       "connected": "Verbunden",
