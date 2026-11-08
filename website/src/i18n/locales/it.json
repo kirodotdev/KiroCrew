@@ -6806,6 +6806,8 @@
       "paused_last_cycle_failed": "In pausa · l’ultimo ciclo non è riuscito a partire",
       "paused_interrupted_cycle": "In pausa · un riavvio ha interrotto l’ultimo ciclo. Riprendere fa ripartire il loop.",
       "paused_claim_unsaved": "In pausa · non è stato possibile salvare l’avanzamento. Riprendere fa ripartire il loop.",
+      "paused_consecutive_failures": "In pausa · diversi cicli di fila non sono riusciti. Controlla l’errore in questa chat, poi premi Play.",
+      "paused_model_refused": "In pausa · il modello ha rifiutato l’ultimo ciclo. Cambia l’obiettivo o il modello, poi premi Play.",
       "clear_goal_for_good": "Cancella",
       "cancel": "Annulla",
       "clear_goal_question": "Eliminare definitivamente questo obiettivo?",

@@ -6454,6 +6454,8 @@
       "paused_last_cycle_failed": "一時停止中 · 前回のサイクルを実行できませんでした",
       "paused_interrupted_cycle": "一時停止中 · 再起動により前回のサイクルが中断されました。再開するとループが続行します。",
       "paused_claim_unsaved": "一時停止中 · 進行状況を保存できませんでした。再開するとループが続行します。",
+      "paused_consecutive_failures": "一時停止中 · サイクルが続けて失敗しました。このチャットでエラーを確認してから Play を押してください。",
+      "paused_model_refused": "一時停止中 · モデルが前回のサイクルを拒否しました。目標かモデルを変更してから Play を押してください。",
       "clear_goal_for_good": "クリア",
       "cancel": "キャンセル",
       "clear_goal_question": "この目標を完全に削除しますか？",

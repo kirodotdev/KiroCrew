@@ -6806,6 +6806,8 @@
       "paused_last_cycle_failed": "Pausado · o último ciclo não pôde rodar",
       "paused_interrupted_cycle": "Pausado · um reinício interrompeu o último ciclo. Retomar continua o loop.",
       "paused_claim_unsaved": "Pausado · não foi possível salvar o progresso. Retomar continua o loop.",
+      "paused_consecutive_failures": "Pausado · vários ciclos seguidos falharam. Veja o erro neste chat e depois toque em Play.",
+      "paused_model_refused": "Pausado · o modelo recusou o último ciclo. Mude o objetivo ou o modelo e depois toque em Play.",
       "clear_goal_for_good": "Limpar",
       "cancel": "Cancelar",
       "clear_goal_question": "Excluir este objetivo definitivamente?",

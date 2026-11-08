@@ -6806,6 +6806,8 @@
       "paused_last_cycle_failed": "En pause · le dernier cycle n’a pas pu s’exécuter",
       "paused_interrupted_cycle": "En pause · un redémarrage a interrompu le dernier cycle. Reprendre relance la boucle.",
       "paused_claim_unsaved": "En pause · sa progression n’a pas pu être enregistrée. Reprendre relance la boucle.",
+      "paused_consecutive_failures": "En pause · plusieurs cycles d’affilée ont échoué. Regarde l’erreur dans ce chat, puis appuie sur Play.",
+      "paused_model_refused": "En pause · le modèle a refusé le dernier cycle. Change l’objectif ou le modèle, puis appuie sur Play.",
       "clear_goal_for_good": "Effacer",
       "cancel": "Annuler",
       "clear_goal_question": "Supprimer définitivement cet objectif ?",

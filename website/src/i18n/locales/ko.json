@@ -6454,6 +6454,8 @@
       "paused_last_cycle_failed": "일시중지됨 · 마지막 주기를 실행할 수 없었습니다",
       "paused_interrupted_cycle": "일시중지됨 · 재시작으로 마지막 주기가 중단되었습니다. 재개하면 루프가 계속 진행됩니다.",
       "paused_claim_unsaved": "일시중지됨 · 진행 상황을 저장할 수 없었습니다. 재개하면 루프가 계속 진행됩니다.",
+      "paused_consecutive_failures": "일시중지됨 · 여러 주기가 연속으로 실패했습니다. 이 채팅에서 오류를 확인한 뒤 Play를 누르세요.",
+      "paused_model_refused": "일시중지됨 · 모델이 마지막 주기를 거부했습니다. 목표나 모델을 바꾼 뒤 Play를 누르세요.",
       "clear_goal_for_good": "지우기",
       "cancel": "취소",
       "clear_goal_question": "이 목표를 영구히 삭제하시겠습니까?",
