@@ -729,11 +729,13 @@ class TestAHardStop:
                 "queued completion", [SimpleNamespace(agent_id="owed")]
             )
             # The hard Stop's slots push serializes every slot whenever its coalescing
-            # window is open, which reads the manager's running and queued sub-agents.
+            # window is open, which reads the manager's running and queued sub-agents
+            # and the queued rows' wait labels.
             harness.state.subagents = SimpleNamespace(
                 settle_queued_delivery=MagicMock(side_effect=settle_queued_delivery),
                 running_agents_for=MagicMock(return_value=[]),
                 published_queued_depths=MagicMock(return_value={}),
+                published_queued_labels=MagicMock(return_value={}),
             )
         harness.state.sessions.stop_turn = AsyncMock(return_value="hard")
         harness.slot._stop_state = "soft_pending"
