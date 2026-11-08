@@ -9,6 +9,10 @@ channel allowlist link) is refused too, as the existing session list refuses it.
 
 Neither route reads an identity from the request. The viewer is the actor the
 auth middleware published.
+
+Each route walks the whole session catalog and parses every row's attribution,
+so that walk runs in a worker thread: on a large catalog it would stall the
+event loop.
 """
 
 from __future__ import annotations
@@ -93,6 +97,10 @@ def _machine_only(key: str) -> bool:
     return _is_machine_only_session(key)
 
 
+def _conversations(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [r for r in rows if not _machine_only(str(r.get("key") or ""))]
+
+
 async def api_shared_crew_sessions(request: web.Request) -> web.Response:
     """The creator-filtered, paged session list (``SessionPage`` plus ``viewer``)."""
     refused = await _refusal(request)
@@ -105,7 +113,8 @@ async def api_shared_crew_sessions(request: web.Request) -> web.Response:
     viewer = viewer_principal(request)
     rows = await _catalog_rows(request)
     try:
-        page: SessionPage = query_sessions(
+        page: SessionPage = await asyncio.to_thread(
+            query_sessions,
             rows,
             query,
             viewer,
@@ -126,22 +135,22 @@ async def api_shared_crew_people(request: web.Request) -> web.Response:
     refused = await _refusal(request)
     if refused is not None:
         return refused
-    from kiro_crew.shared_crew.routes_invites import decorate_people
-
-    rows = [r for r in await _catalog_rows(request) if not _machine_only(str(r.get("key") or ""))]
     from kiro_crew.shared_crew.owner import is_owner_principal
+    from kiro_crew.shared_crew.routes_invites import decorate_people
     from kiro_crew.shared_crew.tailscale_sharees import read_sharees
 
     viewer = viewer_principal(request)
     owner_id = _owner_id(request)
-    body = people_view(
-        viewer,
-        rows,
-        owner_id=owner_id,
-        # Only the owner's view lists sharees, so only it reads the daemon.
-        sharees=await read_sharees() if is_owner_principal(viewer, owner_id) else (),
-    )
-    body = await asyncio.to_thread(decorate_people, body)
+    catalog = await _catalog_rows(request)
+    # Only the owner's view lists sharees, so only it reads the daemon.
+    sharees = await read_sharees() if is_owner_principal(viewer, owner_id) else ()
+
+    def build() -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        rows = _conversations(catalog)
+        body = people_view(viewer, rows, owner_id=owner_id, sharees=sharees)
+        return rows, decorate_people(body)
+
+    rows, body = await asyncio.to_thread(build)
     _attach_live(request, body, rows)
     return web.json_response(body)
 
@@ -210,14 +219,15 @@ async def api_shared_crew_mode(request: web.Request) -> web.Response:
     from kiro_crew.shared_crew.access import setup_paths_dict
     from kiro_crew.shared_crew.crew_mode import mode_view
 
-    rows = [r for r in await _catalog_rows(request) if not _machine_only(str(r.get("key") or ""))]
+    catalog = await _catalog_rows(request)
+    creators = await asyncio.to_thread(lambda: _session_creators(_conversations(catalog)))
     crew_id = await asyncio.to_thread(gateway_id)
     body = mode_view(
         viewer_principal(request),
         _observed_principals(),
         setup_paths=setup_paths_dict(),
         crew_id=crew_id,
-        creators=_session_creators(rows),
+        creators=creators,
         owner_id=_owner_id(request),
     )
     return web.json_response(body)
