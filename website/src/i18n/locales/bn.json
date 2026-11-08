@@ -19745,6 +19745,7 @@
         "none": "(কোনোটি নয়)",
         "not_a_valid_id": "\"{{name}}\" একটি বৈধ ID নয়",
         "not_connected": "সংযুক্ত নয়",
+        "owner_id_missing": "মালিক সেট না করা পর্যন্ত Slack বন্ধ থাকে। নিচে মালিকের Slack মেম্বার আইডি (KIROCREW_OWNER_ID) যোগ করো।",
         "owner_slack_member_id": "মালিকের Slack মেম্বার আইডি",
         "paste_slack_app_token_xapp": "Slack অ্যাপ টোকেন পেস্ট করুন (xapp-…)",
         "paste_slack_bot_token_xoxb": "Slack বট টোকেন পেস্ট করুন (xoxb-…)",

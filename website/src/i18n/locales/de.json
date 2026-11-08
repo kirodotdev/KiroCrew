@@ -19745,6 +19745,7 @@
         "none": "(keine)",
         "not_a_valid_id": "„{{name}}“ ist keine gültige ID",
         "not_connected": "Nicht verbunden",
+        "owner_id_missing": "Slack bleibt aus, bis ein Eigentümer festgelegt ist. Trage unten die Slack-Mitglieds-ID des Eigentümers (KIROCREW_OWNER_ID) ein.",
         "owner_slack_member_id": "Slack-Mitglieds-ID des Eigentümers",
         "paste_slack_app_token_xapp": "Slack-App-Token einfügen (xapp-…)",
         "paste_slack_bot_token_xoxb": "Slack-Bot-Token einfügen (xoxb-…)",

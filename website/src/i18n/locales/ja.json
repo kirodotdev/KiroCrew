@@ -19247,6 +19247,7 @@
         "none": "（なし）",
         "not_a_valid_id": "「{{name}}」は有効な ID ではありません",
         "not_connected": "未接続",
+        "owner_id_missing": "所有者が設定されるまで Slack はオフのままです。以下で所有者 Slack メンバー ID（KIROCREW_OWNER_ID）を追加してください。",
         "owner_slack_member_id": "所有者 Slack メンバー ID",
         "paste_slack_app_token_xapp": "Slack アプリトークンを貼り付けてください（xapp-…）",
         "paste_slack_bot_token_xoxb": "Slack ボットトークンを貼り付けてください（xoxb-…）",
