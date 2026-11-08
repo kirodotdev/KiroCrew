@@ -285,6 +285,29 @@ class TestSetupSlackTokens:
         assert not env_file.exists()
         assert fake_slack.calls == []
 
+    def test_a_save_keeps_every_line_it_does_not_own(
+        self, env_file: Path, fake_slack: type[_FakeWebClient], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Only the Slack lines change: comments, blank lines, an indented
+        comment and a spaced unrelated key keep their exact text and order."""
+        kept = ["# Kiro Crew credentials", "", "# Weixin", "WEIXIN_TOKEN = w  ", "  # FLAG=off"]
+        env_file.write_text(
+            "\n".join([kept[0], f"{CRED_SLACK_APP_TOKEN}=xapp-old", *kept[1:]]) + "\n",
+            encoding="utf-8",
+        )
+        _tty(monkeypatch, False)
+        _answers(monkeypatch, "y", "xapp-new", "xoxb-new", "U03T18B4Y23")
+
+        cs._setup_slack_tokens()
+
+        assert env_file.read_text(encoding="utf-8").splitlines() == [
+            kept[0],
+            f"{CRED_SLACK_APP_TOKEN}=xapp-new",
+            *kept[1:],
+            f"{CRED_SLACK_BOT_TOKEN}=xoxb-new",
+            f"{CRED_OWNER_ID}=U03T18B4Y23",
+        ]
+
 
 @pytest.mark.usefixtures("fake_slack")
 class TestOtherSpellingsOfASavedName:
