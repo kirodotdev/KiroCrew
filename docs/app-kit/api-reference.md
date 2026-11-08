@@ -1534,10 +1534,13 @@ listed under [App SDK Hooks](#app-sdk-hooks-dashboard-ui) are all present. Level
 adds [`ctx.lifecycle`](#app-lifecycle-ctxlifecycle), agent turns (`ctx.turns`),
 the untrusted-text controls (`ctx.untrusted`), the manifest's `agentTools`
 block (see [manifest-reference.md](manifest-reference.md)) and the dashboard's
-[`PullRequestPanel`](#pull-request-panel) to everything level 1 has, and level 3
+[`PullRequestPanel`](#pull-request-panel) to everything level 1 has, level 3
 adds the manifest's `credentialMasks` (see
-[manifest-reference.md](manifest-reference.md#credential-masks)); each level includes
-every level below it. Read it
+[manifest-reference.md](manifest-reference.md#credential-masks)), and level 4 adds the
+`agentTools` keys `namespace`, `timeoutSeconds` and `result` and an app's own bell
+notes (`/api/notifications/own` and the dashboard's `useAppNotifications()`, see
+[Backend Environment Variables](#backend-environment-variables)); each level
+includes every level below it. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call
 `ctx.health.mark_degraded(...)` with the consequence and keep serving what you can.
 The dashboard exports the same number as `APP_SDK_LEVEL`.
@@ -2304,6 +2307,15 @@ An entryPoint backend that declares `notifications.channels` in `app.json` pushe
 (see App Notifications). Verify `KIROCREW_GATEWAY_ORIGIN_PROOF` before you trust the origin as
 your callback base. If `KIROCREW_GATEWAY_ORIGIN` is unset the gateway did not publish a
 bound-port origin, so the backend has no callback base and should not push.
+
+To read and clear what it pushed, a backend that declares `/api/notifications/own` in
+`permissions.api` calls `GET {KIROCREW_GATEWAY_ORIGIN}/api/notifications/own` (returns
+`{notifications, unread}`) and `POST .../own/ack` with `{"ts": "<note ts>"}`. The
+gateway answers only the notes it stamped with your app's name, so the list is exactly
+the one behind your sidebar badge; another app's note reads as `404`. The dashboard page
+gets the same list from `useAppNotifications()`. Both need `APP_SDK_LEVEL >= 4`: an
+older host answers the routes with `404`, and a page that must also load there reads
+the hook through a namespace import (`sdk.APP_SDK_LEVEL >= 4 && sdk.useAppNotifications`).
 
 ## App Dev Mode (live reload)
 

@@ -209,6 +209,7 @@ Available in `@kirocrew/app-sdk`:
 | `useNavigate()` | Navigate to Kiro Crew routes |
 | `useNotify()` | Show toast notifications |
 | `useNavBadge()` | Update sidebar badge count |
+| `useAppNotifications()` | This app's own bell notifications (`items`, `unread`, `status`) and `ack(ts)` / `ackAll()` to clear them; declare `/api/notifications/own` in `permissions.api`; needs `APP_SDK_LEVEL >= 4` |
 | `useChatLauncher()` | Open a new chat or target `slotKey`; set `autoSend: false` for an unsent draft |
 
 `useAppInfo().active` tells your app whether its host surface is the one the user is
