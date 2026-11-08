@@ -310,8 +310,8 @@ async def test_a_draw_shaped_like_a_key_id_still_reaches_waiting(
     drawn = "akia" + "q" * 16 + "x" * 23
 
     class _Drawn(crew_oauth.SignIn):
-        def __init__(self, slug):
-            super().__init__(slug)
+        def __init__(self, slug, *args):
+            super().__init__(slug, *args)
             setattr(self, draw, drawn)
 
     monkeypatch.setattr(crew_oauth, "SignIn", _Drawn)
