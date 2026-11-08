@@ -1041,22 +1041,26 @@ async def _restart_after_update_claimed(
     # registers its stop with the pre-exec seam. Bounded and never raises.
     await run_pre_exec_stops()
 
-    # The exec skips the orderly exit that marks the crash dump clean, so mark it
-    # here: before the final drain, so a handler that arrives while it is written
-    # is still drained, and withdrawn if that drain does not come back.
-    # shortcut: a SIGKILL while this drain hangs leaves the mark, so that death
-    # reads as clean; closing it needs channel ingress stopped before the drain.
     from kiro_crew.dashboard import crash_dump_store
 
-    await crash_dump_store.mark_clean_exit()
     # Any callback that ran while close_all awaited used the synchronous
     # fenced refusal path. Drain pre-fence workers and registered handlers
-    # one final time; never cancel or force through them.
-    try:
-        await self._drain_update_callback_work(timeout=None)
-    except BaseException:
+    # one final time; never cancel or force through them. The exec skips the
+    # orderly exit that marks the crash dump clean, so mark it after that
+    # drain, never over it: a SIGKILL while it hangs must not read as clean.
+    # Then look once more without waiting: work that arrived while the mark
+    # was written withdraws it and is drained first. A drain that gave up (an
+    # unreadable callback count) goes on to the exec, as it always did.
+    while True:
+        drained = await self._drain_update_callback_work(timeout=None)
+        await crash_dump_store.mark_clean_exit()
+        try:
+            if not drained or await self._drain_update_callback_work(timeout=0.0):
+                break
+        except BaseException:
+            await crash_dump_store.unmark_clean_exit()
+            raise
         await crash_dump_store.unmark_clean_exit()
-        raise
     if shutdown_event.is_set():
         # The operator asked this process to stop while the restart was
         # being prepared. Exec'ing would swallow that stop; the applied
