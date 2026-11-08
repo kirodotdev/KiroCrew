@@ -195,6 +195,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _kill_prefix_keeps_anchor,
         _matches_self_subcommand,
         _operands_lead_with,
+        _raw_body_names_self,
         _self_cli_operands,
         _self_floor_can_fire,
         _self_module_flag_scan,

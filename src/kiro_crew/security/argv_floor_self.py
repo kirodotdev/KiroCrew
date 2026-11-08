@@ -440,7 +440,10 @@ def _kill_prefix_keeps_anchor(words: "list[tuple[str, bool]]", word: "list[str]"
 
 
 def _bare_kill_raw_bodies(
-    source: str, anchor_basenames: "frozenset[str]" = frozenset({"kill"})
+    source: str,
+    anchor_basenames: "frozenset[str]" = frozenset({"kill"}),
+    *,
+    data_args_exempt: bool = False,
 ) -> "list[str]":
     """Substitution bodies inside a kill's own argv, read from the RAW text.
 
@@ -451,6 +454,15 @@ def _bare_kill_raw_bodies(
     by-name clause (see :func:`_is_self_kill`). The anchor resolution, the
     forward and segment bounds, and the quote-aware span scan are identical for
     both; only which program word opens the window differs.
+
+    *data_args_exempt* gives the window the token leg's data-consumer exemption
+    (``_data_consumer_exempt``): an anchor word that is an ARGUMENT of a program
+    in ``_DATA_CONSUMER_PROGRAMS`` (``grep -l pkill $(ls ~/.kirocrew/logs)``,
+    ``echo killall $(...)``, or one reached through an alias, ``g=grep; $g ...``)
+    is data and opens no window. The exemption is never given to a segment whose
+    pipe feeds an evaluator (``echo pkill $(...) | sh``, ``| xargs pkill``: see
+    ``_pipes_into_evaluator``), nor to an anchor in program position. The by-name family passes it; the bare
+    ``kill`` leg keeps main's reading.
 
     The token walk in :func:`_is_self_kill` bounds the same window with
     :func:`_substitution_depth_delta`, which counts parens on tokens
@@ -539,6 +551,16 @@ def _bare_kill_raw_bodies(
 
     aliases: dict[str, str] = {}
 
+    def alias_basename(w: str) -> str:
+        # The basename a ``$k`` / ``${k}`` word runs, from a variable an EARLIER
+        # command assigned; "" when *w* is no such reference.
+        if not w.startswith("$"):
+            return ""
+        name = w[1:]
+        if name.startswith("{") and name.endswith("}"):
+            name = name[1:-1]
+        return _shell_normalizer._program_basename(aliases.get(name, ""))
+
     def resolves_to_kill(w: str) -> bool:
         # The literal spelling, or a variable an EARLIER command assigned the
         # verb to: ``k=kill; $k $(...)`` reaches this walk spelled ``$k``,
@@ -548,20 +570,68 @@ def _bare_kill_raw_bodies(
         # the literal.
         if _shell_normalizer._program_basename(w) in anchor_basenames:
             return True
-        if not w.startswith("$"):
-            return False
-        name = w[1:]
-        if name.startswith("{") and name.endswith("}"):
-            name = name[1:-1]
-        return _shell_normalizer._program_basename(aliases.get(name, "")) in anchor_basenames
+        return alias_basename(w) in anchor_basenames
 
-    def end_segment() -> None:
+    def is_reader(w: str) -> bool:
+        # A data consumer, spelled literally or through an alias (``g=grep; $g``).
+        return (
+            _shell_normalizer._program_basename(w) in _shell_normalizer._DATA_CONSUMER_PROGRAMS
+            or alias_basename(w) in _shell_normalizer._DATA_CONSUMER_PROGRAMS
+        )
+
+    def program_at() -> "int | None":
+        # The segment's program word: the first word after the ``VAR=val`` prefix.
+        for k, (w, _g) in enumerate(words):
+            if _RAW_ASSIGNMENT_RE.match(w) is None:
+                return k
+        return None
+
+    # Start of the LAST word in *source* that ``_pipes_into_evaluator`` reads as an
+    # evaluator (a shell, ``xargs``, ``$var``); -1 when there is none. Computed
+    # once, on first need, so a long pipeline is read once, not once per pipe.
+    last_evaluator: "list[int]" = []
+
+    def evaluator_after(pipe_at: int) -> bool:
+        if not last_evaluator:
+            # Words split on whitespace AND ``|``, so ``x|sh`` still yields ``sh``.
+            last, start = -1, -1
+            for k, c in enumerate(source + " "):
+                if c.isspace() or c == "|":
+                    if start >= 0 and _shell_normalizer._pipes_into_evaluator(
+                        ["|", source[start:k]]
+                    ):
+                        last = start
+                    start = -1
+                elif start < 0:
+                    start = k
+            last_evaluator.append(last)
+        return last_evaluator[0] > pipe_at
+
+    def end_segment(pipe_at: "int | None" = None) -> None:
         end_word()
         # Anchor selection BEFORE recording this segment's assignments: bash
         # expands ``$k`` before the same command's ``k=...`` takes effect, so
         # ``k=kill $k ...`` must not see its own assignment.
+        # A pipe withdraws the reader exemption only when the text flows into an
+        # evaluator (a shell, ``xargs``, ``$var``), as the token leg's
+        # ``_pipes_into_evaluator`` decides; ``| head`` / ``| wc -l`` keep it.
+        # Asked only for a segment whose program IS a reader, so a command with no
+        # reader never pays for it.
+        # shortcut: any evaluator word anywhere after the pipe withdraws it
+        # (refuses, the safe direction); narrow if that over-refuses in practice.
+        prog = program_at() if data_args_exempt else None
+        exempt = (
+            prog is not None
+            and not words[prog][1]
+            and is_reader(words[prog][0])
+            and not (pipe_at is not None and evaluator_after(pipe_at))
+        )
         kill_at = next(
-            (k for k, (w, g) in enumerate(words) if not g and resolves_to_kill(w)),
+            (
+                k
+                for k, (w, g) in enumerate(words)
+                if not g and not (exempt and k != prog) and resolves_to_kill(w)
+            ),
             None,
         )
         if kill_at is not None:
@@ -693,7 +763,7 @@ def _bare_kill_raw_bodies(
                     word.append(ch)
                     continue
                 if ch in ";|&\n":
-                    end_segment()
+                    end_segment(off if ch == "|" else None)
                     continue
                 if ch == "#" and not word and not open_word:
                     newline = source.find("\n", off)
@@ -871,8 +941,10 @@ def _is_self_kill(text_lower: str) -> bool:
         # bodies need no extra machinery: the token leg already treats the
         # product name anywhere in a by-name argv as the target, so scanning a
         # decoy-dropped body the same way only restores that reach quote-aware.
-        for anchor in (frozenset({"kill"}), _KILL_BY_NAME_PROGRAMS):
-            for body in _bare_kill_raw_bodies(source, anchor):
+        # The by-name window takes the token leg's data-consumer exemption, so a
+        # ``grep -l pkill $(...)`` that only mentions the word stays allowed.
+        for anchor, exempt in ((frozenset({"kill"}), False), (_KILL_BY_NAME_PROGRAMS, True)):
+            for body in _bare_kill_raw_bodies(source, anchor, data_args_exempt=exempt):
                 if _raw_body_names_self(body):
                     return True
     return False
