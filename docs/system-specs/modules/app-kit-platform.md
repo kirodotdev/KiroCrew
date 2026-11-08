@@ -6422,7 +6422,8 @@ whole table is pinned by
 `test_the_shipped_pin_file_validates_and_pins_exactly_the_shipped_table`) holds one
 row per app: `name`, `repository` (`https://github.com/<owner>/<repo>`,
 no `.git`, byte-equal to the catalog row `url`), `commit`, `version`,
-`treeSha256`, `archiveSha256`, `minAppSdkLevel` and `legacyNav {route, icon}`.
+`treeSha256`, `archiveSha256`, `minAppSdkLevel` (see "Who sets `minAppSdkLevel`"
+below) and `legacyNav {route, icon}`.
 The codeload archive URL is derived from `repository` and `commit`, never
 authored. `builtin_adoption_pins.load_adoption_pins` reads it once per process; a
 bad row is dropped, a duplicated name drops every row with it, more than 64 rows
@@ -6509,6 +6510,21 @@ build, so `needs_newer_sdk` decides it without a tree: STAGE fetches nothing
 on a kept staged artifact without copying or hashing it, so a boot pays nothing for
 a pin it can never run. `test_no_shipped_pin_adopts_on_a_host_without_the_seams`
 ties the shipped pins to the structural route registry (`route_registry._route_fields`).
+
+**Who sets `minAppSdkLevel`.** The release captain, through
+`adoption_pin.py compute --min-sdk-level N` (default 1); the manifest carries no
+level field, so the tool never picks a level above 1 itself. It reads the pinned tree
+for the seams above level 1 it uses (`_seam_level_uses`): `agentTools`,
+`permissions.agentTurns` and `permissions.workerAutoApprove` in `app.json` (level 2),
+`credentialMasks` (level 3), and `ctx.turns`, `ctx.untrusted`, `ctx.lifecycle` or
+`ctx.auto_approve` in any `.py` file outside a `tests/` directory, a `test_*.py` or a
+`conftest.py` (level 2), read as an attribute of a context-named receiver or as a
+`getattr`/`hasattr` of that name on any receiver. A level below the highest one found
+is refused, naming what was found, by `compute` and `verify` alike, so a tree that
+feature-detects a seam and degrades still pins at that seam's level, and a host
+without it keeps the wheel copy. The scan errs wide: a false hit only asks for a
+higher level, and a miss would adopt a tree onto a host without a seam it calls.
+`test_builtin_adoption_pins.py` pins the scan and the refusal.
 
 **The harness pin table.** `KIROCREW_HARNESS_ADOPTION_PINS`
 (`builtin_adoption_pins.HARNESS_PINS_ENV`) names a test-owned table that

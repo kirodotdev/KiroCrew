@@ -347,3 +347,135 @@ def test_the_pin_tool_checks_out_without_the_operators_git_config(tmp_path, monk
     from kiro_crew.apps.builtin_adoption_fetch import adoption_tree_digest
 
     assert adoption_tree_digest(checkout) == adoption_tree_digest(tree)
+
+
+# --------------------------------------------------------------------------- #
+# scripts/adoption_pin.py: minAppSdkLevel comes from the seams the tree uses
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("manifest", "files", "uses"),
+    [
+        ({}, {}, {}),
+        ({"agentTools": {}}, {}, {"app.json agentTools": 2}),
+        (
+            {"permissions": {"agentTurns": True, "workerAutoApprove": True}},
+            {},
+            {"app.json permissions.agentTurns": 2, "app.json permissions.workerAutoApprove": 2},
+        ),
+        ({"permissions": {"agentTurns": "true"}}, {}, {}),
+        ({"credentialMasks": ["data/token.json"]}, {}, {"app.json credentialMasks": 3}),
+        ({}, {"backend/routes.py": "def f(ctx):\n    return ctx.turns.run\n"}, {"ctx.turns": 2}),
+        ({}, {"backend/_host.py": "x = _bound_ctx().lifecycle\n"}, {"ctx.lifecycle": 2}),
+        (
+            {},
+            {"backend/_host.py": "def f(self):\n    return self._ctx.untrusted\n"},
+            {"ctx.untrusted": 2},
+        ),
+        (
+            {},
+            {
+                "backend/_host.py": "def f(bound):\n    return getattr(bound(), 'auto_approve', None)\n"
+            },
+            {"ctx.auto_approve": 2},
+        ),
+        (
+            {},
+            {
+                "backend/_host.py": "def f(app_context):\n    return hasattr(app_context, 'lifecycle')\n"
+            },
+            {"ctx.lifecycle": 2},
+        ),
+        ({}, {"backend/_host.py": "def f(ctx:\n    ctx.lifecycle\n"}, {"ctx.lifecycle": 2}),
+        ({}, {"backend/manifest.py": "def f(manifest):\n    return manifest.lifecycle\n"}, {}),
+        ({}, {"tests/fakehost.py": "ctx.turns = None\n"}, {}),
+        ({}, {"backend/test_seams.py": "ctx.turns = None\n"}, {}),
+        ({}, {"conftest.py": "ctx.untrusted = None\n"}, {}),
+    ],
+)
+def test_the_pin_tool_finds_every_seam_above_level_one(
+    monkeypatch, tmp_path, manifest, files, uses
+):
+    from builtin_adoption_helpers import repository_manifest, write_tree
+
+    tree = write_tree(tmp_path / "tree", repository_manifest(**manifest), files)
+    assert _pin_tool(monkeypatch)._seam_level_uses(tree) == uses
+
+
+def test_the_pin_tool_never_lets_a_level_fall_below_what_the_tree_uses(monkeypatch):
+    tool = _pin_tool(monkeypatch)
+    uses = {"ctx.turns": 2, "app.json credentialMasks": 3}
+    assert tool._sdk_level_refusal(NAME, 1, {}) is None
+    assert tool._sdk_level_refusal(NAME, 3, uses) is None
+    for level in (1, 2):
+        refusal = tool._sdk_level_refusal(NAME, level, uses)
+        assert refusal is not None and "--min-sdk-level 3" in refusal
+        assert "app.json credentialMasks" in refusal
+    assert "ctx.turns" in tool._sdk_level_refusal(NAME, 1, uses)
+    assert "ctx.turns" not in tool._sdk_level_refusal(NAME, 2, uses)
+
+
+def _measure_tree(monkeypatch, tmp_path, tool, files, level):
+    """``_measure`` end to end on a local tree, with the network and the E-checks stubbed."""
+    import hashlib
+    import shutil
+
+    from builtin_adoption_helpers import make_archive, repository_manifest, write_tree
+
+    tree = write_tree(tmp_path / "tree", repository_manifest(), files)
+    archive = make_archive(tree, COMMIT)
+
+    def fake_download(_url, dest):
+        dest.write_bytes(archive)
+        return hashlib.sha256(archive).hexdigest()
+
+    monkeypatch.setattr(tool, "_clone", lambda _r, _c, dest: shutil.copytree(tree, dest))
+    monkeypatch.setattr(tool, "_download", fake_download)
+    monkeypatch.setattr(tool, "_shipped", lambda _name: (tree, repository_manifest()))
+    monkeypatch.setattr(tool, "pinned_tree_refusal", lambda *_args, **_kwargs: None)
+    work = tmp_path / "work"
+    work.mkdir()
+    pin = _parse([_row(minAppSdkLevel=level)])[NAME]
+    return tool._measure(pin, work)
+
+
+def test_the_pin_tool_refuses_level_one_for_a_tree_that_uses_level_two(monkeypatch, tmp_path):
+    tool = _pin_tool(monkeypatch)
+    files = {"backend/_host.py": "def f(ctx):\n    return getattr(ctx, 'lifecycle', None)\n"}
+    with pytest.raises(SystemExit, match="--min-sdk-level 2"):
+        _measure_tree(monkeypatch, tmp_path / "a", tool, files, 1)
+    row = _measure_tree(monkeypatch, tmp_path / "b", tool, files, 2)
+    assert row["minAppSdkLevel"] == 2
+
+
+def test_the_pin_tool_keeps_level_one_for_a_tree_without_newer_seams(monkeypatch, tmp_path):
+    tool = _pin_tool(monkeypatch)
+    assert _measure_tree(monkeypatch, tmp_path, tool, {}, 1)["minAppSdkLevel"] == 1
+
+
+@pytest.mark.parametrize("level", [0, 99])
+def test_the_pin_tool_refuses_a_level_this_build_cannot_run_before_any_git_call(monkeypatch, level):
+    tool = _pin_tool(monkeypatch)
+    cloned = []
+    monkeypatch.setattr(tool, "_clone", lambda *args: cloned.append(args))
+    with pytest.raises(SystemExit, match="--min-sdk-level"):
+        tool._compute(REPOSITORY, COMMIT, level)
+    assert cloned == []
+
+
+def test_the_pin_tool_passes_the_flag_through_to_the_row(monkeypatch):
+    tool = _pin_tool(monkeypatch)
+    levels = []
+
+    def fake_clone(_repository, _commit, dest):
+        dest.mkdir()
+        (dest / "app.json").write_text(
+            json.dumps({"name": NAME, "version": "1.2.3"}), encoding="utf-8"
+        )
+
+    monkeypatch.setattr(tool, "_clone", fake_clone)
+    monkeypatch.setattr(tool, "_measure", lambda pin, _work: levels.append(pin.min_app_sdk_level))
+    assert tool.main(["compute", REPOSITORY, COMMIT]) == 0
+    assert tool.main(["compute", REPOSITORY, COMMIT, "--min-sdk-level", "2"]) == 0
+    assert levels == [1, 2]
