@@ -590,25 +590,73 @@ def test_deleting_a_task_that_is_already_gone_is_a_no_op_not_a_failure(
 ):
     """Judged by re-probing absence, never by /Delete's own localized error.
 
-    "Already gone" means the service ANSWERED and holds no task: the per-task
-    ``/Query /TN`` is non-zero (no such task) while a bare ``/Query`` is zero
-    (the service is reachable). That reachability proof is what distinguishes
-    this no-op from an unanswered service -- see
+    "Already gone" means ``/Query /TN <task>`` is non-zero while the plane-folder
+    query is zero (the service answered); see
     ``test_stop_keeps_the_task_when_query_cannot_confirm_absence``.
     """
 
     def fake(*a):
         if a[0] == "/Delete":
             return _cp(returncode=1, stderr="ERROR: The system cannot find the file specified.")
-        if a[0] == "/Query" and len(a) > 1:
-            return _cp(returncode=1)  # no such task
+        if a == _FOLDER_QUERY:
+            return _cp(returncode=0)  # the service answered
         if a[0] == "/Query":
-            return _cp(returncode=0)  # bare /Query: the service answered
+            return _cp(returncode=1)  # no such task
         return _cp()
 
     monkeypatch.setattr(win, "schtasks", fake)
     win.write_task_script(cfg, "smoke")
     assert win.stop(cfg, "smoke").returncode == 0
+
+
+_FOLDER_QUERY = ("/Query", "/TN", win.TASK_FOLDER_ROOT + "\\")
+
+
+def test_absence_is_proven_without_listing_every_task(cfg, monkeypatch, drainable_stop_root):
+    """A bare ``/Query`` is never asked: under full CPU load it outlives the budget.
+
+    A bare ``/Query`` took 120 s on a busy host while one folder or task query
+    took about 3 s. The fake times the bare form out the way the 30 s
+    budget does, so asking it at all fails teardown.
+    """
+
+    def fake(*a):
+        if a == ("/Query",):
+            raise subprocess.TimeoutExpired(["schtasks", "/Query"], 30)
+        if a[0] == "/Delete":
+            return _cp(returncode=1, stderr="ERROR: The system cannot find the file specified.")
+        if a == _FOLDER_QUERY:
+            return _cp(returncode=0)
+        if a[0] == "/Query":
+            return _cp(returncode=1)  # no such task
+        return _cp()
+
+    monkeypatch.setattr(win, "schtasks", fake)
+    win.write_task_script(cfg, "smoke")
+    assert win.stop(cfg, "smoke").returncode == 0
+    assert not win.task_script_path(cfg, "smoke").exists()
+
+
+def test_a_scheduler_probe_that_times_out_is_not_read_as_absence(
+    cfg, monkeypatch, drainable_stop_root
+):
+    """An unanswered service still fails closed when the probe itself times out."""
+
+    def fake(*a):
+        if a[0] == "/Delete":
+            return _cp(returncode=1, stderr="ERROR: Access is denied.")
+        if a == _FOLDER_QUERY:
+            raise subprocess.TimeoutExpired(["schtasks", *a], 30)
+        if a[0] == "/Query":
+            return _cp(returncode=1)
+        return _cp()
+
+    monkeypatch.setattr(win, "schtasks", fake)
+    win.write_task_script(cfg, "smoke")
+    cp = win.stop(cfg, "smoke")
+    assert cp.returncode == 1
+    assert "NOT proven zero-residue" in cp.stderr
+    assert win.task_script_path(cfg, "smoke").exists()
 
 
 def test_stop_keeps_the_task_when_query_cannot_confirm_absence(
@@ -629,7 +677,7 @@ def test_stop_keeps_the_task_when_query_cannot_confirm_absence(
         if a[0] == "/Delete":
             return _cp(returncode=1, stderr="ERROR: Access is denied.")
         if a[0] == "/Query":
-            return _cp(returncode=1)  # both the per-task and bare query are unanswered
+            return _cp(returncode=1)  # both the per-task and folder query are unanswered
         return _cp()
 
     monkeypatch.setattr(win, "schtasks", fake)
