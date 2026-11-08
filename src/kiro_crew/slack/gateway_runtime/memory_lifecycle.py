@@ -39,7 +39,10 @@ def _initialize_memory_worker(self: GatewayOrchestrator) -> bool:
     """Restore and open the already-wired memory objects after readiness."""
     from kiro_crew.config.loader import data_home
     from kiro_crew.context import reset_memory_caches
-    from kiro_crew.cron_service.identity import migrate_legacy_member_schedules
+    from kiro_crew.cron_service.identity import (
+        migrate_legacy_member_schedules,
+        migrate_member_named_template_schedules,
+    )
     from kiro_crew.memory_backup import apply_pending_member_restores
     from kiro_crew.memory_stores import repair_legacy_member_stores
 
@@ -81,6 +84,15 @@ def _initialize_memory_worker(self: GatewayOrchestrator) -> bool:
                     logger.info(
                         "Captured the member execution of %d pre-identity schedule(s)",
                         len(captured),
+                    )
+                # Then an owner's schedule whose capture runs a crew member's name
+                # as a bare template, onto that member, under the same barrier.
+                # Never raises.
+                moved = migrate_member_named_template_schedules(data_home())
+                if moved:
+                    logger.info(
+                        "Moved %d schedule(s) naming a crew member onto that member",
+                        len(moved),
                     )
                 if startup.stopped:
                     return False

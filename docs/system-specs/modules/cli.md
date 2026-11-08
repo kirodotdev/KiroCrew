@@ -384,7 +384,7 @@ choice blob makes the usage line unreadable.
 | `kirocrew security verify` | Verify SEL HMAC chain integrity |
 | `kirocrew security deny-list` | Show active deny patterns. The deny planes those patterns feed: [security.md](security.md) |
 | `kirocrew snapshot [output_dir]` | Create a .tar.gz snapshot of all Kiro Crew state, into `output_dir` or the data home's snapshots dir. A bare `list` or `ls` as `output_dir` is refused (exit 1, nothing written, a hint naming `--list`) unless a directory of that name already exists; a path spelling such as `./list` is taken as written |
-| `kirocrew snapshot --keep N` | Auto-prune to N most recent snapshots (default 7). Recency is the UTC stamp in the bundle name (`snapshot_order.newest_first`), not the file mtime, so an older bundle copied back in does not outrank the one just written; a name without a stamp falls back to its mtime. The bundle the run just wrote always holds the first kept slot, so a clock set back after a future-stamped run cannot prune it |
+| `kirocrew snapshot --keep N` | Auto-prune to N most recent snapshots (default 7). Recency is the UTC stamp in the bundle name (`snapshot_order.newest_first`), not the file mtime, so an older bundle copied back in does not outrank the one just written; a name without a stamp falls back to its mtime. The bundle the run just wrote always holds the first kept slot, so a clock set back after a future-stamped run cannot prune it. A run whose bundle omits entries prunes only older bundles that record the same omission; see the retention note below |
 | `kirocrew snapshot --strict` | Exit 3 (not 0) when the written bundle omits entries it was asked to carry; see the retention note below |
 | `kirocrew snapshot --list` | List existing snapshots, newest first by the same order as `--keep` |
 | `kirocrew restore <file>` | Restore from a snapshot (auto-detects replace vs merge) |
@@ -436,9 +436,21 @@ earlier attempts at this change. The flag is a permission for a platform that ca
 pin, **not** a switch that turns pinning off where it works.
 
 `MANIFEST.json` also carries `"skipped"`: any file omitted during staging (a hardlink
-alias, a symlink, an entry that vanished mid-walk, or an entry present but refused for
-permission -- `unreadable_entry`) with its reason, so an incomplete archive says so in
-its own record instead of only in the console output of whoever ran the command.
+alias, a symlink, an entry that vanished mid-walk, an entry present but refused for
+permission -- `unreadable_entry` -- or a component tree a sandboxed run cannot see --
+`masked_by_sandbox`) with its reason, so an incomplete archive says so in its own record
+instead of only in the console output of whoever ran the command.
+
+`masked_by_sandbox` is recorded when the snapshot runs inside Kiro Crew's own sandbox
+(`sandbox_launch_mark.launched_in_sandbox()`: a command cron, which always runs in the
+`cc` tier, or an agent's shell) and a selected tree is, or sits under, an entry of
+`sandbox_leaves._CREW_HIDDEN_LEAVES`. Today that is `crew-teams`. Every tier masks those
+leaves, so what such a run sees there is the mask -- an empty stand-in directory on
+Linux, a denied read on macOS -- and never the operator's data. The tree is therefore not
+read at all, and the run prints one line naming it and saying that a run from the
+operator's own terminal carries it. Staging that view instead would ship the empty
+stand-in as the team list on Linux, and record a tree the run can never read as
+`unreadable_entry` on macOS.
 
 `unreadable_entry` is the one reason that is a TOLERANCE rather than a screen, and it is
 narrow in three ways. It belongs to snapshot creation only -- restore and merge still
@@ -456,18 +468,40 @@ worse than a refusal, so that loop still fails hard.
 Retention reads those reasons as a **class**, not by name, through one predicate,
 `pinned_fs.omits_wanted_data()`. `symlink` and `not_regular` are screened on every run by
 design, so a bundle that screened one is complete; everything else means the archive
-lacks something it was asked to carry. `--keep` does not prune after a run in the second
-class, and prints which reasons applied. A reason code the split does not know counts as
-incomplete, because the alternative is pruning the operator's last complete backup on
-the strength of a code nobody has classified yet.
+may lack data or a consistent database copy it was asked to carry. After a run in the
+second class, `--keep` prunes an older bundle only when that bundle is known to lack
+every path this run omitted (`snapshot_archive._bundle_lacks_all`): its manifest is
+readable with a `skipped` list, and the archive holds no regular file at or under any
+omitted path. A skip record alone does not prove absence: `db_unpinned_source` records
+a database whose staged byte copy still rides in the archive. Pruning a bundle with
+none of the omitted data loses no copy of that data, and a schedule that can never
+carry a path still keeps its count: consecutive cron bundles with no files under
+`crew-teams` prune each other. Every other older bundle past `--keep` -- one that holds
+a file under an omitted path, or whose archive or manifest cannot be read, or whose
+manifest has no `skipped` list -- is kept. The run prints how many, which reasons
+applied, and their names. A reason code the split does not know
+counts as incomplete, because the alternative is pruning the operator's last complete
+backup on the strength of a code nobody has classified yet.
+
+A replace restore reads the manifest's record too (`snapshot_archive._recorded_skips`). A
+bundle with no `teams.json` under `crew-teams` normally removes the live team document
+(the bundle says the source had none), but when the bundle's `skipped` lists that
+document or `crew-teams` itself, the bundle never read it, so the restore keeps the live
+document, prints `↩️  crew-teams: kept the live teams.json ...` and no `✅ crew-teams`
+tick. The writer records data-home-relative skip paths with forward slashes on every
+host. The reader also accepts Windows backslashes, so a Windows bundle's omission
+preserves the live team document during a POSIX restore. It reads the manifest whole,
+without the prune's size bound, because the restore has already parsed it whole
+(`_manifest_components`), and a read error fails the replace into its rollback: a record
+it could not take in never reads as "the source had none".
 
 The exit status follows the same predicate, but only on request. By default a run that
 wrote a bundle exits 0 whether or not it is complete, because existing unattended
 callers (the AWS Control app's off-host backup among them) treat any non-zero exit as a
 failed backup and would stop uploading a bundle that is written and restorable.
 `kirocrew snapshot --strict` exits `3` instead when `omits_wanted_data()` is true for any
-`skipped` entry; the bundle is still kept and the prune is still held. Exit `1` keeps
-meaning no usable bundle was produced.
+`skipped` entry; the bundle is still kept and the prune follows the rule above. Exit `1`
+keeps meaning no usable bundle was produced.
 
 SQLite databases are **out of scope** for the pinned staging described here: they keep the
 `sqlite3.backup()` path they already had, which reopens the live name. Capturing a live
@@ -478,6 +512,14 @@ work, not introduced by it.
 
 A refusal to stage is a permission decision and is written to the SEL audit log —
 `snapshot_rejected` or `state_restore_rejected`, both with `reason=unpinnable_staging`.
+A `PermissionError` (EACCES or EPERM) that ends `kirocrew snapshot` is reported the same
+way: a directory on the way to the data home that grants search but not read (a
+root-owned `0711` parent, a Seatbelt metadata-only ancestor) cannot be pinned, because
+`pin_parent` opens each component for reading. The run prints one `❌` line naming the
+entry, writes `snapshot_rejected` with `reason=permission_denied`, prunes nothing and
+exits 1, instead of ending in a traceback with no audit entry. `pin_parent` itself keeps
+raising the `PermissionError`: the staging walk's `unreadable_entry` tolerance relies on
+that type, so only the command boundary turns it into a refusal.
 
 The restore's notification merge (`_merge_notifications`) resolves each name **once**:
 where the platform can pin, source and destination are each opened through
