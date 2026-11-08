@@ -167,7 +167,9 @@ async def _steer_policy_notice(
     return True
 
 
-async def _reject_attributed(client: Any, request_id: Any, *, attribution: str) -> None:
+async def _reject_attributed(
+    client: Any, request_id: Any, *, attribution: str, reason: str = ""
+) -> None:
     """Answer a permission request with a rejection whose attribution is stated.
 
     kiro-cli tells the model "User denied tool execution" for EVERY rejection,
@@ -178,8 +180,12 @@ async def _reject_attributed(client: Any, request_id: Any, *, attribution: str) 
     message is TRUE on the path left unsteered (a provenance-gated steer names
     the branch it leaves alone). Keyword-only and required, so a new site that
     omits it is a mypy error; test_refusal_inband_notice.py checks the value.
+
+    *reason* is what the person typed with an interactive rejection, passed on
+    only when given, and only by a caller whose event takes one
+    (``AcpEvent.takes_rejection_reason``): no other provider accepts it.
     """
-    await client.reject_tool(request_id)
+    await client.reject_tool(request_id, **({"reason": reason} if reason else {}))
 
 
 async def _reject_hook_blocked(

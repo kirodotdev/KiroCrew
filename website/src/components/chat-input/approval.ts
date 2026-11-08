@@ -168,6 +168,9 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
    *  a card that could still take a session grant offered allow-once and reject
    *  alone. */
   const approvalTrustAllGrantable = approvalMeta?.trust_grantable === '1'
+  /** Server word that a reason typed with a rejection reaches the model (the
+   *  backend reads one). Without it the reject menu asks for none. */
+  const approvalTakesReason = approvalMeta?.rejection_reason_accepted === '1'
   /** Set when the card is a security-rule override (the server refused the
    *  command by this rule): the bar offers the override scopes and a reject,
    *  and no Allow once / Trust, which the server would read as a refusal. */
@@ -274,7 +277,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     if (approvalToolCallId) dispatch(openActivityToTool(approvalToolCallId))
   }, [approvalToolCallId, dispatch])
 
-  const handleApprovalAction = useCallback((decision: string, pattern?: string, ttlSeconds?: number) => {
+  const handleApprovalAction = useCallback((decision: string, pattern?: string, ttlSeconds?: number, reason?: string) => {
     if (!approvalId) return
     setApprovalSubmitting(true)
     setApprovalNotice(null)
@@ -396,9 +399,12 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
       if (ttlSeconds !== undefined) extra.ttl_seconds = ttlSeconds
       api.approveChatSlot(activeSlot, decision, extra).then(finish).catch(fail)
     } else if (isNativeOneShot && activeSlot && clickedMid) {
-      api.approveChatSlot(activeSlot, decision, {
+      // A rejection's reason travels only on this route, the one the server takes it on.
+      const extra: Record<string, string> = {
         request_id: approvalId, response_id: responseId, origin: 'native', request_mid: clickedMid,
-      }).then(finish).catch(fail)
+      }
+      if (reason && decision !== 'approved') extra.reason = reason
+      api.approveChatSlot(activeSlot, decision, extra).then(finish).catch(fail)
     } else {
       api.resolveApproval(approvalId, toApiDecision(decision), undefined, responseId).then(finish).catch(fail)
     }
@@ -419,7 +425,7 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     pendingApproval, hasApproval, approvalId, approvalSubmitting, approvalPickerSignal, setApprovalPickerSignal,
     approvalModeAdjusted, approvalNudgeActive, dismissApprovalNudge, hideApprovalNudge,
     approvalNotice, setApprovalNotice, approvalNoticeKind, showApprovalError,
-    approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell,
+    approvalToolInput, approvalIsReadOnly, approvalFullCommand, approvalBaseCommand, approvalIsShell, approvalTakesReason, approvalMid,
     approvalTrustCommandGrantable, approvalTrustBaseGrantable, approvalTrustAllGrantable, approvalIsUnattended, approvalTrustGrantable,
     approvalDenyRule, approvalDenyDetail, approvalDenyFamily, approvalDenyCommand,
     approvalLabelRaw, approvalToolCallId, approvalPurpose, approvalTs, approvalLabel, approvalRaisedBy, showGhost, showInChat, handleApprovalAction,

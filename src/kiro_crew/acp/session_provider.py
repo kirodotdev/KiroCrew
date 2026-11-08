@@ -1099,9 +1099,16 @@ class AcpSessionProvider(LLMProvider):
         """The handle's batch-guard refusal reason for *request_id*, taken once."""
         return self._handle.take_batch_refusal(request_id)
 
-    async def reject_tool(self, request_id: str | int) -> None:
-        """Reject a pending tool permission request."""
-        await self._guarded(self._handle.reject_tool(request_id))
+    async def reject_tool(self, request_id: str | int, reason: str = "") -> None:
+        """Reject a pending tool permission request.
+
+        *reason* is what the person typed with the rejection, passed on only when
+        given (see ``AcpSessionHandle.reject_tool``).
+        """
+        if reason:
+            await self._guarded(self._handle.reject_tool(request_id, reason=reason))
+        else:
+            await self._guarded(self._handle.reject_tool(request_id))
 
     async def cancel(self, *, wait_ack_timeout: float = 0.0) -> CancelOutcome:
         """Cancel the current turn."""

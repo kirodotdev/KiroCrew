@@ -8672,7 +8672,8 @@
     },
     "rejectDropdown": {
       "reject_all": "拒绝全部 —— 后续不再询问，一并拒绝",
-      "reject_once": "拒绝一次 —— 后续仍逐个询问"
+      "reject_once": "拒绝一次 —— 后续仍逐个询问",
+      "reason_placeholder": "原因（可选）— 智能体会读到"
     },
     "remoteArtifactCard": {
       "clone": "克隆",

@@ -323,6 +323,12 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     ),
     "release_pending_chunks": ("function", False, False, "(self) -> 'int'"),
     "running": ("property", False, False, "(self) -> 'bool'"),
+    "set_rejection_reason": (
+        "function",
+        False,
+        False,
+        "(self, request_id: 'str', future: 'asyncio.Future[str]', reason: 'str') -> 'None'",
+    ),
     "set_mcp_report": (
         "function",
         False,
@@ -380,6 +386,12 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         False,
         "(self) -> 'tuple[tuple[str, str, bool], ...]'",
+    ),
+    "take_rejection_reason": (
+        "function",
+        False,
+        False,
+        "(self, request_id: 'str', future: 'asyncio.Future[str]') -> 'str'",
     ),
     "todo_task_text": ("function", False, False, "(self, task_id: 'str') -> 'str | None'"),
     "turn_running": ("property", False, False, "(self) -> 'bool'"),
@@ -574,6 +586,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_refusal_fallback_session_key": ("value", "''"),
     "_refusal_pick_gen": ("value", "0"),
     "_regenerate_target": ("value", "None"),
+    "_rejection_reasons": ("value", "{}"),
     "_responsive": ("value", "None"),
     "_resumed_count": ("value", "0"),
     "_revived_by": ("value", "''"),

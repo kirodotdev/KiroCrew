@@ -9110,7 +9110,8 @@
     },
     "rejectDropdown": {
       "reject_all": "Rechazar todo: rechazar las demás sin preguntar",
-      "reject_once": "Rechazar una vez: seguir preguntando por las demás"
+      "reject_once": "Rechazar una vez: seguir preguntando por las demás",
+      "reason_placeholder": "¿Por qué? El agente lo leerá (opcional)"
     },
     "remoteArtifactCard": {
       "clone": "Clonar",

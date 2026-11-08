@@ -94,6 +94,8 @@ def _to_llm_event(e: Any) -> LLMEvent:
         mcp_identity_trusted=e.mcp_identity_trusted,
         mcp_identity_unreadable=e.mcp_identity_unreadable,
         kas_builtin_ids=e.kas_builtin_ids,
+        # Dropping it hides the reason box on a KAS card, and the reason with it.
+        takes_rejection_reason=e.takes_rejection_reason,
         # Dropping this would leave every spec-granted KAS built-in prompting on
         # this surface: the gate's spec-builtin-grant row reads it.
         spec_granted_builtins=e.spec_granted_builtins,

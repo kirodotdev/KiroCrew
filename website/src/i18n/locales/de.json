@@ -8891,7 +8891,8 @@
     },
     "rejectDropdown": {
       "reject_all": "Alle ablehnen — die übrigen ohne Rückfrage ablehnen",
-      "reject_once": "Einmal ablehnen — bei den übrigen weiter fragen"
+      "reject_once": "Einmal ablehnen — bei den übrigen weiter fragen",
+      "reason_placeholder": "Warum? Der Agent liest das (optional)"
     },
     "remoteArtifactCard": {
       "clone": "Klonen",

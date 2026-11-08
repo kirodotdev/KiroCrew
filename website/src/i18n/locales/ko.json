@@ -8672,7 +8672,8 @@
     },
     "rejectDropdown": {
       "reject_all": "모두 거부 — 나머지는 묻지 않고 거부",
-      "reject_once": "한 번만 거부 — 나머지는 계속 확인"
+      "reject_once": "한 번만 거부 — 나머지는 계속 확인",
+      "reason_placeholder": "이유(선택) — 에이전트가 읽습니다"
     },
     "remoteArtifactCard": {
       "clone": "클론",
