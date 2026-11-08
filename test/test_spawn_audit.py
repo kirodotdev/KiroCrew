@@ -178,6 +178,8 @@ _SPAWN_NAMES = {
     "popen_limited",
     # kiro_prerequisite's one-shot wrapper; its call sites must stay visible.
     "spawn_supervised_oneshot",
+    # platform_compat's timeout-kills-the-tree run; its call sites must stay visible.
+    "run_killing_tree_on_timeout",
 }
 
 # Tokens whose presence anywhere in the enclosing function marks the spawn as

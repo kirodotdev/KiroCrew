@@ -513,7 +513,9 @@ def _kiro_cli_version_row(kiro: str, issues: list[str], *, required: bool) -> st
     """
     failure = ""
     try:
-        result = subprocess.run(
+        # A timeout ends the launched tree: on Windows a .cmd or exe shim's
+        # child would otherwise hold the pipes past the timeout.
+        result = platform_compat.run_killing_tree_on_timeout(
             [kiro, "--version"],
             capture_output=True,
             text=True,
