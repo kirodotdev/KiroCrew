@@ -2726,7 +2726,7 @@ never starts.
 | `ensure_ready()` | Spawn kiro-cli + init handshake (steps 1-5) |
 | `send_message(msg)` | Full response text, auto-approves tools |
 | `send_message_stream(msg)` | Yields text chunks, auto-approves (CLI) |
-| `stream_events(msg)` | Yields `AcpEvent` objects, caller handles permissions (dashboard) |
+| `stream_events(msg)` | Yields `AcpEvent` objects, caller handles permissions (dashboard). A `prompt_gate` (also taken by the handle's `prompt`) is called under the stdin write lock, right before the prompt frame is written (the request writers' `before_write`); what it raises sends nothing |
 | `approve_tool(id)` / `reject_tool(id)` | Tool permission responses |
 | `send_command(cmd)` | Slash commands (e.g. `/compact`), returns response text |
 | `command_result(cmd)` | Kiro-only native command result including structured `data`; internal callers must reduce it before external use |

@@ -216,12 +216,15 @@ async def _send_request(
     params: dict,
     *,
     on_id: Callable[[int], None] | None = None,
+    before_write: Callable[[], None] | None = None,
 ) -> int:
     """Write one request frame and return its id.
 
     ``on_id`` is called with the id before the frame is written, so a caller
     that waits for the answer can register for it before the write's drain
     can suspend and the turn's read loop can read that answer.
+    ``before_write`` runs under the write lock right before the frame is
+    written; whatever it raises aborts the write with nothing written.
     """
     if not self._process or not self._process.stdin:
         raise AcpError("ACP process not running")
@@ -248,7 +251,10 @@ async def _send_request(
         # co-tenant waits behind the lock, but a single session can self-wedge
         # too). A stall raises AcpProcessDied, the same recovery a closed pipe
         # already gets.
-        await self._write_request_bounded(data, req_id, method)
+        if before_write is None:
+            await self._write_request_bounded(data, req_id, method)
+        else:
+            await self._write_request_bounded(data, req_id, method, before_write=before_write)
     except (BrokenPipeError, ConnectionResetError) as exc:
         raise AcpProcessDied(f"ACP process pipe broken: {exc}") from exc
     self._last_activity = time.monotonic()
@@ -256,7 +262,12 @@ async def _send_request(
 
 
 async def _write_request_bounded(
-    self: AcpClient, data: bytes, request_id: int, method: str
+    self: AcpClient,
+    data: bytes,
+    request_id: int,
+    method: str,
+    *,
+    before_write: Callable[[], None] | None = None,
 ) -> None:
     """Write a REQUEST frame under the write lock and the same no-progress bound.
 
@@ -292,6 +303,7 @@ async def _write_request_bounded(
         self._stdin_write_lock(),
         data,
         bound_secs=transport_framing._RESPONSE_WRITE_BOUND_SECS,
+        before_write=before_write,
     )
     if result is RequestWriteResult.OK:
         return
