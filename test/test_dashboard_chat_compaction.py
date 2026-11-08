@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from chat_test_helpers import _make_state
 from dashboard_chat_helpers import _provider_mock
+from real_session_manager import real_sessions
 
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO
 from kiro_crew.agent_sdk.capabilities import capabilities_for
@@ -344,13 +345,14 @@ class TestRunChatCompactDeferredWait:
                 LLMEvent(kind=EVENT_COMPLETE),
             ]
         )
-        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+        state.sessions = real_sessions(client)
 
         from kiro_crew.dashboard.chat import _run_chat
 
         await _run_chat(state, slot, "continue after provider compaction")
 
-        state.sessions.mark_needs_reinjection.assert_called_once_with("dashboard:s1")
+        assert state.sessions.consume_needs_reinjection("dashboard:s1") is True
+        assert state.sessions.consume_needs_reinjection("dashboard:s1") is False
 
     @pytest.mark.asyncio
     async def test_kiro_backend_broadcasts_real_post_compaction_usage(self, tmp_path, monkeypatch):
