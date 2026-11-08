@@ -21,6 +21,9 @@
  * non-secret sign-in marker from its first grant and sends it on every
  * renewal. The gateway refuses SIGN_IN_CHANGED when the vault now holds
  * another account, and that one window closes at its own next renewal.
+ *
+ * A renewal that stops on CREW_OFFLINE closes its own window too: its token
+ * can't be renewed, so the window would fail when that token expires.
  */
 
 // The relay's endpoint ID grammar has one definition, in the window module.
@@ -61,8 +64,9 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
     const onOutcome = (o) => {
       if (!o || o.stopped !== true) return;
       if (o.code === "SIGNED_OUT") closeAll("SIGNED_OUT");
-      // An account switch closes only the window this renewal drives.
-      if (o.code === "SIGN_IN_CHANGED") closeOne(endpointId, renewal, "SIGN_IN_CHANGED");
+      // An account switch, or a Crew gone offline, closes only the window this
+      // renewal drives. An offline window's token can't be renewed.
+      if (o.code === "SIGN_IN_CHANGED" || o.code === "CREW_OFFLINE") closeOne(endpointId, renewal, o.code);
     };
     const renewal = createRenewal({ endpointId, mint, holder, onOutcome, log });
     const first = await renewal.start();
@@ -132,9 +136,11 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
     return { ok: true };
   }
 
-  // An open window whose renewal stopped (the Crew went offline, the sign-in
-  // ended): mint again on the same holder, which the window already reads,
-  // and reload. A refusal leaves the window as it is and answers its code.
+  // An open window whose renewal stopped on a refusal that leaves it open (the
+  // grant was removed, remote access was turned off): mint again on the same
+  // holder, which the window already reads, and reload. A refusal leaves the
+  // window as it is and answers its code. CREW_OFFLINE, SIGN_IN_CHANGED and
+  // SIGNED_OUT close the window instead.
   async function restart(endpointId, entry) {
     // The same window, so the same sign-in: its first mint sends its marker.
     const crew = { signInMarker: entry.crew ? entry.crew.signInMarker : null };

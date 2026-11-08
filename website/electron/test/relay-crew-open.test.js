@@ -336,26 +336,44 @@ test("a SIGNED_OUT renewal stops every renewal, empties every holder and closes 
   assert.equal(s.logs.some((l) => l.includes("relay-access-token")), false);
 });
 
-test("CREW_OFFLINE and RENEW_FAILING close nothing", async () => {
+test("a CREW_OFFLINE renewal stop closes only that window", async () => {
   const { made, createRenewal } = recordedRenewals();
   const s = setup({
     createRenewal,
-    answers: [okFor(TOKEN), okFor(`${TOKEN}-b`), refusal("CREW_OFFLINE"), refusal("UNREACHABLE")],
+    answers: [okFor(TOKEN), okFor(`${TOKEN}-b`), refusal("CREW_OFFLINE"), okFor(`${TOKEN}-c`)],
   });
   await s.opener.open(ID);
   await s.opener.open(OTHER);
   const [a, b] = s.win.opened;
-  a.cbs.status[0](401); // CREW_OFFLINE: A's renewal stops, its window stays
-  await settle();
-  b.cbs.status[0](401); // UNREACHABLE: B reports RENEW_FAILING and backs off
+  a.cbs.status[0](401); // CREW_OFFLINE: A's renewal stops and its window closes
   await settle();
   assert.equal(made[0].isStopped(), true);
+  assert.equal(made[1].isStopped(), false);
+  assert.equal(a.closed, true, "the offline Crew's window closed");
+  assert.equal(b.closed, false, "the other window stays open");
+  assert.equal(a.opts.getToken(), null);
+  assert.equal(b.opts.getToken(), `${TOKEN}-b`);
+  assert.deepEqual(s.logs.filter((l) => l.includes("closed (")), [`relay crew ${ID}: open -> closed (CREW_OFFLINE)`]);
+  assert.deepEqual(await s.opener.open(OTHER), { ok: true }, "B is still registered");
+  assert.equal(b.focused, 1, "and is focused, not opened again");
+  await assertReopensFresh(s, [ID]);
+  for (const w of s.win.opened) w.close();
+  assert.ok(made.every((r) => r.isStopped()));
+  assertNoSecrets([...s.logs]);
+});
+
+test("a renewal that fails without stopping (RENEW_FAILING) closes nothing", async () => {
+  const { made, createRenewal } = recordedRenewals();
+  const s = setup({ createRenewal, answers: [okFor(TOKEN), okFor(`${TOKEN}-b`), refusal("UNREACHABLE")] });
+  await s.opener.open(ID);
+  await s.opener.open(OTHER);
+  const [a, b] = s.win.opened;
+  b.cbs.status[0](401); // UNREACHABLE: B reports RENEW_FAILING and backs off
+  await settle();
   assert.equal(made[1].isStopped(), false);
   assert.equal(a.closed || b.closed, false, "no window closed");
   assert.equal(b.opts.getToken(), `${TOKEN}-b`, "B keeps its token while it retries");
   assert.equal(s.logs.some((l) => l.includes("closed (")), false);
-  assert.deepEqual(await s.opener.open(OTHER), { ok: true }, "B is still registered");
-  assert.equal(b.focused, 1, "and is focused, not opened again");
   for (const w of s.win.opened) w.close();
   assert.ok(made.every((r) => r.isStopped()));
 });
