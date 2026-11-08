@@ -71,6 +71,7 @@ import MilestoneNoticeToast, { __resetMilestoneNotices } from './MilestoneNotice
 import { __resetMilestonesRouteMissing, __resetPendingArrival, ARRIVAL_WAIT_MS, closeMilestonesPanel, earnedBadges, gettingStarted, openMilestonesPanel, tryToday, useExplorePreviewSwitch } from './useMilestones'
 import { __resetExploreVideoPick, pickExploreVideo } from './ExploreIntroVideo'
 import type { FeatureVideo } from '../../api/client/featureDiscovery'
+import { BANNER_AUTO_HIDE_MS } from '../../hooks/notificationBanner'
 import { existsSync } from 'node:fs'
 import path from 'node:path'
 
@@ -1149,6 +1150,45 @@ describe('quiet notice', () => {
     vi.spyOn(api, 'milestones').mockResolvedValue(payload({ notices: ['streak-best:7'] }))
     renderWith(<MilestoneNoticeToast />)
     expect((await screen.findByTestId('milestone-notice')).textContent).toBe('Reached: 7-day streak')
+  })
+
+  it('stays up while keyboard focus is on it, and hides on the timer once focus leaves', async () => {
+    vi.spyOn(api, 'milestones').mockResolvedValue(payload({ notices: ['widgets'] }))
+    renderWith(<MilestoneNoticeToast />)
+    const notice = await screen.findByTestId('milestone-notice')
+    // Focus first, so the timer armed on show is cleared before the fake clock
+    // takes over; every timer after this is the fake one.
+    act(() => { within(notice).getByRole('button').focus() })
+    vi.useFakeTimers()
+    try {
+      act(() => { vi.advanceTimersByTime(BANNER_AUTO_HIDE_MS * 2) })
+      expect(screen.getByTestId('milestone-notice')).toBeTruthy()
+      act(() => { within(notice).getByRole('button').blur() })
+      act(() => { vi.advanceTimersByTime(BANNER_AUTO_HIDE_MS) })
+      expect(screen.queryByTestId('milestone-notice')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('drops the focus hold when a temporary chat hides the notice, so it still times out on return', async () => {
+    vi.spyOn(api, 'milestones').mockImplementation(async (key?: string) => (key === 'dashboard:tmp' ? { enabled: false } : payload({ notices: ['widgets'] })))
+    renderWith(<MilestoneNoticeToast />)
+    const notice = await screen.findByTestId('milestone-notice')
+    act(() => { within(notice).getByRole('button').focus() })
+    vi.useFakeTimers()
+    try {
+      // The temporary chat's read turns milestones off: the card leaves without a blur.
+      act(() => { store.dispatch(setActiveSlot('tmp')) })
+      // React Query hands results over on a zero-delay timer; tick only that.
+      await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+      expect(screen.queryByTestId('milestone-notice')).toBeNull()
+      act(() => { store.dispatch(setActiveSlot(null)) })
+      act(() => { vi.advanceTimersByTime(BANNER_AUTO_HIDE_MS) })
+      expect(screen.queryByTestId('milestone-notice')).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
