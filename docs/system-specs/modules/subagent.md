@@ -4474,8 +4474,15 @@ the hint the parent re-spawns from scratch and pays for the same tool calls twic
   triggering dedicated fallback or abandoning the live handle. Event-loop tombstone snapshots are memory-only: they acquire the identity
   lock non-blocking and use already-published in-memory generations, never reading
   the protected durable record. Executor-owned prune independently merges that
-  record after restart before cleanup. The protected record and in-memory fallback
-  are evicted when prune or explicit folder deletion succeeds. Tombstones expose
+  record after restart before cleanup. One sweep reads each run's protected record
+  once, before the retention locks, and locks down the shared `trust` directories
+  once (each run's own record directory and file before every read); every decision
+  for that run merges that read with a fresh in-memory snapshot. The record's writer
+  takes no retention lock and publishes each generation in memory first, so a
+  generation landing after the read is still cleaned, and a folder deleted after
+  the read is skipped rather than cleaned from the stale record. The protected
+  record and in-memory fallback are evicted when prune or explicit folder deletion
+  succeeds. Tombstones expose
   the latest identity in compatibility fields and snapshot the full list for
   diagnostics/restart hints, but those agent-folder fields cannot authorize
   provider deletion. Prune's deletion set comes only from the protected record
