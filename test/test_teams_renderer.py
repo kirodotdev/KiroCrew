@@ -215,6 +215,30 @@ class TestProgressiveOutput:
         ), "the answer must EDIT the progress bubble, not leave '🔧 …' stranded above it"
 
     @pytest.mark.asyncio
+    async def test_a_chips_only_answer_settles_the_progress_message(self) -> None:
+        class _CardClient(_EditingClient):
+            def __init__(self) -> None:
+                super().__init__()
+                self.cards: list[dict] = []
+
+            async def send_card(self, conversation_id, card, service_url) -> str:
+                self.cards.append(card)
+                return f"card-{len(self.cards)}"
+
+        client = _CardClient()
+        r = TeamsRenderer(client, "conv-1", "https://smba.trafficmanager.net/", TEAMS_CAPABILITIES)
+        await r.on_turn_start()
+        await r.on_tool_call("t1", "fs_read")
+        await r.on_text_chunk("[OPTIONS: yes | no]")
+        await r.on_done()
+
+        assert client.sent == ["🔧 fs_read…"]
+        assert len(client.cards) == 1, "the chips still go out as their own card"
+        assert client.updates == [
+            ("mid-1", "✅ Done")
+        ], "with no text to take it over, the '🔧 …' bubble must still be settled"
+
+    @pytest.mark.asyncio
     async def test_a_turn_with_no_tools_posts_exactly_one_message(self) -> None:
         client = _EditingClient()
         r = TeamsRenderer(client, "conv-1", "https://smba.trafficmanager.net/", TEAMS_CAPABILITIES)
