@@ -14797,6 +14797,7 @@
         "mcp_concern_auto_approve": "Die Auto-Freigabe-Regeln, die deine Agenten-Konfigurationsdatei setzt — {{name}} wendet sie nicht an",
         "mcp_concern_denied_tools": "Die Tools, die du abgeschaltet hast — hier bleiben sie verfügbar",
         "mcp_concern_hooks": "Die Hooks aus deiner Agent-Konfigurationsdatei — sie laufen nicht",
+        "mcp_concern_hooks_pre_tool_use": "Die preToolUse-Hooks aus deiner Agent-Konfigurationsdatei — sie laufen nicht",
         "mcp_concern_mcp_servers": "Die MCP-Server aus deiner Agent-Konfigurationsdatei — sie werden hier nicht eingebunden",
         "mcp_concern_model": "Das Modell, das deine Agenten-Konfigurationsdatei nennt — {{name}} bezieht sein Modell anderswo",
         "mcp_concern_model_allowlist": "Die Modell-Liste, die deine Agenten-Konfigurationsdatei erlaubt — sie begrenzt nicht, was {{name}} anbietet",

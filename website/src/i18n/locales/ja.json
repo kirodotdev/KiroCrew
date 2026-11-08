@@ -14429,6 +14429,7 @@
         "mcp_concern_auto_approve": "エージェント設定ファイルが定める自動承認ルール — {{name}} はそれを適用しません",
         "mcp_concern_denied_tools": "あなたがオフにしたツール — ここでは使えるままです",
         "mcp_concern_hooks": "エージェント設定ファイルで定義した Hooks — 実行されません",
+        "mcp_concern_hooks_pre_tool_use": "エージェント設定ファイルで定義した preToolUse の Hooks — 実行されません",
         "mcp_concern_mcp_servers": "エージェント設定ファイルの MCP サーバー — ここでは読み込まれません",
         "mcp_concern_model": "エージェント設定ファイルが指定するモデル — {{name}} はモデルを別の場所から取ります",
         "mcp_concern_model_allowlist": "エージェント設定ファイルが許可するモデル一覧 — {{name}} が出せるモデルを絞るものではありません",

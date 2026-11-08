@@ -20,6 +20,13 @@ Membership is the whole double-fire guard. A non-member's harness runs the field
 itself, so the turn loop asks :func:`spec_script_hooks` only when the session's
 capabilities say Crew owns the job.
 
+claude is a member of ``ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS`` alone. Its
+harness is handed no spec, so Crew fires the events that cannot refuse a call
+(:data:`OBSERVER_HOOK_EVENTS`) and drops ``preToolUse``
+(:func:`observer_spec_hooks`): claude approves some calls without asking, so a
+gating hook would be skipped on exactly those. Nothing there gates on the spec, so
+a spec that cannot be read costs its hooks, never a tool call.
+
 Both spec shapes are read:
 
 * the object form kiro-cli uses and Crew materializes, ``{event: [{command,
@@ -86,6 +93,18 @@ _OBJECT_EVENT_TO_HOOK_EVENT = {
     "postToolUse": HOOK_EVENT_POST_TOOL_USE,
     "stop": HOOK_EVENT_STOP,
 }
+
+#: The events Crew fires on a backend that fires only the spec hooks that cannot
+#: refuse a tool call (``crew_fires_spec_observer_hooks`` without
+#: ``crew_fires_spec_hooks``): every event but PreToolUse.
+OBSERVER_HOOK_EVENTS = frozenset(
+    {
+        HOOK_EVENT_AGENT_SPAWN,
+        HOOK_EVENT_USER_PROMPT_SUBMIT,
+        HOOK_EVENT_POST_TOOL_USE,
+        HOOK_EVENT_STOP,
+    }
+)
 
 #: The events whose matcher names a tool. kiro-cli reads a matcher on these only,
 #: so a matcher on any other event is dropped rather than applied to the context.
@@ -305,10 +324,13 @@ def post_tool_hook_tool_id(provider: object, *, harness_tool_id: str, is_shell: 
     command, KAS's shell tool, which :func:`spec_hook_tool_names` reads as
     kiro-cli's ``execute_bash`` -- the one tool kiro-cli runs a command with.
 
+    claude names its shell call the same way: its frames carry no tool id, and a
+    call of kind ``execute`` is its Bash tool.
+
     "" on a backend whose harness runs the spec's hooks itself, and for a call
     nothing names, which keeps the title matching it had.
     """
-    if not capabilities_of(provider).crew_fires_spec_hooks:
+    if not capabilities_of(provider).crew_fires_spec_observer_hooks:
         return ""
     if harness_tool_id:
         return harness_tool_id
@@ -348,12 +370,13 @@ def post_tool_identity(
     is_shell: bool,
     earlier: PostToolIdentity | None = None,
 ) -> PostToolIdentity | None:
-    """*event*'s :class:`PostToolIdentity`, or ``None`` where Crew fires no spec hooks.
+    """*event*'s :class:`PostToolIdentity`, or ``None`` where Crew fires no
+    PostToolUse spec hooks.
 
     *event* is the call's ``tool_call`` frame or its permission request; a field
     the event leaves empty keeps what *earlier* recorded for the same call.
     """
-    if not capabilities_of(provider).crew_fires_spec_hooks:
+    if not capabilities_of(provider).crew_fires_spec_observer_hooks:
         return None
     base = earlier or PostToolIdentity()
     stated = getattr(event, "harness_tool_id", "") or ""
@@ -1128,11 +1151,13 @@ def spec_hooks_run_nowhere(provider: object) -> bool:
     ``withheld``, or where a ``broker-only`` backend (pi) has no mirror to send the
     field and Crew does not fire it (``backend_mcp_ability._broker_only_dispositions``).
     False where the harness runs the field itself (kiro-cli), where Crew fires it
-    (``crew_fires_spec_hooks``), and for a backend with no ruling, about which
-    nothing is established.
+    (``crew_fires_spec_hooks``) or all of it but ``preToolUse``
+    (``crew_fires_spec_observer_hooks``, claude, whose ``preToolUse`` entries get
+    their own notice), and for a backend with no ruling, about which nothing is
+    established.
     """
     caps = capabilities_of(provider)
-    if caps.crew_fires_spec_hooks:
+    if caps.crew_fires_spec_hooks or caps.crew_fires_spec_observer_hooks:
         return False
     ability = ability_for(caps.backend)
     return _HOOKS_CONCERN in ability.no_channel or _HOOKS_CONCERN in ability.withheld
@@ -1191,6 +1216,21 @@ def spec_hook_events(agent_id: str, project_dir: str | None = None) -> list[str]
     return [name for name, event in _OBJECT_EVENT_TO_HOOK_EVENT.items() if event in present]
 
 
+def _fires_observer_spec_hooks_only(provider: object) -> bool:
+    """Whether Crew fires *provider*'s spec hooks on :data:`OBSERVER_HOOK_EVENTS` only.
+
+    True on claude: its harness is handed no spec, and it approves some calls
+    without a permission request, so a ``preToolUse`` hook could not gate them.
+    """
+    caps = capabilities_of(provider)
+    return caps.crew_fires_spec_observer_hooks and not caps.crew_fires_spec_hooks
+
+
+def observer_spec_hooks(hooks: list[ScriptHook]) -> list[ScriptHook]:
+    """*hooks* without the ones on an event that can refuse a tool call."""
+    return [hook for hook in hooks if hook.event in OBSERVER_HOOK_EVENTS]
+
+
 class TurnSpecHooks(NamedTuple):
     """What a subagent or task-runner turn needs to gate its permission requests."""
 
@@ -1247,7 +1287,13 @@ async def turn_spec_hooks(provider: object, agent_id: str) -> TurnSpecHooks:
     its spec is not read, as its harness already runs the field. The agent is
     resolved through :func:`session_agent`; when none can be named, every
     permission request is refused, since whose hooks apply is unknown.
+
+    On a backend that fires only :data:`OBSERVER_HOOK_EVENTS` (claude) the turn
+    is not gated: it gets those hooks, and an agent that cannot be named or a
+    spec that cannot be read leaves it with none.
     """
+    if _fires_observer_spec_hooks_only(provider):
+        return await _observer_turn_spec_hooks(provider, agent_id)
     if not capabilities_of(provider).crew_fires_spec_hooks:
         return _NOT_GATED
     cwd = getattr(provider, "cwd", "")
@@ -1283,6 +1329,32 @@ async def turn_spec_hooks(provider: object, agent_id: str) -> TurnSpecHooks:
     except Exception:  # noqa: BLE001 - a hook-file read must never fail the turn
         logger.debug("user hook files could not be merged for this turn", exc_info=True)
     return TurnSpecHooks(hooks, work_dir, False, True)
+
+
+async def _observer_turn_spec_hooks(provider: object, agent_id: str) -> TurnSpecHooks:
+    """:func:`turn_spec_hooks` on a backend that fires only the observer events."""
+    cwd = getattr(provider, "cwd", "")
+    work_dir = cwd if isinstance(cwd, str) and cwd else None
+    agent_id = session_agent(provider, agent_id)
+    if not agent_id:
+        return _NOT_GATED
+    try:
+        hooks, _lost, _unconfirmable = await asyncio.to_thread(
+            functools.partial(
+                crew_fired_spec_hooks,
+                agent_id,
+                spec_project_dir(provider),
+                session_key=provider_session_key(provider),
+            )
+        )
+    except Exception:  # noqa: BLE001 - no hook here gates, so none runs this turn
+        logger.warning(
+            "agent spec hooks for %r could not be read; none run this turn",
+            agent_id,
+            exc_info=True,
+        )
+        return _NOT_GATED
+    return TurnSpecHooks(observer_spec_hooks(hooks), work_dir, False, False)
 
 
 async def hook_projection_stale(provider: object, agent_id: str) -> bool:

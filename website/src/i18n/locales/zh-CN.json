@@ -14429,6 +14429,7 @@
         "mcp_concern_auto_approve": "代理配置文件设定的自动批准规则 — {{name}} 不会套用它们",
         "mcp_concern_denied_tools": "你关掉的工具——在这里仍然可用",
         "mcp_concern_hooks": "你的代理配置文件里定义的 Hooks——不会运行",
+        "mcp_concern_hooks_pre_tool_use": "你的代理配置文件里定义的 preToolUse Hooks——不会运行",
         "mcp_concern_mcp_servers": "你的代理配置文件里的 MCP 服务器——在这里不会挂载",
         "mcp_concern_model": "代理配置文件指定的模型 — {{name}} 的模型来自别处",
         "mcp_concern_model_allowlist": "代理配置文件允许的模型清单 — 它并不限制 {{name}} 能提供什么",

@@ -489,6 +489,14 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "choosing a harness loses nothing; a wrong membership runs every hook twice "
         "or not at all, which is a defect"
     ),
+    "ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS": (
+        "who runs the agent spec's hooks that cannot refuse a tool call: the harness, "
+        "or Crew's turn loop. They run either way. What a reader loses on claude, the "
+        "spec's preToolUse hooks, is already on the card as the one setting there that "
+        "has no effect (backend_mcp_ability.HOOKS_PRE_TOOL_USE_CARD_ID), so a line here "
+        "would repeat it; a wrong membership runs a hook twice or not at all, which is "
+        "a defect"
+    ),
     "ACP_BACKENDS_HARNESS_OWNED_SESSIONS": (
         "whose disk the transcript sits on. Crew holds a non-member's transcript under "
         "its own sessions tree and a reopened chat restores from there, so the "

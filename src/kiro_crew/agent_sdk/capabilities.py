@@ -56,6 +56,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_ACP_CLIENT_SPAWNABLE,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
+    ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS,
     ACP_BACKENDS_HONOR_ZERO_TOOL_BAN,
@@ -157,6 +158,16 @@ class SessionCapabilities:
     #: itself, and firing them here too would run each one twice.
     crew_fires_spec_hooks: bool
 
+    #: Whether Crew's turn loop must fire the agent spec's hooks on the events that
+    #: cannot refuse a tool call (``postToolUse``, ``userPromptSubmit``,
+    #: ``agentSpawn``, ``stop``).
+    #:
+    #: True wherever :attr:`crew_fires_spec_hooks` is, and on claude, whose harness
+    #: is handed no spec but approves some calls without asking, so only these
+    #: events are fired there and ``preToolUse`` runs nowhere. False where the
+    #: harness runs the field itself.
+    crew_fires_spec_observer_hooks: bool
+
     #: Whether this harness interprets ``/todos`` as its native task-list command.
     #:
     #: This is deliberately narrower than general slash-command transport: the
@@ -231,6 +242,7 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         effort_via_slash_command=backend in ACP_BACKENDS_KIRO_SLASH_COMMANDS,
         compacts_inline=backend in ACP_BACKENDS_INLINE_COMPACTION,
         crew_fires_spec_hooks=backend in ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
+        crew_fires_spec_observer_hooks=backend in ACP_BACKENDS_CREW_FIRES_SPEC_OBSERVER_HOOKS,
         supports_native_todos=backend in ACP_BACKENDS_NATIVE_TODOS,
         runs_own_slash_commands=backend in ACP_BACKENDS_HARNESS_OWNED_SLASH_COMMANDS,
         honors_zero_tool_ban=backend in ACP_BACKENDS_HONOR_ZERO_TOOL_BAN,
@@ -261,6 +273,7 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     effort_via_slash_command=False,
     compacts_inline=False,
     crew_fires_spec_hooks=False,
+    crew_fires_spec_observer_hooks=False,
     supports_native_todos=False,
     runs_own_slash_commands=False,
     honors_zero_tool_ban=False,
