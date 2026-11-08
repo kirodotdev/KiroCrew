@@ -6152,9 +6152,12 @@ third-party app core's auto-approval. So `apps/app_agent_tools.py` reads the blo
 app only when it is first party, `execution.builtin_app_names()` (a shipped manifest
 declares the name AND the builtin owns the installed slot), and reads it from that
 shipped `app.json` (`execution.shipped_builtin_app_root`), never from the data-home copy.
-An installed or registry app's `agentTools` block, and a built-in's once its wheel copy
-is released by adoption, lists nothing: it still validates and installs, and the app can
-ship its own `mcpServers` entry, whose calls are approved one by one
+A built-in whose wheel copy is released by adoption is first party too, under the trust
+the tool gate's own-server grant rests on (section 33, "Agent tools through adoption"):
+its block is read from the adopted record's own `app.json`, and a tool lists only when it
+equals, route included, one its wheel copy's shipped block declares. Any other installed
+or registry app's `agentTools` block lists nothing: it still validates and installs, and
+the app can ship its own `mcpServers` entry, whose calls are approved one by one
 (`register_app_mcp_servers` strips its `autoApprove`). Listing such an app's tools needs a
 path that asks before each call (a server of its own outside `allowedTools`, or a
 per-tool approval); that is a maintainer's decision, not this seam's.
@@ -6262,7 +6265,8 @@ Writers: `apps/manifest_agent_tools.py`, `apps/manifest.py`, `apps/discovery.py`
 `mcp_core.py` (`_validate_args`), `mcp_core_parts/identity.py`
 (`REFLEXIVE_TOOL_MODULES`), `dashboard/handlers/app_agent_tools.py`,
 `dashboard/server_runtime/mcp_routes.py`, `dashboard/server_internal_paths.py`,
-`apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`.
+`apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`,
+`apps/builtin_adoption_gate.py` (`adopted_under_pin_trust`, for an adopted former built-in).
 
 ## 31. A marketplace app installs disabled and is trusted by its listing
 
@@ -6787,6 +6791,25 @@ adopted record. The tier, its place in the table and `POLICY ∩ PROFILE` ahead 
 unchanged. Pinned by `test/test_builtin_adoption_gate.py`, end to end through STAGE and
 APPLY included.
 
+**Agent tools through adoption** (`apps/app_agent_tools.py`, `_adopted_first_party_apps`).
+A built-in's `agentTools` (section 30.1) are listed from its shipped `app.json` while the
+builtin owns the record; adoption releases that copy, so on their own the tools would
+leave `kirocrew-core` with it and the agent would lose them. The reader therefore also
+reads an installed name whose wheel copy declares tools when
+`builtin_adoption_gate.adopted_under_pin_trust` holds: the first three conditions of the
+own-server grant above (the wheel pins the app, the record is adopted from the pin's
+repository, and the execution grant is bound to that repository and covers the installed
+code), the one predicate both grants ask. The block is read from the adopted record's own
+`app.json` and held to the wheel copy's: a tool is kept only when its name, description,
+title, `inputSchema`, `maxResultChars` and the block's `route` equal a tool the wheel's
+shipped block declares, so an edited or drifted declaration lists nothing and a narrower
+one (fewer tools) is accepted. The deny universe (`shipped_tools`) is still read from the
+wheel only, so it names every tool the adopted record can list. A third-party record
+under the same name, a grant bound elsewhere or name-only, an unpinned app or an
+unreadable manifest lists nothing, and `POST /api/app-tools/call` answers `unknown_tool`
+for it. Pinned by `test/test_app_agent_tools_adopted.py`, end to end through STAGE and
+APPLY included.
+
 Then ONE trust-writer transaction (`agent_config_writer.mutate_trust_settings`)
 writes the grant exactly as `default_installs._grant` does (`apps_trusted`,
 `apps_trusted_repositories[name]`, the name removed from `apps_trusted_local`)
@@ -6937,8 +6960,8 @@ on hold, never "until then".
 Writers: `apps/builtin_adoption.py`, `apps/builtin_adoption_apply.py`,
 `apps/builtin_adoption_checks.py`, `apps/builtin_adoption_mcp.py`,
 `apps/builtin_adoption_fetch.py`, `apps/builtin_adoption_pins.py`, `apps/builtin_adoption_state.py`,
-`apps/builtin_adoption_markers.py`, `apps/manager_adopt.py`,
-`apps/agent_config_writer.py`, `apps/routes_listing.py` (the released 404), `apps/adoption-pins.json`, `testing/harness.py`,
+`apps/builtin_adoption_markers.py`, `apps/builtin_adoption_gate.py`, `apps/manager_adopt.py`,
+`apps/agent_config_writer.py`, `apps/app_agent_tools.py` (agent tools through adoption), `apps/routes_listing.py` (the released 404), `apps/adoption-pins.json`, `testing/harness.py`,
 `scripts/adoption_pin.py`. Tests: `test/test_builtin_adoption_*.py`,
 `test/integration/test_builtin_adoption_boot.py`. The rows the
 dashboard reads are pinned end to end: `test_builtin_adoption_dashboard_rows.py` builds

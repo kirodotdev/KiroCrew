@@ -245,7 +245,8 @@ MCP server. Needs App Kit seam level 2 (`ctx.sdk_level >= 2`); an older host ign
 the block and installs the app without the tools.
 
 Today the gateway lists the tools of first-party apps only (the apps that ship with
-Kiro Crew). `kirocrew-core` is auto-approved as a whole server, and a third-party
+Kiro Crew, including one that moved to its own repository, up to the tools its shipped
+copy declares). `kirocrew-core` is auto-approved as a whole server, and a third-party
 app's tools do not get that approval, so an installed or registry app's block
 validates and installs but lists nothing yet. Until it does, ship an MCP server of your
 own (`mcpServers`); the user approves each of its calls.
