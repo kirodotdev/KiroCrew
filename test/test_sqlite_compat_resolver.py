@@ -9,6 +9,7 @@ fallback, and pin that no import site carries its own copy of the idiom.
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import sqlite3 as stdlib_sqlite3
@@ -153,3 +154,61 @@ def test_a_store_database_is_never_opened_with_the_stdlib_driver():
         if stdlib_import.search((SRC_ROOT / name).read_text(encoding="utf-8"))
     ]
     assert offenders == []
+
+
+# Every module that references the stdlib ``sqlite3.connect``, and what it opens. None
+# is a database a resolver-bound connection also opens (``SHARED_DATABASE_OPENERS``
+# above). A new one imports ``sqlite3`` from ``_sqlite_compat``, or adds its row here.
+STDLIB_CONNECT_SITES = {
+    "acp/codex_sqlite.py": "Codex's own state database, read to seed a private copy",
+    "apps/builtins/auto_research/campaign/storage.py": "the app's campaign database",
+    "apps/builtins/aws_control/crew/runtime/container/supervisor/kiro_login.py": (
+        "kiro-cli's login store inside the app's container"
+    ),
+    "apps/builtins/aws_control/crew/runtime/container_tests/test_supervisor_kiro_login.py": (
+        "test fixtures"
+    ),
+    "apps/builtins/personal_shopper/backend/store.py": "the app's own database",
+    "apps/builtins/personal_shopper/tests/test_store.py": "test fixtures",
+    "builtin_skills/security-conductor/scripts/ledger.py": "the skill's ledger, in its own process",
+    "builtin_skills/security-conductor/scripts/scope_check.py": (
+        "the skill's ledger, in its own process"
+    ),
+    "onboarding_scan.py": "a private snapshot of another agent's database",
+    "taskq/store.py": "the task queue database, which only the stdlib driver opens",
+}
+
+
+def test_every_stdlib_connect_names_the_database_it_opens():
+    found = set()
+    for path in SRC_ROOT.rglob("*.py"):
+        source = path.read_text(encoding="utf-8")
+        if "sqlite3" not in source:
+            continue
+        tree = ast.parse(source)
+        # An import under ``if TYPE_CHECKING:`` binds nothing at run time.
+        typing_only = {
+            id(inner)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+            and ast.unparse(node.test) in {"TYPE_CHECKING", "typing.TYPE_CHECKING"}
+            for stmt in node.body
+            for inner in ast.walk(stmt)
+        }
+        connects = set()
+        for node in ast.walk(tree):
+            if id(node) in typing_only:
+                continue
+            if isinstance(node, ast.Import):
+                connects |= {
+                    f"{a.asname or a.name}.connect" for a in node.names if a.name == "sqlite3"
+                }
+            elif isinstance(node, ast.ImportFrom) and node.module == "sqlite3":
+                connects |= {a.asname or a.name for a in node.names if a.name == "connect"}
+        # A reference, not only a call: ``to_thread(sqlite3.connect, path)`` opens too.
+        if connects and any(
+            isinstance(node, (ast.Attribute, ast.Name)) and ast.unparse(node) in connects
+            for node in ast.walk(tree)
+        ):
+            found.add(path.relative_to(SRC_ROOT).as_posix())
+    assert sorted(found) == sorted(STDLIB_CONNECT_SITES)
