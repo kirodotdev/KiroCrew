@@ -65,6 +65,7 @@ from kiro_crew.config.sections import (  # noqa: F401 -- read by chat_api.slot_s
 from kiro_crew.dashboard import display_verdicts  # noqa: F401 -- read by chat_api.slot_detail
 from kiro_crew.dashboard.approval_posture import trust_reaches_subagents  # noqa: F401
 from kiro_crew.dashboard.body_numbers import body_int  # noqa: F401
+from kiro_crew.dashboard.card_send import CARD_ORIGIN_META_KEY
 from kiro_crew.dashboard.channel_slots import channel_slot_name, note_slot_closed  # noqa: F401
 from kiro_crew.dashboard.chat_api import agent_switch as _owner_agent_switch
 from kiro_crew.dashboard.chat_api import app_admission as _owner_app_admission
@@ -749,6 +750,8 @@ _SESSION_RELOAD_NOTICE = (
 #: ``relay`` is the cross-session sender the delivery path stamps on a
 #: ``session_send`` row; the transcript draws it as a card naming that session, so a
 #: caller-supplied one would show a message as another session's.
+#: ``CARD_ORIGIN_META_KEY`` marks a row a dashboard card sent (``card_send``), so a
+#: caller-supplied one would label typed text as a page's, or the reverse.
 RESERVED_ROW_META_KEYS = frozenset(
     {
         "decisions_strip",
@@ -761,6 +764,7 @@ RESERVED_ROW_META_KEYS = frozenset(
         MERGED_FROM_META_KEY,
         "noteId",
         "noteRowFor",
+        CARD_ORIGIN_META_KEY,
     }
 )
 

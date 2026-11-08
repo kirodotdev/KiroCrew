@@ -283,6 +283,10 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # the server's total agree; continue_slot_turn still refuses a
                 # reserved slot, reported as skipped.
                 ("chat_resume_all.py", "collect_interrupted_idle"),
+                # A card send is refused while a turn executes. It also reads the
+                # reservation directly (`_turn_admission_reserved`), which this
+                # table does not enumerate.
+                ("card_send.py", "_thread_is_idle"),
                 ("channel_slots.py", "_window_refresh_is_safe"),
                 ("chat_slack.py", "drain_slack_backfill"),
                 # The synthesis outage re-check fires only on an idle slot: a

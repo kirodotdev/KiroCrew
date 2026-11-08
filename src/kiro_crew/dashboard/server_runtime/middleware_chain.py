@@ -217,6 +217,8 @@ def _install_dashboard_middlewares(
                 raise
         return await handler(request)  # type: ignore[operator]
 
+    from kiro_crew.dashboard.card_send import card_turn_delegation_middleware
+
     # Explicit middleware ordering — self-documenting and immune to future insertions
     app.middlewares[:] = [
         # Outermost: privacy-safe per-route latency. Times the FULL
@@ -263,6 +265,10 @@ def _install_dashboard_middlewares(
             ssm_gate=ssm_gate,
         ),
         sel_audit_middleware,
+        # Inner to token auth (it reads ``internal_auth``) and to the audit record:
+        # a turn started by a Dashboard card hands no work to another session or job
+        # (dashboard/card_send.py).
+        card_turn_delegation_middleware,
         # Inner to token auth (it reads the ``app`` claim) and to the audit
         # record: every /api/chat/slots/{slot}/* route takes one app-ownership
         # decision here before its handler runs (dashboard/slot_ownership.py).

@@ -8,8 +8,9 @@ import { Badge, Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useTheme } from '../../hooks/useTheme'
 import { useSandboxDoc } from '../../hooks/useSandboxDoc'
-import { useFrameLinkBridge } from '../../hooks/useFrameLinkBridge'
+import { useFrameLinkBridge, tiedToFrame } from '../../hooks/useFrameLinkBridge'
 import { useFrameAliveRecovery } from '../../hooks/useFrameAliveRecovery'
+import { hasGesture } from '../../hooks/useFrameOpenLink'
 import { buildSrcdoc, readThemeVars } from '../../lib/widgetSrcdoc'
 import { startDashboardLoadTiming, type DashboardLoadTiming } from '../../lib/dashboardTiming'
 import { i18nT } from '../../i18n/t'
@@ -77,10 +78,20 @@ const READY_MESSAGE_TYPE = 'kirocrew-dashboard:ready'
 
 /** A page's request to put a reply in the chat box: `{ type, text }`.
  *
- * The page is crewmate-written HTML, so it never SENDS anything: the host only
- * fills the composer, and the person presses send. That is the whole safety
- * line -- a page that could send would be a page that could speak as the user. */
+ * The page is crewmate-written HTML, so `act` never SENDS anything: the host only
+ * fills the composer, and the person presses send. */
 const ACT_MESSAGE_TYPE = 'kirocrew-dashboard:act'
+/** A page's request to SEND a reply into this crewmate's own thread: `{ type, text }`,
+ *  the same text rules as `act`. Still only a request. The host sends it only when
+ *  the person interacted with the window in the last few seconds and the page's frame holds focus, only into the
+ *  thread of the tab the page is shown in (the page names no target), at most once
+ *  per `SEND_MIN_INTERVAL_MS`, and the gateway can refuse (the Profile switch is
+ *  off, the thread is busy or waiting on an approval or a question). Any refusal
+ *  falls back to `act`, so a reply is never lost. The built-in pages post it for a
+ *  finished answer (test_dashboard_frame pins the literal against them). */
+const SEND_MESSAGE_TYPE = 'kirocrew-dashboard:send'
+/** The least time between two sends from one tab. The gateway enforces its own. */
+const SEND_MIN_INTERVAL_MS = 3000
 /** What the page posts when it cannot place a patch in order. Mirrors
  *  `dashboard_frame.REFETCH_MESSAGE_TYPE`. */
 const REFETCH_MESSAGE_TYPE = 'kirocrew-dashboard:refetch'
@@ -92,16 +103,26 @@ const ACT_MAX_CHARS = 600
  *  values `Btn`'s own `disabled:` variants give. */
 const HELD_RETRY = 'aria-disabled:cursor-not-allowed aria-disabled:opacity-30'
 
-/** The text a page's act message may put in the composer, or null to refuse it. */
-export function actText(data: unknown): string | null {
+function replyText(data: unknown, type: string): string | null {
   if (!data || typeof data !== 'object') return null
   const msg = data as { type?: unknown; text?: unknown }
-  if (msg.type !== ACT_MESSAGE_TYPE || typeof msg.text !== 'string') return null
+  if (msg.type !== type || typeof msg.text !== 'string') return null
   const text = msg.text.trim()
   if (!text || text.length > ACT_MAX_CHARS) return null
   if (/[\u0000-\u0009\u000b-\u001f\u007f]/.test(text)) return null
   return text
 }
+
+/** The text a page's act message may put in the composer, or null to refuse it. */
+export function actText(data: unknown): string | null {
+  return replyText(data, ACT_MESSAGE_TYPE)
+}
+
+/** The text a page's send message may send, or null to refuse it. Same rules as `actText`. */
+export function sendText(data: unknown): string | null {
+  return replyText(data, SEND_MESSAGE_TYPE)
+}
+
 
 /**
  * How long a newly minted document has to report that it loaded.
@@ -253,7 +274,7 @@ export function dashboardQueryKey(target: DashboardTarget): readonly string[] {
     : [SESSION_DASHBOARD_QUERY_PREFIX, target.slot]
 }
 
-export default function CrewDynamicDashboard({ target, displayName, avatar, onAct, preview = false, onPreviewGone, onPreviewLoaded, onOpenProfileTab, dashboardSlug = '', relayWheel = false }: {
+export default function CrewDynamicDashboard({ target, displayName, avatar, onAct, onSend, preview = false, onPreviewGone, onPreviewLoaded, onOpenProfileTab, dashboardSlug = '', relayWheel = false }: {
   target: DashboardTarget
   /** Report the frame's horizontal wheel runs to the host (see `relayWheel` in
    *  lib/widgetSrcdoc). Only a host that listens may ask: the relay cancels the
@@ -264,6 +285,15 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   avatar?: unknown
   /** Put a reply the page offered into the chat box. Absent: the page's options do nothing. */
   onAct?: (text: string) => void
+  /** Send a reply the page offered into this crewmate's own thread. Resolves `'sent'`
+   *  when the gateway confirmed it, `'off'` when the person turned one-click sends off,
+   *  `'refused'` for the gateway's other "not now", `'failed'` for any other error, and
+   *  `'unknown'` when delivery is indeterminate (a dropped or offline connection, a late
+   *  or unreadable answer). `'off'`/`'refused'`/`'failed'` fill the composer (the last
+   *  two with an error notice); `'unknown'` shows only an uncertainty notice and does
+   *  NOT fill, since a resend could run the turn twice if it did land. Absent: a page's
+   *  `send` behaves as `act`. */
+  onSend?: (text: string) => Promise<'sent' | 'off' | 'refused' | 'failed' | 'unknown'>
   /** Render the STAGED page instead of the adopted one. Its own cache entry, so the
    *  live tab never shows a page nobody applied; still under the `member-dashboard`
    *  prefix, so the frame that says the page changed refetches it too. */
@@ -296,6 +326,15 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   // A link the page asks for: the agent-page link bridge, from this frame only. A
   // click it cannot tie to the frame gets the host's "Open <host>" button.
   const linkChip = useFrameLinkBridge([frameRef])
+  const onSendRef = useRef(onSend)
+  onSendRef.current = onSend
+  const [sendFailed, setSendFailed] = useState(false)
+  // Delivery was indeterminate (a dropped/offline connection): distinct from a
+  // refusal/failure, because the reply is NOT put back in the composer (a resend
+  // could run the turn twice if it did land) -- the notice just says to check.
+  const [sendUnsure, setSendUnsure] = useState(false)
+  const sendingRef = useRef(false)
+  const lastSendRef = useRef(0)
   const { theme, colorTheme, themeVersion } = useTheme()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const themeVars = useMemo(() => readThemeVars(), [theme, colorTheme, themeVersion])
@@ -439,6 +478,44 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
       const text = actText(event.data)
       if (text && onActRef.current) {
         onActRef.current(text)
+        return
+      }
+      const reply = sendText(event.data)
+      if (reply) {
+        const fill = () => onActRef.current?.(reply)
+        const send = onSendRef.current
+        // The click must have happened INSIDE this page's frame. A recent activation
+        // with the frame focused (`hasGesture`) is necessary but not sufficient: a
+        // click anywhere in the dashboard activates the window, and a page script can
+        // call `focus()` on its own frame, so `hasGesture` alone would pass on a click
+        // the person never made in this page. `tiedToFrame` is the stronger gate the
+        // link bridge uses: it holds only when focus came into THIS frame straight
+        // from the dashboard and no click or key outside it is still live, so a page
+        // that focuses itself after a click elsewhere does not pass. Without both the
+        // reply falls back to filling the composer (`act`). No API reads as `act` too.
+        const frame = frameRef.current
+        if (!send || !frame || !hasGesture(frame) || !tiedToFrame(frame)) { fill(); return }
+        // A second message inside the interval of an ACCEPTED send, or while one is in
+        // flight, is dropped: a person's double click is one reply, and a script's burst
+        // is none. After a refusal the interval is cleared, so the next reply is tried
+        // (and filled if refused too) instead of being lost.
+        const now = Date.now()
+        if (sendingRef.current || now - lastSendRef.current < SEND_MIN_INTERVAL_MS) return
+        sendingRef.current = true
+        lastSendRef.current = now
+        const refused = (failed: boolean) => { lastSendRef.current = 0; setSendFailed(failed); fill() }
+        // Indeterminate delivery: clear the interval so a deliberate retry is allowed,
+        // show the uncertainty notice, and do NOT fill -- a resend could double-run it.
+        const unsure = () => { lastSendRef.current = 0; setSendUnsure(true) }
+        setSendFailed(false)
+        setSendUnsure(false)
+        send(reply)
+          .then((outcome) => {
+            if (outcome === 'unknown') unsure()
+            else if (outcome !== 'sent') refused(outcome !== 'off')
+          })
+          .catch(() => refused(true))
+          .finally(() => { sendingRef.current = false })
         return
       }
       // THE GAP. The page applies patches in sequence and asks for the whole read
@@ -1296,6 +1373,33 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
           />
         </div>
       )}
+      {sendFailed && (
+        // The reply is already in the chat box (the fallback ran), so this only says
+        // why the click did not send it, for a refusal (busy) as for a failure. Not when the
+        // person switched one-click sends off: nothing went wrong, so nothing is flagged.
+        // No hand-off: the hand-off navigates to /chat, which would unmount the Members
+        // page and discard the unsent draft this fallback just placed in the composer.
+        <ErrorNotice
+          message={i18nT('pages.membersPage.dashboard_send_failed')}
+          onDismiss={() => setSendFailed(false)}
+          className="shrink-0 m-2"
+          testId="crew-dashboard-send-error"
+        />
+      )}
+      {sendUnsure && (
+        // Delivery was indeterminate (a dropped or offline connection). The reply is
+        // NOT in the composer -- a resend could run the turn twice if it did land -- so
+        // this only says to check the thread, rather than claiming it sent or failed.
+        // No hand-off: the agent hand-off navigates to /chat, which would unmount the
+        // Members page and discard its unsaved Profile and crew-editor drafts; this
+        // notice is advisory and needs no navigation, so it keeps the hand-off off.
+        <ErrorNotice
+          message={i18nT('pages.membersPage.dashboard_send_unsure')}
+          onDismiss={() => setSendUnsure(false)}
+          className="shrink-0 m-2"
+          testId="crew-dashboard-send-unsure"
+        />
+      )}
       {broken && (
         // The page on screen is the last one that parsed. Banded, never replaced: the
         // alternative is blanking a working page because a NEWER copy is broken.
@@ -1531,4 +1635,4 @@ export default function CrewDynamicDashboard({ target, displayName, avatar, onAc
   )
 }
 
-export { ACT_MESSAGE_TYPE, DATA_MESSAGE_TYPE, REFETCH_MESSAGE_TYPE, READY_MESSAGE_TYPE, READY_TIMEOUT_MS }
+export { ACT_MESSAGE_TYPE, SEND_MESSAGE_TYPE, SEND_MIN_INTERVAL_MS, DATA_MESSAGE_TYPE, REFETCH_MESSAGE_TYPE, READY_MESSAGE_TYPE, READY_TIMEOUT_MS }

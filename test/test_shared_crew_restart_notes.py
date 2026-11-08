@@ -180,6 +180,41 @@ async def test_a_session_the_crash_left_unopened_opens_with_its_prompt_and_note(
 
 
 @pytest.mark.asyncio
+async def test_a_recovered_card_row_keeps_its_card_marker(tmp_path, dash_state):
+    """A crash after a Dashboard card's prompt was admitted but before its row was
+    saved: the recovered user row carries CARD_ORIGIN_META_KEY (it rides the accepted
+    payload), so latest_user_row_is_card stays true and a later Continue is untrusted.
+    Without the marker on the payload/row it would run as a trusted owner turn.
+    """
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.dashboard.card_send import CARD_ORIGIN_META_KEY
+
+    # Before the crash: only the session's metadata line is on disk (as the
+    # unopened-session recovery test does), so _deliver opens it from disk.
+    slot = dash_state.get_or_create_slot("l-card")
+    assert await asyncio.wait_for(host_hooks.ensure_slot_recorded(dash_state, slot), BOUND)
+
+    after = _make_state(tmp_path)
+    after.broadcast_ws = MagicMock()
+    after.push_slots_update = MagicMock()
+    after.owner_id = ""
+    note = host_hooks.reconcile_note(after)
+    payload = {
+        admission_entry.CHAT_PROMPT_PAYLOAD_KEY: PROMPT,
+        admission_entry.CHAT_AUTHOR_PAYLOAD_KEY: ALICE.to_public_dict(),
+        admission_entry.CHAT_CARD_ORIGIN_PAYLOAD_KEY: True,
+    }
+    note(_work("dashboard:l-card", S.UNKNOWN_OUTCOME), payload)
+    host_hooks.mark_sessions_restored(after)
+    await asyncio.wait_for(getattr(after, "_shared_crew_note_delivery"), BOUND)
+    opened = after._slots.get("l-card")
+    assert opened is not None
+    user_row = next(m for m in opened.messages if m["role"] == "user")
+    assert user_row["meta"][CARD_ORIGIN_META_KEY] is True
+
+
+@pytest.mark.asyncio
 async def test_the_note_waits_for_the_restore_and_lands_in_the_restored_slot(dash_state):
     note = host_hooks.reconcile_note(dash_state)
     # Reconciliation runs at gateway start, before the restore built the slot.
