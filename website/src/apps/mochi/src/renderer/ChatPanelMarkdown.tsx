@@ -139,13 +139,15 @@ const StreamingMarkdown = React.memo<{ content: string }>(({ content }) => {
 export function fixStreamingFences(s: string): string {
   // The info string may be a tag plus an optional `{...}` attribute block,
   // matching the dashboard's fixCodeFences: a ``` run followed by more words
-  // is a mid-sentence mention, not a fence.
-  s = s.replace(/([^\n])(\n?)(```(?:[ \t]*[^`\s]+)?(?:[ \t]+\{[^`\n]*\})?[ \t\r]*\n)/g, (_, pre, nl, fence) =>
-    nl ? pre + nl + fence : pre + '\n\n' + fence
+  // is a mid-sentence mention, not a fence. Indentation alone (a fence inside
+  // a list item) is not glued text either.
+  s = s.replace(/([^\n])(\n?)(```(?:[ \t]*[^`\s]+)?(?:[ \t]+\{[^`\n]*\})?[ \t\r]*\n)/g, (match, pre, nl, fence, at: number, src: string) =>
+    nl || /^[ \t]*$/.test(src.slice(src.lastIndexOf('\n', at) + 1, at + 1)) ? match : pre + '\n\n' + fence
   )
   // If there's an odd number of ``` fences, the last one is unclosed — close it
-  const fenceCount = (s.match(/^```/gm) || []).length
-  if (fenceCount % 2 === 1) s += '\n```'
+  // at its own indentation, so a fence inside a list item closes in that item
+  const fences = s.match(/^ {0,3}```/gm) || []
+  if (fences.length % 2 === 1) s += '\n' + fences[fences.length - 1]
   return s
 }
 
