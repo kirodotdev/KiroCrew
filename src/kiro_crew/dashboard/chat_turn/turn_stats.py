@@ -180,6 +180,45 @@ def _context_usage_payload(slot_key: str, client: Any) -> dict[str, Any]:
     return payload
 
 
+# The fewest seconds between two mid-turn context readings one turn broadcasts.
+_LIVE_CONTEXT_MIN_INTERVAL_S = 2.0
+
+
+def _broadcast_live_context(turn: "_ChatTurn", clock: Callable[[], float] = time.monotonic) -> None:
+    """Broadcast the context reading while the turn runs, throttled.
+
+    ``usage_update`` frames move the provider's counts mid-turn but emit no
+    event, and ``_turn_context_usage`` broadcasts only after the turn settles,
+    so a long tool-calling turn left the meter on its old reading until the end.
+    The stream loop calls this once per event: it sends a frame only for a
+    MEASURED reading (used and window both known) that differs from the last one
+    this turn sent, at most once per ``_LIVE_CONTEXT_MIN_INTERVAL_S``. A
+    reading with no counts is never sent mid-turn, because its payload is a
+    ``reset`` that would wipe the stored counts. The turn-end frame stays the
+    final, authoritative reading.
+    """
+    client = turn.client
+    try:
+        window = client.context_window_tokens() if hasattr(client, "context_window_tokens") else 0
+        used = client.context_used_tokens() if hasattr(client, "context_used_tokens") else 0
+        if not (window and used):
+            return
+        reading = (used, window)
+        if reading == turn._live_context_reading:
+            return
+        now = clock()
+        if now - turn._live_context_at < _LIVE_CONTEXT_MIN_INTERVAL_S:
+            return
+        turn._live_context_reading = reading
+        turn._live_context_at = now
+        turn.state.broadcast_context_usage(
+            turn.slot.key, _context_usage_payload(turn.slot.key, client)
+        )
+    except Exception:
+        # A display nicety: never let it break the turn's stream.
+        logger.debug("Live context broadcast failed for slot %s", turn.slot.key, exc_info=True)
+
+
 def _attach_turn_stats(
     slot: "_ChatSlot",
     elapsed_ms: int,

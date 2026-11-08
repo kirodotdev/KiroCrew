@@ -6968,7 +6968,8 @@
       "svg_source_code": "SVG 源代码"
     },
     "contextBar": {
-      "context_pct": "上下文：{{pct}}%"
+      "context_pct": "上下文：{{pct}}%",
+      "context_unknown": "尚无上下文读数"
     },
     "copyBranchButton": {
       "copied": "已复制 {{label}} {{branch}}",

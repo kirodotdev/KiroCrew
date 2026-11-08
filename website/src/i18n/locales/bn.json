@@ -7158,7 +7158,8 @@
       "svg_source_code": "SVG সোর্স কোড"
     },
     "contextBar": {
-      "context_pct": "কনটেক্সট: {{pct}}%"
+      "context_pct": "কনটেক্সট: {{pct}}%",
+      "context_unknown": "এখনও কোনো কনটেক্সট রিডিং নেই"
     },
     "copyBranchButton": {
       "copied": "{{label}} {{branch}} কপি হয়েছে",

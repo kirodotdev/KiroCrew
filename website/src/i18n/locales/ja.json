@@ -6968,7 +6968,8 @@
       "svg_source_code": "SVG ソースコード"
     },
     "contextBar": {
-      "context_pct": "コンテキスト：{{pct}}%"
+      "context_pct": "コンテキスト：{{pct}}%",
+      "context_unknown": "コンテキストの測定値はまだありません"
     },
     "copyBranchButton": {
       "copied": "{{label}} {{branch}} をコピーしました",

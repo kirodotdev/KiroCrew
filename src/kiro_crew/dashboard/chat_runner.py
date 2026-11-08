@@ -305,6 +305,7 @@ from kiro_crew.dashboard.chat_turn.turn_reply_seams import _flush_thinking_strea
 from kiro_crew.dashboard.chat_turn.turn_spec_hooks import _turn_stop_hook
 from kiro_crew.dashboard.chat_turn.turn_stats import (  # noqa: F401
     _MAX_MODEL_ID_LEN,
+    _broadcast_live_context,
     _context_usage_payload,
     _emit_ttft_metric,
     _on_complete,
@@ -1089,6 +1090,9 @@ async def _run_chat(
         async for event in event_stream:
             if _timed:
                 turn_timing.mark("first_event")
+            # A usage_update moves the counts without an event of its own, so
+            # each event is the chance to show it while the turn runs.
+            _broadcast_live_context(turn)
             if turn._agent_cancel_owed:
                 await _send_owed_agent_cancel(turn, client, event)
             if _ask_the_owed_cancel_answered(turn, event):

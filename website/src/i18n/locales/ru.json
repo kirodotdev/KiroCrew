@@ -7538,7 +7538,8 @@
       "svg_source_code": "Исходный код SVG"
     },
     "contextBar": {
-      "context_pct": "Контекст: {{pct}}%"
+      "context_pct": "Контекст: {{pct}}%",
+      "context_unknown": "Контекст ещё не измерен"
     },
     "copyBranchButton": {
       "copied": "Скопировано: {{label}} {{branch}}",

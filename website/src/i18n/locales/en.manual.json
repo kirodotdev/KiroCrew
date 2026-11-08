@@ -2475,7 +2475,8 @@
       "resize_live_desktop_view_top_right": "Resize live desktop view (top right)"
     },
     "contextBar": {
-      "context_pct": "Context: {{pct}}%"
+      "context_pct": "Context: {{pct}}%",
+      "context_unknown": "No context reading yet"
     },
     "copyBranchButton": {
       "copied": "Copied {{label}} {{branch}}",
