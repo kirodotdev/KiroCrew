@@ -729,7 +729,7 @@ async def api_webhook_test(request: web.Request) -> web.Response:
         )
 
     try:
-        port = int(request.app.get("port") or 0)
+        port = int(request.app.get("served_port") or request.app.get("port") or 0)
     except (TypeError, ValueError):
         port = 0
     port = port or request.url.port or 6776
