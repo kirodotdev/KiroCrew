@@ -1020,7 +1020,10 @@ def _point_static_dist_at(static_dist: Path, target: Path) -> bool:
     another, so the old one is removed first: removing a junction does not touch
     the tree behind it, so no open handle refuses it and the gap is a single
     directory-entry operation. A real ``static/dist`` directory is renamed aside
-    once, to a name the next sweep removes.
+    once, to a name the next sweep removes. An overlay filesystem refuses that
+    rename with ``EXDEV`` for a directory from a lower (image) layer, so there it
+    is copied aside and then removed, and a removal that fails or is interrupted
+    part-way is undone from the copy.
 
     The link always carries an absolute target: a relative one would be read
     against the link's own directory, not the caller's working directory.
@@ -1040,7 +1043,25 @@ def _point_static_dist_at(static_dist: Path, target: Path) -> bool:
                 platform_compat.unlink_link_or_junction(static_dist)
         elif os.path.lexists(static_dist):
             retired = static_dist.with_name(_staged_name())
-            replace_with_retry(static_dist, retired)
+            try:
+                replace_with_retry(static_dist, retired)
+            except OSError as exc:
+                if exc.errno != errno.EXDEV:
+                    raise
+                shutil.copytree(static_dist, retired, symlinks=True)
+                try:
+                    shutil.rmtree(static_dist)
+                except BaseException:
+                    # Ctrl-C included. Put back only what the removal took: a
+                    # surviving file is the original.
+                    shutil.copytree(
+                        retired,
+                        static_dist,
+                        symlinks=True,
+                        dirs_exist_ok=True,
+                        copy_function=lambda s, d: os.path.lexists(d) or shutil.copy2(s, d),
+                    )
+                    raise
         replace_with_retry(tmp, static_dist)
     except OSError:
         if not os.path.lexists(static_dist):
