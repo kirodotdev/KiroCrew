@@ -14,8 +14,8 @@ on the one class.
 
 Instance fields written: ``_peer_sessions``.
 
-Instance fields read: ``_chained_far_end``, ``_tokens``, ``_tunnel_epoch``,
-``_tunnels``.
+Instance fields read: ``_chained_far_end``, ``_chained_hop_port``, ``_tokens``,
+``_tunnel_epoch``, ``_tunnels``.
 """
 
 from __future__ import annotations
@@ -419,10 +419,27 @@ async def _peer_headers_for(
     reaches this method after the previous attempt's request and its re-mint,
     which is the long await the forward can be torn down inside -- so the
     check before the exchange is not redundant with the caller's capture.
+
+    Every attempt to a top-level crew also sends ``Origin`` naming the
+    peer's OWN loopback origin, ``http://127.0.0.1:<the port the forward
+    dials>``. The peer's CSRF check trusts a write with no ``Origin`` only
+    from a loopback peer, and an SSH server that runs outside the box's
+    container delivers the forwarded connection from a link-local address,
+    so a bare write is refused there. That origin is in the peer's origin
+    floor, which no ``dashboard_origins`` policy is asked about, so it
+    passes on every edition; the forward's local port would not. A chained
+    crew's forward dials its parent's hop, not the crew's own gateway port,
+    so it gets no ``Origin`` and keeps the loopback rule. The header grants
+    nothing on its own: the peer still requires the session cookie.
     """
     self._require_peer_forward(instance_id, stamp)
     headers = await self._peer_cookie_header(instance_id, url, cookie_name)
     self._require_peer_forward(instance_id, stamp)
+    st = self.status(instance_id)
+    # Every chained mint records its hop in ``_chained_hop_port``; a top-level
+    # crew never has an entry there.
+    if st is not None and st.remote_port > 0 and instance_id not in self._chained_hop_port:
+        headers["Origin"] = f"http://{_LOOPBACK}:{int(st.remote_port)}"
     return headers
 
 
