@@ -3343,6 +3343,18 @@ index**, not which host it lives on:
   repos, none equal to the index URL, so the byte-identical same-repo carve-out
   alone leaves every one of them unclonable on a forge that needs auth.
 
+A credential-free clone also reads no ssh config (`-F /dev/null`, and the strict
+sandbox hides `~/.ssh`), so an ssh remote the operator reaches only through a
+`~/.ssh/config` route (a `ProxyCommand`, `ProxyJump` or `Host` alias) falls back
+to DNS. When ssh's own `ssh: Could not resolve hostname` line is in the output,
+the install clone, the pinned-commit fetch and the fast-forward pull
+(`registry_pipeline/checkout.py`, `_strict_ssh_route_failure`) return
+`git_clone_failed_strict_ssh_route` with a fixed sentence: the install ran in the
+strict sandbox, which hides `~/.ssh`, so neither `~/.ssh/config` nor the
+ssh-agent applied, and the operator can clone the repository from their own
+shell and run `kirocrew app install <dir>`. The posture is unchanged; only the
+refusal names it.
+
 **The tier is not readable from a cached row, and that is the whole difficulty.**
 By the time a credential decision is made, the row was read from
 `_read_external_registry_cache` — the same agent-writable file
