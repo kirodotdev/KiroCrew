@@ -1133,7 +1133,10 @@ fire time:
   access-key id, so neither is serialized raw. The persistence layer
   (`_update_job_locked`)
   re-validates every grant AND every pending request: env-name grammar
-  (`[A-Z][A-Z0-9_]*`), the protected-name deny set (`_CRON_ENV_DENY`, `PATH`,
+  (`[A-Z][A-Z0-9_]*`), the protected-name deny set (`_CRON_ENV_DENY`, the
+  process-behaviour names `PATH`/`HOME`/`SHELL`/`TMPDIR`/`IFS`/`ENV`/`BASH_ENV`
+  and, on every host, their Windows counterparts `USERPROFILE`/`HOMEDRIVE`/
+  `HOMEPATH`/`TEMP`/`TMP`/`PATHEXT`/`COMSPEC`/`SYSTEMROOT`/`WINDIR`,
   loader-hijack prefixes `LD_`/`DYLD_`/`PYTHON`, product-internal
   `KIROCREW*`/`_KIROCREW*`), a 16-entry cap, and script/command jobs only — an
   `agent` job is refused because its session would hand the plaintext to the
