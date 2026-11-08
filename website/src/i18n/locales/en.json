@@ -7494,6 +7494,7 @@
         "agent_switch_blocked_crew_mode": "Switching to {{agent}} was blocked — this chat is in Ultra Mode, which stays on its own agent. The next turn restarts on that agent.",
         "agent_switch_blocked_channel": "Switching to {{agent}} was blocked — this chat is linked to a Slack channel served by {{channel_agent}}. The next turn restarts on that agent.",
         "channel_message_not_run": "A message from a Slack channel was not run: this session's agent is not the agent that channel uses.",
+        "member_rebind_kept_agent": "{{bot}} is now set to {{agent}}, but this chat keeps running {{recorded}}, the agent it started with. Start a new chat with {{bot}} to use {{agent}}.",
         "crew_name_undispatchable": "This thread's crew name cannot be dispatched. Rename or recreate the bot.",
         "code_channel_worktree_not_ready": "This code channel's worktree is not ready, so the message was not run. Send it again in a moment.",
         "remote_crew_read_only": "This chat ran on a remote crew and is read-only now. Open the crew's own session to keep going.",

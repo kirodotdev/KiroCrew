@@ -4,12 +4,14 @@
 One test per backend family: a projecting host (its session MCP projection reads
 the worker's own spec by the session), KAS (the per-session wire spec, unchanged)
 and kiro-cli (refused: it cannot find the worker spec), plus the single-tool-limit
-refusal for a crewmate whose file turns tools off.
+refusal for a crewmate whose file turns tools off, and the fix each harness refusal
+names, which follows how the backend was chosen.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from types import SimpleNamespace
 
 import pytest
@@ -144,6 +146,167 @@ def test_deepseek_refuses_the_worker_until_captured():
     assert refusal is not None and f"({ACP_BACKEND_DEEPSEEK})" in refusal
     session = SimpleNamespace(_runtime=SimpleNamespace(acp_backend=ACP_BACKEND_DEEPSEEK))
     assert AcpSessionProvider.mate_worker_kit_supported.fget(session) is False
+
+
+# A refusal names the fix that applies: the harness a Bot's pin chose is moved by
+# the pin, not by agent.member_acp_backend, and a KAS this host cannot serve is
+# not a remedy.
+
+KAS_GAP = "this kiro-cli does not offer engine v3"
+
+
+def _pin_config(pin: str = "", member: str = ACP_BACKEND_KAS) -> SimpleNamespace:
+    """A config as the worker's backend helpers read it: Bot ``pinbot`` pins *pin*."""
+    return SimpleNamespace(
+        agent=SimpleNamespace(member_acp_backend=member, kas_bundle=False),
+        agents={"pinbot": SimpleNamespace(acp_backend=pin)},
+    )
+
+
+def _refusal(config: SimpleNamespace, crew: str) -> str | None:
+    """The refusal of *crew*'s worker on the backend its config resolves it to."""
+    backend = mate_worker.crewmate_worker_backend(config, crew)
+    return mate_worker.worker_kit_backend_refusal(backend, config, crew)
+
+
+def test_a_pinned_bots_worker_refusal_names_the_pin_not_the_member_setting():
+    """A pin to a harness Bots cannot run on runs its worker on KAS, so nothing is
+    refused; once that KAS lands on the kiro-cli floor the refusal names the pin and
+    the harnesses that carry the kit, and only a ``kiro`` pin gets the update."""
+    from kiro_crew.agent_sdk import backends
+    from kiro_crew.crewmate_harness import harness_label
+
+    config = _pin_config(ACP_BACKEND_DEEPSEEK)
+    assert mate_worker.crewmate_worker_backend(config, "pinbot") == ACP_BACKEND_KAS
+    assert _refusal(config, "pinbot") is None
+
+    backends.mark_backend_unservable(ACP_BACKEND_KAS, KAS_GAP)
+    refusal = _refusal(config, "pinbot")
+
+    assert refusal is not None and "(kiro)" in refusal
+    pinned = f"pinbot is pinned to {harness_label(ACP_BACKEND_DEEPSEEK)}"
+    assert f"{pinned} (agents.pinbot.acp_backend)" in refusal
+    assert harness_label(ACP_BACKEND_CLAUDE) in refusal
+    assert "clear the pin" not in refusal  # the member route (KAS) lands there too
+    assert "agent.member_acp_backend" not in refusal
+    assert "kiro-cli update" not in refusal
+
+
+def test_a_kiro_pin_refusal_offers_clearing_it_where_the_member_route_carries_it():
+    from kiro_crew.crewmate_harness import harness_label
+
+    refusal = _refusal(_pin_config("kiro"), "pinbot")
+
+    assert refusal is not None
+    assert "pinbot is pinned to Kiro CLI (agents.pinbot.acp_backend)" in refusal
+    assert harness_label(ACP_BACKEND_CLAUDE) in refusal
+    assert "clear the pin" in refusal  # the member route (KAS) carries the worker
+    assert "agent.member_acp_backend" not in refusal
+
+
+def test_a_kiro_pin_on_the_v2_launch_names_the_pin_and_the_kiro_cli_update():
+    """With no v3 verdict a ``kiro`` pin keeps the kiro-cli v2 launch, which cannot
+    carry the kit; a kiro-cli that offers v3 moves the same pin onto KAS."""
+    from kiro_crew.agent_sdk import backends
+
+    config = _pin_config("kiro")
+    assert mate_worker.crewmate_worker_backend(config, "pinbot") == ACP_BACKEND_KIRO
+
+    refusal = _refusal(config, "pinbot")
+
+    assert refusal is not None and "(kiro)" in refusal
+    assert "pinbot is pinned to Kiro CLI (agents.pinbot.acp_backend)" in refusal
+    assert "kiro-cli update" in refusal
+    assert "agent.member_acp_backend" not in refusal
+    backends.confirm_kiro_cli_offers_kas()
+    assert _refusal(config, "pinbot") is None
+
+
+def test_with_kas_unservable_an_unpinned_refusal_offers_no_kas_and_names_its_fixes():
+    """The member route took the kiro-cli floor because this host cannot serve KAS,
+    so setting it to kas changes nothing; the kiro-cli update and the bundle do."""
+    from kiro_crew.agent_sdk import backends
+
+    backends.mark_backend_unservable(ACP_BACKEND_KAS, KAS_GAP)
+    config = _pin_config()
+    assert mate_worker.crewmate_worker_backend(config, "floorbot") == ACP_BACKEND_KIRO
+
+    refusal = _refusal(config, "floorbot")
+
+    assert refusal is not None and "set agent.member_acp_backend to claude, codex." in refusal
+    assert re.search(r"member_acp_backend to [^.]*\bkas\b", refusal) is None
+    assert f"because {KAS_GAP}" in refusal
+    assert "update kiro-cli" in refusal and "agent.kas_bundle" in refusal
+
+
+def test_clearing_a_pin_is_offered_only_where_the_member_route_carries_the_worker():
+    from kiro_crew.agent_sdk import backends
+    from kiro_crew.crewmate_harness import harness_label
+
+    backends.mark_backend_unservable(ACP_BACKEND_KAS, KAS_GAP)
+
+    refusal = _refusal(_pin_config("kiro"), "pinbot")
+
+    assert refusal is not None and "clear the pin" not in refusal
+    able = f"({harness_label(ACP_BACKEND_CLAUDE)}, {harness_label(ACP_BACKEND_CODEX)})"
+    assert f"pick a harness that can {able}" in refusal
+    assert "kiro-cli update" in refusal
+
+
+def test_a_spawn_that_named_the_backend_is_told_to_name_another():
+    """``spawn_run(backend=...)`` outranks the pin and the member route alike."""
+    refusal = mate_worker.worker_kit_backend_refusal(
+        ACP_BACKEND_DEEPSEEK, _pin_config(ACP_BACKEND_CLAUDE), "pinbot", requested=True
+    )
+
+    assert refusal is not None and "the backend its spawn named (deepseek)" in refusal
+    assert "spawn it on one that does: claude, codex, kas" in refusal
+    assert "agents.pinbot" not in refusal and "agent.member_acp_backend" not in refusal
+
+
+def _store_pin(pin: str) -> None:
+    """Store Bot ``pinbot`` with harness pin *pin* in this test's crew home."""
+    from member_memory_helpers import write_member_home
+
+    from kiro_crew.config import loader
+    from kiro_crew.config.loader import config_dir
+
+    doc = write_member_home(config_dir(), "pinbot")
+    doc["agents"]["pinbot"]["acp_backend"] = pin
+    (config_dir() / "config.json").write_text(json.dumps(doc), encoding="utf-8")
+    loader._invalidate_config_cache()
+
+
+def test_the_worker_tabs_error_row_names_the_pin(monkeypatch):
+    from kiro_crew import members
+    from kiro_crew.dashboard import chat_runner
+
+    monkeypatch.setattr(members, "_CREWMATE_WORKER_SLOTS", set())
+    monkeypatch.setattr(members, "_CREWMATE_WORKER_MEMBERS", {})
+    _store_pin("kiro")
+    members.note_crewmate_worker_session("dashboard:chat-9", "pinbot")
+
+    text = chat_runner._harness_unsupported_text("dashboard:chat-9")
+
+    assert "pinbot is pinned to Kiro CLI" in text and "kiro-cli update" in text
+    assert "agent.member_acp_backend" not in text
+
+
+def test_a_pinned_bots_chat_row_names_the_pin_not_the_member_setting():
+    """A Bot pinned to a harness that cannot load its saved spec is moved by the
+    pin; without a pin the member setting stays the fix."""
+    from kiro_crew.dashboard import chat_runner
+
+    _store_pin("opencode")
+
+    text = chat_runner._harness_unsupported_text("dashboard:member-pinbot")
+
+    assert "pinbot is pinned to" in text and "(agents.pinbot.acp_backend)" in text
+    assert "clear the pin" in text and "Capabilities page" in text
+    assert "agent.member_acp_backend" not in text
+    _store_pin("")
+    unpinned = chat_runner._harness_unsupported_text("dashboard:member-pinbot")
+    assert "Set agent.member_acp_backend to" in unpinned
 
 
 def test_codex_carries_the_worker_kit(pixel_worker):

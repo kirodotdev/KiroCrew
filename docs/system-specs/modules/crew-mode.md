@@ -3512,7 +3512,7 @@ and `MANIFEST.in`): the conductor's member section (`conductor.*`, assembled by
 the worker's principles (`worker.principles`, `mate_worker.MATE_WORKER_PROMPT`),
 every gateway wake (`wake.preamble` and `reminder.*` in
 `dashboard/goal_reminder.py`; `goal_setup.*` in
-`dashboard/goal_setup.py`; `worker_report.*` in
+`dashboard/goal_setup.py`; `worker_report.*` and `rebind_notice` in
 `dashboard/mate_thread_wakes.py`; `welcome.*` in `dashboard/mate_welcome.py`;
 `upgrade_notice` in `mate_upgrade_notice.py`) and the hand-off capability
 note (`dispatch.*`, `mate_capability_catalog.dispatch_summary`). One key per
@@ -4039,7 +4039,26 @@ Bot file the record is the conductor, whatever older `template_id` it kept
 (the pre-conductor `kirocrew-conductor`), with no record rewritten. Any other
 member keeps the template its record names, so a shared-agent Bot's thread
 runs the agent it recorded. A `template` record (a worker included) stays exact
-(`test/test_mate_chat_agent_resolution.py`). The three parts:
+(`test/test_mate_chat_agent_resolution.py`). A chat that keeps its record's
+agent after its Bot was set to another one says so, once per chat and per new
+agent (`dashboard/member_rebind_notice.py`): when a turn reuses a `member`
+record and a new chat with that member would run another agent
+(`member_template_id`), the turn appends a `notice` row (`meta.kind`
+`member_rebind`, token `member_rebind_kept_agent` with `notice_args` `bot`,
+`agent` and `recorded`, which the dashboard words in the user's language)
+naming the Bot, the agent a new chat runs and the agent this chat keeps, and in
+the Bot's own thread, whose chat draws no `notice` row, the flush after that
+turn runs one hidden turn in which the Bot tells its user
+(`mate_thread_wakes.offer_rebind_notice`, prompt `rebind_notice`, envelope
+`[Agent change]`). Both agents are read in the thread hop that resolves the
+record (`ResolvedBindings.new_chat_agent`), so a turn whose chat runs what a new
+chat would does no more work for this. The agent told is kept on the session's
+metadata line (`member_rebind_notice`) by compare-and-set, so a Reload, a resume
+or a restart does not repeat it and a later rebind is told again; the record is
+not rewritten (`test/test_member_rebind_notice.py`). In the Bot's own thread
+the mark is set before the hidden turn, which is held in memory only: a restart
+before it runs, or a hidden turn that fails, leaves that user untold. The three
+parts:
 
 - **The conductor**, `kirocrew-mate-conductor`, is what its own chat runs on.
   `mate_worker.member_chat_agent` maps the binding to it, and it is the one rule
@@ -4300,7 +4319,8 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   session (`acp.session_mcp._crewmate_worker_spec`). kiro-cli reads `--agent` off
   disk and cannot find the worker spec, so it is not in the set. `session_create` refuses a
   hand-off whose worker would run anywhere else (`capability_harness_unsupported`,
-  naming the backends that carry it), and the allocation refuses the same before
+  with a remedy that follows how the backend was chosen; see "A Bot's own
+  harness"), and the allocation refuses the same before
   spawn, plus a Bot whose file turns off single tools (`disabledTools`, or
   a server or native tool its own `excludedTools` names) on a backend outside
   `ACP_BACKENDS_MATE_WORKER_TOOL_LIMITS` (`capability_tool_limits_unsupported`;
@@ -4869,6 +4889,21 @@ kiro-cli that lacks its engine.
   with the `crewmate_harness_unavailable` reason. Saving it rebuilds the provider
   factory (`refresh_defaults`), and so does an edit outside the dashboard
   (`session_parts.config_apply`).
+- **A refusal names what chose the harness.** A `capability_harness_unsupported`
+  refusal (a worker's at `session_create`, at `spawn_run` and on its chat's
+  error row through `mate_worker.worker_kit_backend_refusal`; a Bot chat's on
+  its error row) names the pin when the pin chose the harness, because the pin
+  outranks `agent.member_acp_backend` and that setting cannot move the session.
+  It offers the harnesses that would carry the session
+  (`crewmate_harness.worker_harnesses` for a worker, `crewmate_harnesses` for
+  a chat) and clearing the pin only when the member route would carry it
+  (`crewmate_harness.pin_remedy`). A worker on a `kiro` pin that kept the v2
+  launch also gets the `kiro-cli update`. With no pin a worker's refusal names
+  `agent.member_acp_backend` with only the kit backends selectable now, and
+  when this host cannot serve KAS (`host_unservable_reason`) it says why and
+  names the fixes: update kiro-cli or turn on `agent.kas_bundle`, then restart.
+  A `spawn_run(backend=...)` or `session_create(backend=...)` that named the
+  backend is told to name one that carries the kit.
 - **Read path.** Only the owner-only `GET /api/agents/resolved-model` reads the
   pin (`acp_backend`, the effective `harness`, `harnesses` from
   `crewmate_harnesses`, `worker_harnesses` (`ACP_BACKENDS_MATE_WORKER_KIT`), and
@@ -5221,6 +5256,7 @@ Parent-change and impact previews use the server's redacted projection.
 | `test/test_mate_config_migration.py` | The upgrade migration carries a shared template's or a `crew-<hex>` copy's kit and nothing the worker base has, gives a default-template Bot a file that adds nothing, gives the conductor-bound first Bot what a default-template Bot gets, leaves a binding without a `member_id` alone without a log line above DEBUG, records the kit's source, skips and logs a Bot whose worker would differ (binding and disk untouched), changes nothing on a second run, leaves a hand-made rollback alone, and the carried capabilities read as already there |
 | `test/test_mate_thread_wakes.py` | A worker's turn end wakes its Bot once; no wake for a session the Bot did not create or that this process did not witness; a busy thread gets one report (the latest, with the turn count) after its turn ends; a held report waits for the thread's next turn end; the excerpt's end marker cannot be forged; only the creator's send witnesses the link; a quiet worker end (`nothing_to_do`, no text) reports nothing and leaves a pending report as it was, while an empty reply without it or a reply with text still reports; every top-level turn end reaches the wake path with its quiet-end fact |
 | `test/test_mate_upgrade_notice.py` | A moved Bot's notice is posted once and never on a later start, never by a Bot created after the upgrade or on a thread whose binding names another member, reaches a thread not open at startup at its next turn end, and is owed only by Bots the migration moved |
+| `test/test_member_rebind_notice.py` | A chat whose `member` record keeps an agent its Bot is no longer set to gets one notice naming both agents (the one the record runs, a Bot's own file read as the conductor), never again for that agent, again for a later rebind, end to end through turn admission; a Bot's own thread also gets one hidden turn after the current turn, or at its next turn end when the flush had no turn to wait on; a chat that follows the binding, a `template` record and a member the config no longer names get none; a binding the agents snapshot does not know is rescanned once |
 | `website/src/components/chat/crewmateBubbles.test.ts` | What a Bot's chat draws (machinery dropped, speech and user-facing rows kept, same array back when nothing is dropped) and the run rule (first/middle/last, single, breaks on a user row and a pending approval but not on a long silence, reads through a resolved approval and an untimestamped streaming row, corners on the left side only); a queued message drawn where it was sent, the requeued twin, undrawn queued rows and injected (cron / app) queued rows dropped; when a send is still awaiting a reply |
 | `website/src/test/ChatPane.crewSteerLandsNow.test.tsx` | A Bot's responsive Send end to end, including one stable bubble through a queued receipt in either order with its push, a later reply drawn below a queued message and the drain keeping order and node, and the typing bubble from Send until a reply, a refusal or the answering turn's silent end |
 | `website/src/store/chat/queue.responsive.test.ts` | Exact queued-send identity, and a Bot send keeping its index, `ts` and key through push, drain, a missed push and a refresh, while a Sessions send still lands at the end |

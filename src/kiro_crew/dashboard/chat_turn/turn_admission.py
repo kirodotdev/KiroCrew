@@ -695,6 +695,11 @@ async def _turn_admit(turn: _ChatTurn) -> _Flow | None:
                     "memory_unavailable: this conversation's member binding changed; "
                     "open a new conversation"
                 )
+            # The record keeps its agent when the Bot is set to another one; the
+            # user is told so once, in this chat (no I/O unless the two differ).
+            from kiro_crew.dashboard.member_rebind_notice import surface_rebind_notice
+
+            await surface_rebind_notice(state, slot, session_key, loaded_cfg, bindings)
         elif bindings.selection_kind == "member":
             execution_context = resolve_member_execution(
                 loaded_cfg,

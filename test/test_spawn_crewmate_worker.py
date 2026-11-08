@@ -188,7 +188,7 @@ async def test_the_worker_run_takes_its_crewmates_backend_route(monkeypatch):
     from kiro_crew.members import is_crewmate_worker_session
 
     _home(owns_file=True)
-    monkeypatch.setattr(mate_worker, "worker_kit_backend_refusal", lambda backend: None)
+    monkeypatch.setattr(mate_worker, "worker_kit_backend_refusal", lambda *_a, **_k: None)
     sessions = _sessions()
     manager = SubagentManager(sessions=sessions, ctx_builder=None)
 
@@ -208,7 +208,7 @@ async def test_a_worker_run_records_its_activity_under_the_crewmate(monkeypatch)
     from kiro_crew import members
 
     _home(owns_file=True)
-    monkeypatch.setattr(mate_worker, "worker_kit_backend_refusal", lambda backend: None)
+    monkeypatch.setattr(mate_worker, "worker_kit_backend_refusal", lambda *_a, **_k: None)
     recorded: list[str] = []
 
     def _record(member, *args, **kwargs):
@@ -231,7 +231,7 @@ async def test_a_worker_run_records_its_activity_under_the_crewmate(monkeypatch)
 async def test_a_worker_run_on_a_backend_without_its_kit_is_refused_by_name(monkeypatch):
     _home(owns_file=True)
     monkeypatch.setattr(
-        mate_worker, "worker_kit_backend_refusal", lambda backend: "set agent.member_acp_backend"
+        mate_worker, "worker_kit_backend_refusal", lambda *_a, **_k: "set agent.member_acp_backend"
     )
     sessions = _sessions()
     manager = SubagentManager(sessions=sessions, ctx_builder=None)
@@ -259,7 +259,7 @@ def _kit_backends(monkeypatch):
     monkeypatch.setattr(backends, "selectable_backends", lambda: frozenset({"", "kas", "claude"}))
     judged: list[str] = []
 
-    def _judge(backend):
+    def _judge(backend, *_args, **_kwargs):
         judged.append(backend)
         return None
 
@@ -304,6 +304,24 @@ async def test_a_worker_run_on_an_unstartable_pin_is_refused_before_it_starts(_k
 
     assert "crewmate_harness_unavailable" in (info.error or "")
     assert _kit_backends == []
+    sessions.get_or_create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_worker_run_its_pin_cannot_carry_is_refused_naming_the_pin():
+    """The pin, not ``agent.member_acp_backend``, put the worker on the kiro-cli v2
+    launch, so the refusal names the pin; the setting it would otherwise name
+    cannot move it."""
+    _home(owns_file=True)
+    _pin_harness("kiro")
+    sessions = _sessions()
+    manager = SubagentManager(sessions=sessions, ctx_builder=None)
+
+    info = await _run(manager)
+
+    assert "capability_harness_unsupported: " in (info.error or "")
+    assert "alpha is pinned to" in info.error and "(agents.alpha.acp_backend)" in info.error
+    assert "agent.member_acp_backend" not in info.error
     sessions.get_or_create.assert_not_called()
 
 

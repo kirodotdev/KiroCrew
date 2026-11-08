@@ -13404,6 +13404,7 @@
         "agent_switch_blocked_crew_mode": "Le passage à {{agent}} a été bloqué — ce chat est en Ultra Mode, qui reste sur son propre agent. Le prochain tour redémarre sur cet agent.",
         "agent_switch_blocked_channel": "Le passage à {{agent}} a été bloqué — ce chat est lié à un canal Slack servi par {{channel_agent}}. Le prochain tour redémarre sur cet agent.",
         "channel_message_not_run": "Un message d'un canal Slack n'a pas été exécuté : l'agent de cette session n'est pas celui qu'utilise ce canal.",
+        "member_rebind_kept_agent": "{{bot}} est désormais configuré sur {{agent}}, mais ce chat continue d'exécuter {{recorded}}, l'agent avec lequel il a commencé. Démarre un nouveau chat avec {{bot}} pour utiliser {{agent}}.",
         "crew_name_undispatchable": "Le nom de crew de ce fil ne peut pas être utilisé. Renomme ou recrée le Bot.",
         "code_channel_worktree_not_ready": "Le worktree de ce canal de code n’est pas encore prêt, le message n’a donc pas été exécuté. Renvoie-le dans un instant.",
         "remote_crew_read_only": "Ce chat s’est exécuté sur une crew distante et il est maintenant en lecture seule. Ouvre la session de la crew pour continuer.",

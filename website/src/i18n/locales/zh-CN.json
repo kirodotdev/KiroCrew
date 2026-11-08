@@ -12784,6 +12784,7 @@
         "agent_switch_blocked_crew_mode": "已阻止切换到 {{agent}} — 此聊天处于 Ultra Mode，会保持在它自己的智能体上。下一轮将在该智能体上重新开始。",
         "agent_switch_blocked_channel": "切换到 {{agent}} 已被阻止 — 此聊天已关联到由 {{channel_agent}} 服务的 Slack 频道。下一轮将在该智能体上重新开始。",
         "channel_message_not_run": "Slack 频道发来的消息未运行：此会话的智能体与该频道所用智能体不同。",
+        "member_rebind_kept_agent": "{{bot}} 现已设为使用 {{agent}}，但此聊天仍在运行它开始时使用的智能体 {{recorded}}。要使用 {{agent}}，请与 {{bot}} 开始一个新聊天。",
         "crew_name_undispatchable": "无法使用此话题的团队名称。请重命名或重新创建该 Bot。",
         "code_channel_worktree_not_ready": "此代码频道的 worktree 尚未就绪，因此未运行该消息。请稍后重新发送。",
         "remote_crew_read_only": "此聊天在远程团队上运行，现在为只读。要继续，请打开该团队自己的会话。",

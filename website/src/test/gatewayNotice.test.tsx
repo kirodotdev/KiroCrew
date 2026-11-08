@@ -364,6 +364,11 @@ describe('the recovery, cancelled-replay, end-of-turn and admission rows', () =>
     expect(resolveGatewayNotice(row('notice', 'agent_switch_blocked_pinned', { agent: 'a', member: 'm' }), [], 0)?.text).toBe(
       'Switching to a was blocked — this thread is pinned to m. The next turn restarts on the pinned crew.',
     )
+    expect(resolveGatewayNotice(row('notice', 'member_rebind_kept_agent', { bot: 'b', agent: 'n', recorded: 'r' }), [], 0)).toEqual({
+      card: 'notice',
+      text: 'b is now set to n, but this chat keeps running r, the agent it started with. Start a new chat with b to use n.',
+      tone: 'info',
+    })
     expect(resolveGatewayNotice(row('notice', 'model_throttled_fallback', { primary: 'p', fallback: 'f' }), [], 0)).toEqual({
       card: 'notice',
       text: 'p is throttled — running on f until p recovers.',
@@ -545,7 +550,7 @@ describe('wire parity with the gateway constants', () => {
   const metaKeys = sources.flatMap((py) => [...py.matchAll(/^(?:TRANSIENT|GATEWAY)_NOTICE_META_KEY\s*=\s*"([^"]+)"/gm)].map((m) => m[1]))
 
   it('finds every backend token and the one meta field name the frontend reads', () => {
-    expect(backend).toHaveLength(79)
+    expect(backend).toHaveLength(80)
     expect(new Set(metaKeys)).toEqual(new Set(['notice']))
   })
 
