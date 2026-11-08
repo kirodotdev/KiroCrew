@@ -1,6 +1,6 @@
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 import type {
   AgentImportApplyResponse,
   AgentImportScanResponse,
@@ -292,6 +292,33 @@ describe('AgentImportFlow', () => {
 
     resolveApply?.(APPLY_RESPONSE)
     expect(await screen.findByText('Import complete')).toBeInTheDocument()
+  })
+
+  it('holds the Importing label still under reduced motion', async () => {
+    // The dots are JS-driven text, so the global reduced-motion CSS cut never
+    // reached them and they kept ticking for a user who asked for no motion.
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: query.includes('prefers-reduced-motion'),
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }))
+    // shouldAdvanceTime keeps userEvent's own delays moving while the clock
+    // is fake; the restore runs even when an await below rejects.
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    onTestFinished(() => {
+      vi.useRealTimers()
+      vi.unstubAllGlobals()
+    })
+    mockSuccessfulRequests()
+    vi.mocked(api.onboardingImportApply).mockReturnValue(new Promise(() => {}))
+    renderWithProviders(<AgentImportFlow initialOpen onComplete={vi.fn()} />)
+
+    await startImport()
+    const button = await screen.findByRole('button', { name: /^Importing/ })
+    // Two ticks: on a ticking label this lands on "Importing...".
+    await act(async () => { await vi.advanceTimersByTimeAsync(800) })
+    expect(button.textContent).toBe('Importing')
   })
 
   it('treats Escape as "Skip all", not "Skip import"', async () => {
