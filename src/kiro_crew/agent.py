@@ -267,7 +267,7 @@ from kiro_crew.platform import (
 )
 from kiro_crew.platform.governance import agentcore_posture
 from kiro_crew.platform.governance_profiles import governance_permits
-from kiro_crew.security import is_sensitive_path
+from kiro_crew.security import is_sensitive_canonical_path, is_sensitive_path
 from kiro_crew.sel import (  # circular import: sel imports config which imports agent
     SecurityEvent,
     sel,

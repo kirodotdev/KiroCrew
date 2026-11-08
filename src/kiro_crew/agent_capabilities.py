@@ -14,7 +14,7 @@ import hmac
 import json
 import logging
 import secrets
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from pathlib import Path
 from typing import Any, Callable
 
@@ -113,14 +113,14 @@ def _digest(value: Any) -> str:
 def _read_spec(path: Path) -> dict:
     from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 
-    try:
-        raw = safe_read_file_bytes_nolink(str(path), str(path.parent), max_bytes=MAX_DOCUMENT_BYTES)
+    with suppress(ValueError, FileTooLargeError):
+        raw = safe_read_file_bytes_nolink(
+            str(path), str(path.parent), max_bytes=MAX_DOCUMENT_BYTES, canonical_gate=True
+        )
         result = parse_agent_spec_bytes(raw, path) if raw is not None else None
-    except (ValueError, FileTooLargeError):
-        raise CapabilityError("source_unreadable") from None
-    if not isinstance(result, dict):
-        raise CapabilityError("source_unreadable")
-    return result
+        if isinstance(result, dict):
+            return result
+    raise CapabilityError("source_unreadable")
 
 
 def _source(name: str, project: str, *, allow_private: bool = False) -> tuple[Path, dict, dict]:

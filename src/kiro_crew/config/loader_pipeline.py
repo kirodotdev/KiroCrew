@@ -211,16 +211,19 @@ def default_project_dir(workspace: str | None = None) -> str:
     """Resolve the default project directory for a workspace.
 
     Returns the realpath of ``workspace_dir_for(workspace)`` if it exists and
-    is not a sensitive path, otherwise returns ``""``.
+    is not a sensitive path, otherwise returns ``""``. The realpath is judged
+    on :func:`security.is_sensitive_canonical_path`, which answers inline off
+    the event loop, so a resolver child that misses its deadline cannot turn
+    the workspace into a sensitive path.
 
     Used by chat_handlers (slot.project fallback) and session.py (pool cwd)
     to avoid duplicating the same resolution + validation logic.
     """
-    from kiro_crew.security import is_sensitive_path  # circular import
+    from kiro_crew.security import is_sensitive_canonical_path  # circular import
 
     try:
         ws_dir = os.path.realpath(str(workspace_dir_for(workspace)))
-        if os.path.isdir(ws_dir) and not is_sensitive_path(ws_dir):
+        if os.path.isdir(ws_dir) and not is_sensitive_canonical_path(ws_dir):
             return ws_dir
     except Exception:
         pass
