@@ -4975,7 +4975,7 @@
         "n_already_set_up": "{{n}}개 이미 설정됨",
         "n_created": "{{n}}개 생성",
         "n_failed": "{{n}}개 실패",
-        "n_possible_sub_folders_inside_packages_above": "위 패키지 내부의 하위 폴더 후보 {{n}}개",
+        "n_possible_sub_folders_inside_packages_above_other": "위 패키지 내부의 하위 폴더 후보 {{n}}개",
         "n_selected": "루트 폴더 + {{n}}개 선택됨",
         "n_selected_root_exists": "{{n}}개 선택됨",
         "n_selected_inside": "내부 {{n}}개 선택됨",
