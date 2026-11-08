@@ -1,4 +1,4 @@
-"""The enterprise build's policy transport against a fake control plane.
+"""The LTS build's policy transport against a fake control plane.
 
 The fake answers behind ``policy_distribution._open``, the one seam the network call goes
 through, so nothing opens a socket. The sign-in is a real vault entry in a temporary data
@@ -20,7 +20,7 @@ import pytest
 from governance_distribution_helpers import _hermetic_governance_globals  # noqa: F401
 from governance_distribution_helpers import install_ceiling_fixture  # noqa: F401
 
-from kiro_crew import enterprise_boot
+from kiro_crew import lts_boot
 from kiro_crew.auth.store import KasToken, TokenStore
 from kiro_crew.platform import enterprise_policy_fetch as epf
 from kiro_crew.platform import governance
@@ -140,7 +140,7 @@ def cps_fixture(monkeypatch):
 
 @pytest.fixture(name="enterprise")
 def enterprise_fixture(monkeypatch):
-    monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+    monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
 
 
 @pytest.fixture(name="kills", autouse=True)
@@ -164,9 +164,9 @@ def _boot_exit_message(capsys) -> str:
         try:
             governance.load_security_policy()
         except PlatformCompositionError as exc:
-            enterprise_boot.refuse_policy_boot(exc)
+            lts_boot.refuse_policy_boot(exc)
             raise
-    assert exited.value.code == enterprise_boot.EXIT_CODE
+    assert exited.value.code == lts_boot.EXIT_CODE
     err = capsys.readouterr().err
     assert _TOKEN not in err
     return err
@@ -769,7 +769,7 @@ class TestTranslation:
             t.ruleset(rules, "messaging_channel")
 
 
-# ``normal`` is the only mode a rule cannot remove (RFC enterprise edition, D9).
+# ``normal`` is the only mode a rule cannot remove (RFC LTS edition, D9).
 _FLOOR = ["normal"]
 
 
@@ -830,14 +830,12 @@ class TestSwitchRows:
         assert doc["capabilities"] == {capability: {"enabled": False}}
 
     @pytest.mark.parametrize("capability", ["memory_writes", "theme_persona"])
-    def test_a_remote_deny_closes_an_open_control_in_an_enterprise_build(
-        self, enterprise, capability
-    ):
+    def test_a_remote_deny_closes_an_open_control_in_an_lts_build(self, enterprise, capability):
         doc = _translate(f"{{capability: {capability}, effect: deny}}")
         ceiling = governance.parse_policy(doc)
         assert not governance.resolve(ceiling, None, f"capabilities.{capability}", "").permitted
 
-    def test_an_unknown_cron_shape_denies_in_an_enterprise_build(self, enterprise):
+    def test_an_unknown_cron_shape_denies_in_an_lts_build(self, enterprise):
         """End to end: an unconditional cron deny beside a conditional allow stays a deny."""
         doc = _translate(
             "{capability: cron, effect: deny}",
@@ -930,7 +928,7 @@ class TestPermissionModeRow:
 
 
 class TestTranslatedRowsResolve:
-    """The translated controls parse in an enterprise build and answer as intended."""
+    """The translated controls parse in an LTS build and answer as intended."""
 
     @pytest.mark.parametrize(
         "rules, cron, messaging, yolo",
@@ -1050,7 +1048,7 @@ class TestSandboxMinLevel:
         level = sandbox_tiers._clamp_sandbox_mode_to_floor(local, floor)
         level = sandbox_tiers._SANDBOX_MODE_ALIASES.get(level, level)
         scale = _ORDINAL_SCALES["sandbox"]
-        # An enterprise build already reads a local ``off`` as Crew's default.
+        # An LTS build already reads a local ``off`` as Crew's default.
         local_level = "standard" if local in ("off", "auto") else local
         assert level == max(local_level, policy, key=scale.index)
 
@@ -1200,7 +1198,7 @@ class TestSignInCommands:
         cli = self._main(monkeypatch, tmp_path, ["kas", "status"])
         with pytest.raises(SystemExit) as exited:
             cli.main()
-        assert exited.value.code == enterprise_boot.EXIT_CODE
+        assert exited.value.code == lts_boot.EXIT_CODE
         assert "no Kiro sign-in was found" in capsys.readouterr().err
 
     def test_oss_does_not_exempt_the_sign_in_verbs(self, monkeypatch, tmp_path, capsys):
@@ -1214,7 +1212,7 @@ class TestSignInCommands:
 class TestOss:
     def test_oss_refuses_the_scheme(self, vault, cps):
         vault()
-        with pytest.raises(PlatformCompositionError, match="only in an enterprise build"):
+        with pytest.raises(PlatformCompositionError, match="only in an LTS build"):
             epf.fetch(_request())
         assert cps.requests == []
 
@@ -1237,13 +1235,13 @@ class TestOss:
 
     def test_oss_naming_the_scheme_is_a_configuration_error(self, vault, cps, monkeypatch):
         monkeypatch.setenv(pd.POLICY_URL_ENV, pd.ENTERPRISE_POLICY_URL)
-        with pytest.raises(PlatformCompositionError, match="only in an enterprise build"):
+        with pytest.raises(PlatformCompositionError, match="only in an LTS build"):
             governance.load_security_policy()
         assert cps.requests == []
 
 
 class TestBootWithoutCompanion:
-    """An enterprise build with no companion boots on the core defaults, every gate on.
+    """An LTS build with no companion boots on the core defaults, every gate on.
 
     Each test runs the real ``bootstrap_context`` with no ``kirocrew.plugins`` entry
     point, against the fake control plane, so the policy fetch, the built-in
@@ -1324,9 +1322,9 @@ class TestBootWithoutCompanion:
             try:
                 self._boot(monkeypatch)
             except PlatformCompositionError as exc:
-                enterprise_boot.refuse_policy_boot(exc)
+                lts_boot.refuse_policy_boot(exc)
                 raise
-        assert exited.value.code == enterprise_boot.EXIT_CODE
+        assert exited.value.code == lts_boot.EXIT_CODE
         err = capsys.readouterr().err
         assert "governance rules" in err
         assert _TOKEN not in err

@@ -866,13 +866,13 @@ def _endpoints_key(tel: object, ceiling: object = _READ_NOW) -> object:
     consent worker: a changed fingerprint means a reader may point at an entry
     that is gone or turned off. ``None`` when the values cannot be read.
 
-    An enterprise build adds the policy's ``capabilities.telemetry.otlp_endpoint``
+    An LTS build adds the policy's ``capabilities.telemetry.otlp_endpoint``
     under *ceiling* (a build passes the snapshot its destinations came from), so a
     policy refresh that moves, adds, drops or newly permits it rebuilds the readers.
     """
     try:
         raw = [getattr(tel, "otlp_endpoint", None), getattr(tel, "otlp_endpoints", None)]
-        if edition.is_enterprise():
+        if edition.is_lts():
             if ceiling is _READ_NOW:
                 # A process with no context reads an already-composed provider
                 # only: asking the factory here would compose before consent.
@@ -930,7 +930,7 @@ def _build_recorder() -> _Build:
     # there is nothing started to reap if it goes wrong.
     # One policy snapshot for the destinations and the recorded key, so a refresh
     # landing mid-build moves the key the next recheck compares.
-    ceiling = _policy_ceiling() if edition.is_enterprise() else _READ_NOW
+    ceiling = _policy_ceiling() if edition.is_lts() else _READ_NOW
     destinations = _otlp_destinations(cfg, ceiling)
     endpoints_key = _endpoints_key(cfg, ceiling)
 
@@ -1180,10 +1180,10 @@ def otlp_egress_listing(cfg: "TelemetryConfig") -> "tuple[otlp_endpoints.Resolve
 
 
 def _policy_destinations(ceiling: object = _READ_NOW) -> "tuple[OtlpDestination, ...]":
-    """The collector ``capabilities.telemetry.otlp_endpoint`` names, in an enterprise
+    """The collector ``capabilities.telemetry.otlp_endpoint`` names, in an LTS
     build. Empty when the policy names none, turns telemetry off, or cannot be read.
     """
-    if not edition.is_enterprise():
+    if not edition.is_lts():
         return ()
     endpoint = otlp_governance.policy_endpoint(
         _policy_ceiling() if ceiling is _READ_NOW else ceiling
@@ -1191,14 +1191,14 @@ def _policy_destinations(ceiling: object = _READ_NOW) -> "tuple[OtlpDestination,
     return (otlp_governance.policy_destination(endpoint),) if endpoint else ()
 
 
-#: The local values an enterprise build ignores, with the value each reads as.
+#: The local values an LTS build ignores, with the value each reads as.
 _LOCAL_EGRESS_BLANK: "tuple[tuple[str, Any], ...]" = (("otlp_endpoint", ""), ("otlp_endpoints", []))
 
 
 def _edition_locked_view(cfg: "TelemetryConfig") -> "Optional[TelemetryConfig]":
     """*cfg* as a provider may read it in this build, or ``None`` for no egress at all.
 
-    An enterprise build blanks ``otlp_endpoint`` and ``otlp_endpoints``
+    An LTS build blanks ``otlp_endpoint`` and ``otlp_endpoints``
     (:mod:`kiro_crew.edition_locks`, RFC D3): no governance key names an OTLP host
     yet, so no remote rule allowed the local values. Done here, before any provider
     sees it, so an edition's own provider cannot read the local values either;
@@ -1332,7 +1332,7 @@ def _otlp_destinations(
     unresolvable provider must not export, so it contributes nothing and
     collection continues local-only.
 
-    An enterprise build hands every provider a blank ``otlp_endpoint``
+    An LTS build hands every provider a blank ``otlp_endpoint``
     (:mod:`kiro_crew.edition_locks`, RFC D3): the local value names no host a
     remote rule allowed. Destinations the edition's own provider declares stay.
     """
@@ -1566,7 +1566,7 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
         # The policy's own collector is also held to the policy still naming it.
         named_by = (
             otlp_governance.policy_endpoint
-            if edition.is_enterprise() and dest == otlp_governance.policy_destination(endpoint)
+            if edition.is_lts() and dest == otlp_governance.policy_destination(endpoint)
             else None
         )
         otlp_governance.gate_exporter(

@@ -528,11 +528,11 @@ Mechanics:
   `"enabled": "false"` (a truthy string) or `"enabled": 1` does not enable
   desktop control.
 - The opt-in is ANDed with the one on/off governance key `capabilities.computer_use`
-  ([rfc-crew-enterprise-edition](../../request-for-change/rfc-crew-enterprise-edition.md)
+  ([rfc-crew-lts-edition](../../request-for-change/rfc-crew-lts-edition.md)
   appendix row "Desktop control"; `enable_state.locked_by_policy`, policy layer
   only, fail-closed). When the policy keeps it off, `is_enabled()` answers `False`,
   the config GET carries `locked_by_policy: true`, and a PUT with `enabled: true`
-  answers 409 `locked_by_policy`. An enterprise build is off until a policy turns
+  answers 409 `locked_by_policy`. An LTS build is off until a policy turns
   the key on (D3: the baseline row is off). An `oss` build with no policy naming
   the key is unchanged. Nothing finer (apps, actions, approval) is governed.
 - The only writer is the dashboard PUT handler, which does not route through the

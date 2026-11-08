@@ -1,15 +1,15 @@
-"""Gateway middleware for the enterprise gate: deny all but login while closed.
+"""Gateway middleware for the LTS gate: deny all but login while closed.
 
-Design: ``docs/request-for-change/rfc-crew-enterprise-edition.md``, section
-"Enterprise gate" ("While the gate is closed, gateway middleware denies every API
-except login"). The gate itself is ``kiro_crew.enterprise_gate``.
+Design: ``docs/request-for-change/rfc-crew-lts-edition.md``, section
+"LTS gate" ("While the gate is closed, gateway middleware denies every API
+except login"). The gate itself is ``kiro_crew.lts_gate``.
 
-Only an enterprise build installs any of this; :func:`install_enterprise_gate`
-and :func:`enterprise_gate_middleware_for` are no-ops in an ``oss`` build, so its
+Only an LTS build installs any of this; :func:`install_lts_gate`
+and :func:`lts_gate_middleware_for` are no-ops in an ``oss`` build, so its
 middleware chain is unchanged.
 
-An enterprise gateway with no kiro login never gets this far: it exits before
-the bind (``kiro_crew.enterprise_boot``). The gate therefore starts open, and is
+An LTS gateway with no kiro login never gets this far: it exits before
+the bind (``kiro_crew.lts_boot``). The gate therefore starts open, and is
 closed only by a login lost or expired while the gateway runs.
 
 While the gate is closed:
@@ -22,7 +22,7 @@ While the gate is closed:
   directly, never the route's own handler, so a reload on any page shows the
   login screen. The shell is static and carries no data.
 * Everything else, including any route not named here and every WebSocket
-  upgrade, is refused 403 with code ``enterprise_gate_closed``. The list is an
+  upgrade, is refused 403 with code ``lts_gate_closed``. The list is an
   allowlist: a route added later is denied until someone adds it here.
 
 When the gate closes, every connection that carried a gated request while it
@@ -30,7 +30,7 @@ was open is closed (a WebSocket, an event stream, a download still sending),
 so nothing keeps streaming data after a login expires.
 
 While closed, ``GET /api/kiro-prerequisite`` reports
-``enterprise_login_required: true`` and ``initial_setup_complete: false`` (see
+``lts_login_required: true`` and ``initial_setup_complete: false`` (see
 :func:`login_screen_required`), so the dashboard's setup gate shows its sign-in
 screen instead of handing an established install the app it cannot use.
 
@@ -52,18 +52,18 @@ from aiohttp import web
 
 from kiro_crew import edition
 from kiro_crew.dashboard.token_auth_paths import _is_spa_shell_request
-from kiro_crew.enterprise_gate import (
+from kiro_crew.lts_gate import (
     GATE_CLOSED_CODE,
-    EnterpriseGate,
     GateStatus,
     LoginSource,
     LoginWatch,
+    LtsGate,
 )
 
 logger = logging.getLogger(__name__)
 
-GATE_APP_KEY = "enterprise_gate"
-LOGIN_WATCH_APP_KEY = "enterprise_login_watch"
+GATE_APP_KEY = "lts_gate"
+LOGIN_WATCH_APP_KEY = "lts_login_watch"
 
 _GET = frozenset({"GET", "HEAD"})
 _POST = frozenset({"POST"})
@@ -185,37 +185,37 @@ class _AdmittedRequests:
                 transport.close()
                 closed += 1
         if closed:
-            logger.info("Enterprise gate closed %d open connection(s)", closed)
+            logger.info("LTS gate closed %d open connection(s)", closed)
 
 
 def login_screen_required(app: web.Application) -> bool:
-    """Whether *app*'s enterprise gate is closed, so the UI must show sign-in.
+    """Whether *app*'s LTS gate is closed, so the UI must show sign-in.
 
     False in an ``oss`` build and whenever no gate is installed on *app*.
     """
     gate = app.get(GATE_APP_KEY)
-    return isinstance(gate, EnterpriseGate) and not gate.is_open
+    return isinstance(gate, LtsGate) and not gate.is_open
 
 
-async def enterprise_login_source() -> LoginSource | None:
-    """The enterprise gate's login source, built off the event loop; ``None`` in ``oss``.
+async def lts_login_source() -> LoginSource | None:
+    """The LTS gate's login source, built off the event loop; ``None`` in ``oss``.
 
-    The edition check lives here, in the enterprise wiring: the sign-in resolver itself
-    (``kiro_crew.enterprise_sign_in``) does not read the edition.
+    The edition check lives here, in the LTS wiring: the sign-in resolver itself
+    (``kiro_crew.lts_sign_in``) does not read the edition.
     """
-    if not edition.is_enterprise():
+    if not edition.is_lts():
         return None
-    from kiro_crew.enterprise_sign_in import SignInLoginSource
+    from kiro_crew.lts_sign_in import SignInLoginSource
 
     return await asyncio.to_thread(SignInLoginSource)
 
 
-def install_enterprise_gate(app: web.Application, login_source: LoginSource | None = None) -> None:
+def install_lts_gate(app: web.Application, login_source: LoginSource | None = None) -> None:
     """Build the open gate and its login watch on *app*. No-op in ``oss``.
 
-    *login_source* defaults to :class:`kiro_crew.enterprise_sign_in.SignInLoginSource`,
-    the one enterprise sign-in (RFC D4) that the boot check and the rules fetch read.
-    The boot check (``kiro_crew.enterprise_boot.require_kiro_login``) has already seen
+    *login_source* defaults to :class:`kiro_crew.lts_sign_in.SignInLoginSource`,
+    the one LTS sign-in (RFC D4) that the boot check and the rules fetch read.
+    The boot check (``kiro_crew.lts_boot.require_kiro_login``) has already seen
     that sign-in, or the gateway exited before getting here, so the gate starts OPEN;
     it closes only when the sign-in is later lost. Raises when *login_source* holds no
     sign-in, so a caller that skipped the boot check fails at boot rather than serving
@@ -225,21 +225,21 @@ def install_enterprise_gate(app: web.Application, login_source: LoginSource | No
     :data:`GATE_APP_KEY`) and before ``runner.setup()`` freezes the signal
     lists. The watch starts with the app and makes its first check at once.
     """
-    if not edition.is_enterprise():
+    if not edition.is_lts():
         return
     if login_source is None:
-        from kiro_crew.enterprise_sign_in import SignInLoginSource
+        from kiro_crew.lts_sign_in import SignInLoginSource
 
         login_source = SignInLoginSource()
     if not login_source.authenticated:
-        raise RuntimeError("enterprise build: the boot login check has not seen a kiro login")
-    gate = EnterpriseGate(closed_for=())
+        raise RuntimeError("LTS build: the boot login check has not seen a kiro login")
+    gate = LtsGate(closed_for=())
     watch = LoginWatch(gate, login_source)
     admitted = _AdmittedRequests()
     gate.add_listener(admitted.on_gate_change)
     app[GATE_APP_KEY] = gate
     app[LOGIN_WATCH_APP_KEY] = watch
-    app["enterprise_gate_admitted"] = admitted
+    app["lts_gate_admitted"] = admitted
 
     async def _start(_app: web.Application) -> None:
         admitted.bind_loop(asyncio.get_running_loop())
@@ -252,43 +252,43 @@ def install_enterprise_gate(app: web.Application, login_source: LoginSource | No
     app.on_cleanup.append(_stop)
 
 
-def enterprise_gate_middleware_for(
+def lts_gate_middleware_for(
     app: web.Application,
     *,
     spa_shell_handler: Handler | None,
 ) -> Callable[..., Any] | None:
     """The gate middleware for *app*'s chain, or ``None`` in an ``oss`` build.
 
-    Raises in an enterprise build when :func:`install_enterprise_gate` has not
+    Raises in an LTS build when :func:`install_lts_gate` has not
     run, so a wiring mistake fails at boot instead of serving an ungated app.
     The middleware holds the gate object itself rather than looking it up per
     request, so a chain copied onto another app (the tunnel) shares this gate.
     """
-    if not edition.is_enterprise():
+    if not edition.is_lts():
         return None
     gate = app.get(GATE_APP_KEY)
     watch = app.get(LOGIN_WATCH_APP_KEY)
-    admitted = app.get("enterprise_gate_admitted")
+    admitted = app.get("lts_gate_admitted")
     if (
-        not isinstance(gate, EnterpriseGate)
+        not isinstance(gate, LtsGate)
         or not isinstance(watch, LoginWatch)
         or not isinstance(admitted, _AdmittedRequests)
     ):
-        raise RuntimeError("enterprise build: the enterprise gate is not installed")
-    return make_enterprise_gate_middleware(
+        raise RuntimeError("LTS build: the LTS gate is not installed")
+    return make_lts_gate_middleware(
         gate, watch, admitted=admitted, spa_shell_handler=spa_shell_handler
     )
 
 
-def make_enterprise_gate_middleware(
-    gate: EnterpriseGate,
+def make_lts_gate_middleware(
+    gate: LtsGate,
     watch: LoginWatch,
     *,
     admitted: _AdmittedRequests,
     spa_shell_handler: Handler | None,
 ) -> Callable[..., Any]:
     @web.middleware  # type: ignore[misc]
-    async def enterprise_gate_middleware(
+    async def lts_gate_middleware(
         request: web.Request,
         handler: Handler,
     ) -> web.StreamResponse:
@@ -311,4 +311,4 @@ def make_enterprise_gate_middleware(
             return await spa_shell_handler(request)
         raise _closed_error(status)
 
-    return enterprise_gate_middleware
+    return lts_gate_middleware

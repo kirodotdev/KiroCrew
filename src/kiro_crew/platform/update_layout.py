@@ -302,17 +302,17 @@ def detect_install_layout() -> InstallLayout:
 def policy_release_channel() -> str:
     """The channel the policy requires, or ``""`` when the local file decides.
 
-    The policy's ``updates.channel`` pin; with none, ``stable`` in an enterprise
+    The policy's ``updates.channel`` pin; with none, ``stable`` in an LTS
     build. :func:`release_channel` and the channel-switch API both read this, so
     the channel followed and the channel a switch may pick cannot disagree.
     """
-    from kiro_crew.edition import is_enterprise
+    from kiro_crew.edition import is_lts
     from kiro_crew.platform.governance import active_update_pins
 
     pinned = active_update_pins().channel
     if pinned in RELEASE_CHANNELS:
         return pinned
-    return "stable" if is_enterprise() else ""
+    return "stable" if is_lts() else ""
 
 
 def release_channel() -> str:
@@ -327,8 +327,8 @@ def release_channel() -> str:
     where a directory is is the blocking hazard this avoids.
 
     A channel the policy pins (``updates.channel``) wins over the file; with no
-    pin an enterprise build follows ``stable`` whatever the file says (RFC
-    enterprise edition D3, appendix row "Update channel").
+    pin an LTS build follows ``stable`` whatever the file says (RFC
+    LTS edition D3, appendix row "Update channel").
     """
     required = policy_release_channel()
     if required:

@@ -1,7 +1,7 @@
-"""The knowledge pool never falls back to Kiro CLI in an enterprise build (RFC D6).
+"""The knowledge pool never falls back to Kiro CLI in an LTS build (RFC D6).
 
 In ``oss`` the pool runs on Kiro CLI whenever the selected backend cannot carry its
-zero-tool session (KAS included). In an enterprise build that automatic fallback is
+zero-tool session (KAS included). In an LTS build that automatic fallback is
 gone: Kiro CLI runs the pool only when it is picked (``agent.acp_backend`` ``"kiro"``)
 and the remote ``agent_backend`` policy allows it, and every other case refuses
 before any process exists.
@@ -42,8 +42,8 @@ def _registry(_floor_monkeypatch):
 
 
 @pytest.fixture
-def enterprise(monkeypatch):
-    monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+def lts(monkeypatch):
+    monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
 
 
 def _selectable(monkeypatch, *backends):
@@ -59,25 +59,23 @@ KIRO_PICK = {"agent": {"acp_backend": acp_backends.STORED_BACKEND_KIRO}}
 
 class TestTheBackendChoice:
     @pytest.mark.parametrize("config", CONFIGS, ids=["default", "kas", "codex"])
-    def test_enterprise_never_falls_back_even_when_kiro_is_allowed(
-        self, enterprise, monkeypatch, config
-    ):
+    def test_lts_never_falls_back_even_when_kiro_is_allowed(self, lts, monkeypatch, config):
         _selectable(monkeypatch, KIRO, KAS, acp_backends.ACP_BACKEND_CODEX)
         with pytest.raises(KnowledgeHarnessUnavailable):
             _get_acp_backend(config)
 
-    def test_enterprise_explicit_kiro_pick_the_policy_allows_runs(self, enterprise, monkeypatch):
+    def test_lts_explicit_kiro_pick_the_policy_allows_runs(self, lts, monkeypatch):
         _selectable(monkeypatch, KIRO, KAS)
         assert _get_acp_backend(KIRO_PICK) == KIRO
 
-    def test_enterprise_explicit_kiro_pick_the_policy_denies_refuses(self, enterprise, monkeypatch):
+    def test_lts_explicit_kiro_pick_the_policy_denies_refuses(self, lts, monkeypatch):
         # The denied pick resolves to the KAS floor, which cannot run the pool.
         _selectable(monkeypatch, KAS)
         with pytest.raises(KnowledgeHarnessUnavailable):
             _get_acp_backend(KIRO_PICK)
 
     @pytest.mark.parametrize("config", CONFIGS, ids=["default", "kas", "codex"])
-    def test_enterprise_with_kiro_denied_refuses(self, enterprise, monkeypatch, config):
+    def test_lts_with_kiro_denied_refuses(self, lts, monkeypatch, config):
         _selectable(monkeypatch, KAS)
         with pytest.raises(KnowledgeHarnessUnavailable) as exc:
             _get_acp_backend(config)
@@ -96,9 +94,7 @@ class TestTheBackendChoice:
 
 class TestThePoolSpawnsNothingWhenRefused:
     @pytest.mark.asyncio
-    async def test_enterprise_denied_worker_starts_no_client(
-        self, enterprise, monkeypatch, tmp_path
-    ):
+    async def test_lts_denied_worker_starts_no_client(self, lts, monkeypatch, tmp_path):
         _selectable(monkeypatch, KAS)
         with (
             patch("pathlib.Path.home", return_value=tmp_path),
@@ -113,8 +109,8 @@ class TestThePoolSpawnsNothingWhenRefused:
         assert worker._client is None
 
     @pytest.mark.asyncio
-    async def test_enterprise_denied_unconfirmed_spec_does_not_restart_on_kiro(
-        self, enterprise, monkeypatch, tmp_path
+    async def test_lts_denied_unconfirmed_spec_does_not_restart_on_kiro(
+        self, lts, monkeypatch, tmp_path
     ):
         _selectable(monkeypatch, KAS, OPENCODE)
         first = _zero_tool_client()
@@ -133,8 +129,8 @@ class TestThePoolSpawnsNothingWhenRefused:
         assert worker._client is None
 
     @pytest.mark.asyncio
-    async def test_enterprise_allowed_unconfirmed_spec_still_does_not_restart_on_kiro(
-        self, enterprise, monkeypatch, tmp_path
+    async def test_lts_allowed_unconfirmed_spec_still_does_not_restart_on_kiro(
+        self, lts, monkeypatch, tmp_path
     ):
         _selectable(monkeypatch, KIRO, KAS, OPENCODE)
         first = _zero_tool_client()
@@ -172,7 +168,7 @@ class TestThePoolSpawnsNothingWhenRefused:
         assert worker._client is second
 
     @pytest.mark.asyncio
-    async def test_a_worker_restart_rechecks_the_policy(self, enterprise, monkeypatch, tmp_path):
+    async def test_a_worker_restart_rechecks_the_policy(self, lts, monkeypatch, tmp_path):
         # A worker that chose Kiro CLI while it was allowed restarts with that
         # choice; a policy that removed Kiro CLI since then refuses the restart.
         _selectable(monkeypatch, KAS)
@@ -207,9 +203,7 @@ class TestThePoolSpawnsNothingWhenRefused:
         assert mk.call_args_list[0].kwargs["acp_backend"] == KIRO
 
     @pytest.mark.asyncio
-    async def test_enterprise_restart_of_an_allowed_kiro_pick_starts(
-        self, enterprise, monkeypatch, tmp_path
-    ):
+    async def test_lts_restart_of_an_allowed_kiro_pick_starts(self, lts, monkeypatch, tmp_path):
         _selectable(monkeypatch, KIRO, KAS)
         client = _zero_tool_client()
         client.is_ready = True

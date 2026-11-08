@@ -323,7 +323,7 @@ function createSuccessorHandoff({
       glog(`successor app started (pid ${successor.pid}) — waiting for its gateway to answer on :${expectPort}`);
       // The successor is a primary local gateway it spawns itself, so the budget
       // it will apply is the watchSpawn one -- on Windows 120s, elsewhere 30s,
-      // plus the pre-bind check budget in an enterprise build.
+      // plus the pre-bind check budget in an LTS build.
       const readyTimeoutMs = gatewayWaitTimeoutMs({
         platform: processObj.platform,
         watchSpawn: true,

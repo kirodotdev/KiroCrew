@@ -400,7 +400,7 @@ class TestLinkedTrustGrant:
 
     @pytest.mark.asyncio
     async def test_trust_under_a_policy_deny_approves_the_one_tool(self, monkeypatch) -> None:
-        """A ``permission_mode`` deny of ``trust`` (RFC enterprise D9): the press
+        """A ``permission_mode`` deny of ``trust`` (RFC LTS D9): the press
         approves this tool, as every other Trust button does, and grants nothing."""
         monkeypatch.setattr(handler, "trust_permitted", lambda: False)
         self._arm(trust_grantable=True)

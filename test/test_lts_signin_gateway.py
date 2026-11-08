@@ -1,7 +1,7 @@
-"""The enterprise sign-in-only gateway serves sign-in and nothing else.
+"""The LTS sign-in-only gateway serves sign-in and nothing else.
 
-Design: docs/request-for-change/rfc-crew-enterprise-edition.md, "Enterprise gate".
-A signed-out enterprise start serves a 127.0.0.1 app holding only the sign-in
+Design: docs/request-for-change/rfc-crew-lts-edition.md, "LTS gate".
+A signed-out LTS start serves a 127.0.0.1 app holding only the sign-in
 screen and the sign-in API, then boots again once a sign-in lands.
 """
 
@@ -17,9 +17,9 @@ import aiohttp
 import pytest
 from aiohttp import web
 
-from kiro_crew import enterprise_boot
-from kiro_crew import enterprise_sign_in as sign_in
-from kiro_crew import enterprise_signin_gateway as signin
+from kiro_crew import lts_boot
+from kiro_crew import lts_sign_in as sign_in
+from kiro_crew import lts_signin_gateway as signin
 from kiro_crew.dashboard import routes as routes_pkg
 from kiro_crew.dashboard import token_auth_tokens as tokens
 from kiro_crew.dashboard.token_auth_tokens import generate_token
@@ -32,8 +32,8 @@ _SIGNED_OUT = PlatformCompositionError(f"policy could not be loaded: {_NO_SIGN_I
 
 
 @pytest.fixture
-def enterprise(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+def lts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
     monkeypatch.delenv("KIROCREW_SANDBOX_ACTIVE", raising=False)
     monkeypatch.delenv(signin.DESKTOP_GATEWAY_ENV, raising=False)
 
@@ -111,19 +111,17 @@ def test_oss_never_serves_the_sign_in_screen(signed_out: list[bool]) -> None:
     assert not signin.applies(_SIGNED_OUT)
 
 
-def test_signed_out_enterprise_start_gets_the_sign_in_screen(
-    enterprise: None, signed_out: list[bool]
-) -> None:
+def test_signed_out_lts_start_gets_the_sign_in_screen(lts: None, signed_out: list[bool]) -> None:
     assert signin.applies(_SIGNED_OUT)
 
 
-def test_a_signed_in_failure_still_exits(enterprise: None, signed_out: list[bool]) -> None:
+def test_a_signed_in_failure_still_exits(lts: None, signed_out: list[bool]) -> None:
     signed_out.append(True)
     assert not signin.applies(PlatformCompositionError("rules unreachable"))
 
 
 def test_a_failure_that_is_not_the_missing_sign_in_still_exits(
-    enterprise: None, signed_out: list[bool]
+    lts: None, signed_out: list[bool]
 ) -> None:
     # Signed out, but boot failed earlier for another reason (unreadable plugin
     # metadata, say): signing in cannot fix it, so it exits as before.
@@ -131,7 +129,7 @@ def test_a_failure_that_is_not_the_missing_sign_in_still_exits(
 
 
 def test_other_errors_sandboxed_children_and_desktop_still_exit(
-    enterprise: None, signed_out: list[bool], monkeypatch: pytest.MonkeyPatch
+    lts: None, signed_out: list[bool], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     assert not signin.applies(ValueError("x"))
     monkeypatch.setenv(signin.DESKTOP_GATEWAY_ENV, "1")
@@ -215,8 +213,8 @@ async def test_the_sign_in_api_needs_the_owner_token() -> None:
         resp = await client.get("/api/kiro-prerequisite", cookies=_owner_cookie(port))
         assert resp.status == 200
         body = await resp.json()
-        assert body["enterprise_sign_in_only"] is True
-        assert body["enterprise_login_required"] is True
+        assert body["lts_sign_in_only"] is True
+        assert body["lts_login_required"] is True
     finally:
         await client.close()
 
@@ -408,9 +406,9 @@ async def test_the_page_is_told_to_start_again_before_the_app_stops(
     async with aiohttp.ClientSession(base_url=f"http://127.0.0.1:{port}") as http:
         resp = await http.get("/api/kiro-prerequisite", cookies=_owner_cookie(port))
         body = await resp.json()
-        assert body["enterprise_signed_in_restart"] is True
-        assert body["enterprise_start_command"] == signin.start_command()
-        assert body["enterprise_start_command"].endswith("gateway")
+        assert body["lts_signed_in_restart"] is True
+        assert body["lts_start_command"] == signin.start_command()
+        assert body["lts_start_command"].endswith("gateway")
     # That read ends the wait: the app stops and returns at once.
     assert await await_until(task, what="the app to stop after the page read") == port
 
@@ -433,7 +431,7 @@ def _usable_sign_in(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_after_sign_in_it_exits_0_naming_the_start_command(
-    enterprise: None,
+    lts: None,
     signed_out: list[bool],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -449,7 +447,7 @@ def test_after_sign_in_it_exits_0_naming_the_start_command(
 
 
 def test_an_unusable_sign_in_exits_with_its_cause_not_success(
-    enterprise: None,
+    lts: None,
     signed_out: list[bool],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -460,14 +458,14 @@ def test_an_unusable_sign_in_exits_with_its_cause_not_success(
     monkeypatch.setattr(signin, "serve_until_signed_in", lapsed)
     with pytest.raises(SystemExit) as exc:
         signin.sign_in_then_exit(_SIGNED_OUT, port=0, owner_id="", no_open=True)
-    assert exc.value.code == enterprise_boot.EXIT_CODE
+    assert exc.value.code == lts_boot.EXIT_CODE
     captured = capsys.readouterr()
     assert "the sign-in has expired" in captured.err
     assert "Signed in." not in captured.out
 
 
 def test_a_busy_port_exits(
-    enterprise: None,
+    lts: None,
     signed_out: list[bool],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -480,7 +478,7 @@ def test_a_busy_port_exits(
             signin.sign_in_then_exit(
                 _SIGNED_OUT, port=held.getsockname()[1], owner_id="", no_open=True
             )
-    assert exc.value.code == enterprise_boot.EXIT_CODE
+    assert exc.value.code == lts_boot.EXIT_CODE
     assert "sign-in screen could not open" in capsys.readouterr().err
 
 
@@ -515,7 +513,7 @@ def _cli_gateway(
 
 
 def test_cli_signed_out_signs_in_then_exits_0_without_starting_a_gateway(
-    enterprise: None, signed_out: list[bool], monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    lts: None, signed_out: list[bool], monkeypatch: pytest.MonkeyPatch, tmp_path: Any
 ) -> None:
     exit_, boots, gateway = _cli_gateway(monkeypatch, tmp_path, "--no-open")
     assert exit_.code == 0
@@ -525,7 +523,7 @@ def test_cli_signed_out_signs_in_then_exits_0_without_starting_a_gateway(
 
 
 def test_cli_the_sign_in_screen_takes_the_gateway_lock(
-    enterprise: None,
+    lts: None,
     signed_out: list[bool],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,
@@ -548,21 +546,21 @@ def test_cli_the_sign_in_screen_takes_the_gateway_lock(
 
 @pytest.mark.parametrize("flag", ["--test-mode", "--json-ready"])
 def test_cli_test_and_scripted_starts_still_exit(
-    enterprise: None,
+    lts: None,
     signed_out: list[bool],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,
     flag: str,
 ) -> None:
     exit_, boots, gateway = _cli_gateway(monkeypatch, tmp_path, flag)
-    assert exit_.code == enterprise_boot.EXIT_CODE
+    assert exit_.code == lts_boot.EXIT_CODE
     assert boots == [1]
     gateway.assert_not_called()
 
 
 @pytest.mark.parametrize("port", ["abc", "99999"])
 def test_cli_a_bad_port_exits_with_the_usual_message(
-    enterprise: None,
+    lts: None,
     signed_out: list[bool],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,
@@ -584,7 +582,7 @@ def test_cli_a_bad_port_exits_with_the_usual_message(
     ],
 )
 def test_cli_opens_a_browser_only_where_the_gateway_would(
-    enterprise: None,
+    lts: None,
     signed_out: list[bool],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,
@@ -608,7 +606,7 @@ def test_cli_opens_a_browser_only_where_the_gateway_would(
 
 
 def test_ctrl_c_at_the_sign_in_screen_exits_cleanly(
-    enterprise: None,
+    lts: None,
     signed_out: list[bool],
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -625,7 +623,7 @@ def test_ctrl_c_at_the_sign_in_screen_exits_cleanly(
 
 
 def test_cli_the_restart_command_repeats_the_launch_options(
-    enterprise: None,
+    lts: None,
     signed_out: list[bool],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,

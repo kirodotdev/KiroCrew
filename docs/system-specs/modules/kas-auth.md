@@ -582,7 +582,7 @@ engine instead ([aws-control.md](aws-control.md)).
   never silently handed back to whatever `kiro-cli login` holds. Automatic
   demotion to cli-owned after a persistent refresh failure is therefore not a
   gap to close but a behaviour deliberately not built (see #9772). The spawn
-  owner is the shared sign-in resolver's pick (RFC crew-enterprise-edition D4,
+  owner is the shared sign-in resolver's pick (RFC crew-lts-edition D4,
   `oss` order, amended 2026-10-30; delivered by #26841): any stored vault entry, including one whose access token has
   expired with no refresh token, and a vault that cannot be read, keeps the spawn
   Crew-owned and reports "not signed in"; only an empty vault hands it to

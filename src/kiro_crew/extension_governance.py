@@ -1,9 +1,9 @@
 """Governance keys for extensions, plugins, app versions and app developer mode.
 
-RFC ``rfc-crew-enterprise-edition``, appendix rows "Extension install", "Extension
+RFC ``rfc-crew-lts-edition``, appendix rows "Extension install", "Extension
 uninstall", "Plugin sync", "App versions" and "App developer mode". Each check asks
 the governance ceiling and the host profile, so a remote policy can turn the control
-on and a profile can only narrow it. In an enterprise build a scope the policy does
+on and a profile can only narrow it. In an LTS build a scope the policy does
 not name answers the built-in baseline, where all three are off. In the ``oss``
 edition an unnamed scope permits, so nothing changes until a policy names one.
 
@@ -56,10 +56,10 @@ def _denied(
         decision = governance_permits(
             scope, item, session_key=HOST_SESSION_KEY, log_warning=False, fail_closed=True
         )
-        if getattr(decision, "layer", None) == "" and edition.is_enterprise():
+        if getattr(decision, "layer", None) == "" and edition.is_lts():
             # ``governance_permits`` answers "ungoverned" when there is no ceiling
-            # and no profile (left to the enterprise gate, RFC phase 2). These keys
-            # answer the enterprise baseline there instead, so they stay off.
+            # and no profile (left to the LTS gate, RFC phase 2). These keys
+            # answer the LTS baseline there instead, so they stay off.
             from kiro_crew.platform.governance import resolve
 
             decision = resolve(None, None, scope, item)

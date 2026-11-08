@@ -229,7 +229,7 @@ export function ComputerUsePanel() {
 
   const cfg = cfgQ.data
   const busy = saveMut.isPending
-  // An enterprise build ignores the local opt-in; the enable is shown greyed out.
+  // An LTS build ignores the local opt-in; the enable is shown greyed out.
   const locked = cfg?.locked_by_policy === true
   const save = (patch: Partial<ComputerUseConfigSave>) => {
     setSaveError('')

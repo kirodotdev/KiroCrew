@@ -48,20 +48,20 @@ def test_checked_in_edition_is_oss() -> None:
     assert _load(_EDITION_SRC).EDITION == "oss"
 
 
-def test_editions_are_oss_and_enterprise() -> None:
-    assert edition.EDITIONS == frozenset({"oss", "enterprise"})
+def test_editions_are_oss_and_lts() -> None:
+    assert edition.EDITIONS == frozenset({"oss", "lts"})
     assert edition.EDITION in edition.EDITIONS
 
 
-def test_is_enterprise_false_on_default_build() -> None:
-    assert edition.is_enterprise() is False
+def test_is_lts_false_on_default_build() -> None:
+    assert edition.is_lts() is False
 
 
-def test_monkeypatch_hook_flips_is_enterprise(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(edition, "EDITION", "enterprise")
-    assert edition.is_enterprise() is True
+def test_monkeypatch_hook_flips_is_lts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(edition, "EDITION", "lts")
+    assert edition.is_lts() is True
     monkeypatch.setattr(edition, "EDITION", "oss")
-    assert edition.is_enterprise() is False
+    assert edition.is_lts() is False
 
 
 def test_edition_module_reads_no_environment_or_file() -> None:
@@ -85,26 +85,26 @@ def test_declared_editions_match_the_module() -> None:
     [
         ({}, "oss"),
         ({"KIROCREW_BUILD_EDITION": ""}, "oss"),
-        ({"KIROCREW_BUILD_EDITION": " enterprise\n"}, "enterprise"),
+        ({"KIROCREW_BUILD_EDITION": " lts\n"}, "lts"),
     ],
 )
 def test_requested_edition_defaults_to_oss(environ: dict, expected: str) -> None:
     assert _edition_stamp.requested_edition(environ) == expected
 
 
-def test_stamp_writes_enterprise_into_built_copy_only(tmp_path: Path) -> None:
+def test_stamp_writes_lts_into_built_copy_only(tmp_path: Path) -> None:
     before = _EDITION_SRC.read_bytes()
     built = _built_copy(tmp_path)
-    _edition_stamp.stamp_file(str(built), "enterprise")
+    _edition_stamp.stamp_file(str(built), "lts")
     stamped = _load(built)
-    assert stamped.EDITION == "enterprise"
-    assert stamped.is_enterprise() is True
+    assert stamped.EDITION == "lts"
+    assert stamped.is_lts() is True
     assert _EDITION_SRC.read_bytes() == before
 
 
-def test_default_stamp_overwrites_a_stale_enterprise_copy(tmp_path: Path) -> None:
+def test_default_stamp_overwrites_a_stale_lts_copy(tmp_path: Path) -> None:
     built = _built_copy(tmp_path)
-    _edition_stamp.stamp_file(str(built), "enterprise")
+    _edition_stamp.stamp_file(str(built), "lts")
     _edition_stamp.stamp_file(str(built), "oss")
     assert _load(built).EDITION == "oss"
     assert built.read_bytes() == _EDITION_SRC.read_bytes()
@@ -117,8 +117,15 @@ def test_stamp_refuses_unknown_edition(tmp_path: Path) -> None:
     assert built.read_bytes() == _EDITION_SRC.read_bytes()
 
 
+def test_old_enterprise_name_is_an_unknown_edition(tmp_path: Path) -> None:
+    built = _built_copy(tmp_path)
+    with pytest.raises(ValueError, match="unknown KIROCREW_BUILD_EDITION 'enterprise'"):
+        _edition_stamp.stamp_file(str(built), "enterprise")
+    assert built.read_bytes() == _EDITION_SRC.read_bytes()
+
+
 def test_check_edition_accepts_declared_and_refuses_unknown() -> None:
-    _edition_stamp.check_edition(str(_EDITION_SRC), "enterprise")
+    _edition_stamp.check_edition(str(_EDITION_SRC), "lts")
     _edition_stamp.check_edition(str(_EDITION_SRC), "oss")
     with pytest.raises(ValueError, match="unknown KIROCREW_BUILD_EDITION 'foo'"):
         _edition_stamp.check_edition(str(_EDITION_SRC), "foo")
@@ -132,8 +139,8 @@ def test_stamp_never_writes_through_a_hard_link(tmp_path: Path) -> None:
         os.link(source, built)
     except OSError:
         pytest.skip("hard links unsupported on this filesystem")
-    _edition_stamp.stamp_file(str(built), "enterprise")
-    assert _load(built).EDITION == "enterprise"
+    _edition_stamp.stamp_file(str(built), "lts")
+    assert _load(built).EDITION == "lts"
     assert _load(source).EDITION == "oss"
 
 
@@ -206,9 +213,9 @@ def _make_dry_run(
     ("edition_arg", "env_edition", "expected"),
     [
         (None, None, "oss"),
-        ("enterprise", None, "enterprise"),
-        (None, "enterprise", "enterprise"),
-        ("enterprise", "enterprise", "enterprise"),
+        ("lts", None, "lts"),
+        (None, "lts", "lts"),
+        ("lts", "lts", "lts"),
         ("oss", None, "oss"),
     ],
 )
@@ -225,12 +232,13 @@ def test_make_check_edition_resolves(
     ("edition_arg", "env_edition", "error"),
     [
         ("foo", None, "unknown EDITION 'foo'"),
-        ("oss enterprise", None, "unknown EDITION 'oss enterprise'"),
+        ("enterprise", None, "unknown EDITION 'enterprise'"),
+        ("oss lts", None, "unknown EDITION 'oss lts'"),
         ("%", None, "unknown EDITION '%'"),
         ("ent%", None, "unknown EDITION 'ent%'"),
         (None, "%", "unknown EDITION '%'"),
-        ("oss", "enterprise", "conflicts with KIROCREW_BUILD_EDITION 'enterprise'"),
-        ("enterprise", "oss", "conflicts with KIROCREW_BUILD_EDITION 'oss'"),
+        ("oss", "lts", "conflicts with KIROCREW_BUILD_EDITION 'lts'"),
+        ("lts", "oss", "conflicts with KIROCREW_BUILD_EDITION 'oss'"),
     ],
 )
 def test_make_check_edition_refuses(
@@ -245,7 +253,7 @@ def test_make_check_edition_refuses(
 @pytest.mark.parametrize("target", ["wheel", "backend-bin", "desktop"])
 @pytest.mark.parametrize(
     ("edition_arg", "env_edition", "expected"),
-    [(None, None, "oss"), ("enterprise", None, "enterprise"), (None, "enterprise", "enterprise")],
+    [(None, None, "oss"), ("lts", None, "lts"), (None, "lts", "lts")],
 )
 def test_packaging_target_passes_the_resolved_edition(
     target: str, edition_arg: str | None, env_edition: str | None, expected: str
@@ -260,8 +268,8 @@ def test_packaging_target_passes_the_resolved_edition(
 @pytest.mark.parametrize("target", ["check-edition", "wheel", "backend-bin", "desktop"])
 @pytest.mark.parametrize(
     ("ambient", "env_edition", "expected"),
-    [("enterprise", None, "oss"), ("foo", None, "oss"), ("%", None, "oss"),
-     ("enterprise", "oss", "oss"), ("oss", "enterprise", "enterprise")],
+    [("lts", None, "oss"), ("foo", None, "oss"), ("%", None, "oss"),
+     ("lts", "oss", "oss"), ("oss", "lts", "lts")],
 )  # fmt: skip
 def test_exported_shell_edition_is_ignored(
     target: str, ambient: str, env_edition: str | None, expected: str
@@ -288,12 +296,12 @@ def _resolved(result: subprocess.CompletedProcess[str], target: str) -> str:
 @pytest.mark.parametrize(
     ("flags", "extra_env", "edition_arg", "env_edition", "ambient", "expected"),
     [
-        (("-e",), None, None, None, "enterprise", "oss"),
-        ((), {"MAKEFLAGS": "e"}, None, None, "enterprise", "oss"),
-        (("-e",), None, "enterprise", None, None, "enterprise"),
-        (("-e",), None, None, "enterprise", None, "enterprise"),
-        (("-e",), None, None, "oss", "enterprise", "oss"),
-        (("-e",), {"_EDITION_ENV": "enterprise"}, None, None, None, "oss"),
+        (("-e",), None, None, None, "lts", "oss"),
+        ((), {"MAKEFLAGS": "e"}, None, None, "lts", "oss"),
+        (("-e",), None, "lts", None, None, "lts"),
+        (("-e",), None, None, "lts", None, "lts"),
+        (("-e",), None, None, "oss", "lts", "oss"),
+        (("-e",), {"_EDITION_ENV": "lts"}, None, None, None, "oss"),
     ],
 )  # fmt: skip
 def test_environment_override_mode_cannot_pick_the_edition(
@@ -319,7 +327,7 @@ def test_environment_override_mode_cannot_pick_the_edition(
 @_NO_MAKE
 @pytest.mark.parametrize("flags", [("-e",), ()])
 def test_an_ambient_editions_list_cannot_widen_the_allowed_set(flags: tuple[str, ...]) -> None:
-    extra = {"EDITIONS": "oss enterprise foo"}
+    extra = {"EDITIONS": "oss lts foo"}
     if not flags:
         extra["MAKEFLAGS"] = "e"
     result = _make_dry_run("check-edition", edition="foo", make_flags=flags, extra_env=extra)
@@ -329,24 +337,24 @@ def test_an_ambient_editions_list_cannot_widen_the_allowed_set(flags: tuple[str,
 
 @_NO_MAKE
 def test_command_line_edition_still_wins_over_an_exported_one() -> None:
-    result = _make_dry_run("wheel", edition="enterprise", ambient_edition="oss")
+    result = _make_dry_run("wheel", edition="lts", ambient_edition="oss")
     assert result.returncode == 0, result.stderr
-    assert re.findall(r"KIROCREW_BUILD_EDITION=(\S+)", result.stdout) == ["enterprise"]
+    assert re.findall(r"KIROCREW_BUILD_EDITION=(\S+)", result.stdout) == ["lts"]
 
 
 @_NO_MAKE
 @pytest.mark.parametrize("target", ["wheel", "backend-bin", "desktop"])
 def test_packaging_target_refuses_a_conflict(target: str) -> None:
-    result = _make_dry_run(target, edition="oss", env_edition="enterprise")
+    result = _make_dry_run(target, edition="oss", env_edition="lts")
     assert result.returncode != 0
     assert "conflicts with KIROCREW_BUILD_EDITION" in result.stderr
 
 
-def test_enterprise_wheel_carries_the_enterprise_stamp(tmp_path: Path) -> None:
+def test_lts_wheel_carries_the_lts_stamp(tmp_path: Path) -> None:
     """Build a real wheel offline through setup.py and read edition.py out of it."""
     pytest.importorskip("setuptools.command.bdist_wheel")
     env = {k: v for k, v in os.environ.items() if k != "KIROCREW_BUILD_EDITION"}
-    env["KIROCREW_BUILD_EDITION"] = "enterprise"
+    env["KIROCREW_BUILD_EDITION"] = "lts"
     dist = tmp_path / "dist"
     argv = [
         "egg_info", "--egg-base", str(tmp_path),
@@ -366,7 +374,7 @@ def test_enterprise_wheel_carries_the_enterprise_stamp(tmp_path: Path) -> None:
     (wheel,) = dist.glob("*.whl")
     with zipfile.ZipFile(wheel) as zf:
         built = zf.read("kiro_crew/edition.py").decode("utf-8")
-    assert 'EDITION = "enterprise"' in built.splitlines()
+    assert 'EDITION = "lts"' in built.splitlines()
     assert _load(_EDITION_SRC).EDITION == "oss"
 
 
@@ -393,8 +401,8 @@ def test_setup_py_build_py_stamps_and_refuses(tmp_path: Path) -> None:
         )
 
     built = lib / "kiro_crew" / "edition.py"
-    assert build("enterprise").returncode == 0
-    assert _load(built).EDITION == "enterprise"
+    assert build("lts").returncode == 0
+    assert _load(built).EDITION == "lts"
     assert build(None).returncode == 0
     assert _load(built).EDITION == "oss"
     refused = build("foo")

@@ -1251,11 +1251,11 @@ def _merge_kiro_hooks(hooks: dict, user_hooks: dict) -> dict:
 
 
 def _user_kiro_hooks_locked() -> bool:
-    """Whether an enterprise build withholds the user's kiro hooks from the agent.
+    """Whether an LTS build withholds the user's kiro hooks from the agent.
 
     kiro-cli runs these scripts itself, so the Crew script-hook gate never sees
-    them. In an enterprise build they follow ``capabilities.script_hooks`` like
-    every other hook (RFC enterprise edition, Red "Hooks by name"), asked on the
+    them. In an LTS build they follow ``capabilities.script_hooks`` like
+    every other hook (RFC LTS edition, Red "Hooks by name"), asked on the
     host key because the agent file is built for the whole host. An unreadable
     answer withholds them. An ``oss`` build returns False without asking.
     """
@@ -1280,7 +1280,7 @@ def _user_kiro_hooks_locked() -> bool:
 def _drop_refused_kiro_hook_events(hooks: dict) -> dict:
     """*hooks* without the events the policy's ``script_hooks`` events list refuses.
 
-    Enterprise builds only, for the reason :func:`_user_kiro_hooks_locked` gives;
+    LTS builds only, for the reason :func:`_user_kiro_hooks_locked` gives;
     an ``oss`` build returns *hooks* without asking. kiro-cli spells an event
     ``preToolUse`` where a policy writes ``PreToolUse``; the identifier matcher is
     case-insensitive, so one list covers both. An unreadable answer drops the event.

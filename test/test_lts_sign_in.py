@@ -1,4 +1,4 @@
-"""The enterprise build's one sign-in (RFC D4): Crew's own vault sign-in.
+"""The LTS build's one sign-in (RFC D4): Crew's own vault sign-in.
 
 The vault is a real ``TokenStore`` in a temporary directory.
 """
@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew import enterprise_sign_in as sign_in
+from kiro_crew import lts_sign_in as sign_in
 from kiro_crew.auth.store import KasToken, TokenStore
 
 _ARN = "arn:aws:codewhisperer:us-east-1:123456789012:profile/ABCDEFGHIJKL"
@@ -187,7 +187,7 @@ class TestKiroCli:
 
     def test_kiro_cli_only_is_the_sign_in(self, store, kiro_cli) -> None:
         kiro_cli()
-        for policy in (sign_in.ENTERPRISE, sign_in.OSS):
+        for policy in (sign_in.LTS, sign_in.OSS):
             found = sign_in.resolve(policy=policy)
             assert (found.source, found.profile_arn) == (sign_in.Source.KIRO_CLI, _ARN)
 
@@ -284,7 +284,7 @@ class TestKiroCli:
     def test_both_present_the_vault_wins(self, vault, kiro_cli) -> None:
         vault()
         kiro_cli()
-        for policy in (sign_in.ENTERPRISE, sign_in.OSS):
+        for policy in (sign_in.LTS, sign_in.OSS):
             assert sign_in.resolve(policy=policy).source is sign_in.Source.VAULT
         assert sign_in.resolve(with_token=True).token == "vault-access"
 
@@ -296,7 +296,7 @@ class TestKiroCli:
         assert "kas logout" in str(chosen.problem)
         assert "kiro-cli's sign-in" in str(chosen.problem)
 
-    def test_two_accounts_enterprise_refuses_naming_both(self, vault, kiro_cli) -> None:
+    def test_two_accounts_lts_refuses_naming_both(self, vault, kiro_cli) -> None:
         vault()
         kiro_cli(profile_arn=_OTHER_ARN)
         with pytest.raises(sign_in.SignInError) as exc:
@@ -310,7 +310,7 @@ class TestKiroCli:
         monkeypatch.setattr(sign_in, "_warned_mismatches", set())
         vault()
         kiro_cli(profile_arn=_OTHER_ARN)
-        with caplog.at_level("WARNING", logger="kiro_crew.enterprise_sign_in"):
+        with caplog.at_level("WARNING", logger="kiro_crew.lts_sign_in"):
             assert sign_in.resolve(policy=sign_in.OSS).source is sign_in.Source.VAULT
             assert sign_in.resolve(policy=sign_in.OSS).source is sign_in.Source.VAULT
         warnings = [r for r in caplog.records if "different accounts" in r.getMessage()]
@@ -612,33 +612,31 @@ class TestLoginSource:
 
 
 class TestDoctor:
-    def test_an_enterprise_doctor_reports_the_sign_in(self, vault, monkeypatch, capsys) -> None:
+    def test_an_lts_doctor_reports_the_sign_in(self, vault, monkeypatch, capsys) -> None:
         from kiro_crew import cli_doctor
 
-        monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+        monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
         vault()
         issues: list[str] = []
-        cli_doctor._doctor_enterprise_sign_in(issues)
+        cli_doctor._doctor_lts_sign_in(issues)
         out = capsys.readouterr().out
         assert "sign-in:" in out and "Kiro Crew's own sign-in" in out and _ARN in out
         assert issues == []
 
-    def test_an_enterprise_doctor_with_no_sign_in_is_an_issue(
-        self, store, monkeypatch, capsys
-    ) -> None:
+    def test_an_lts_doctor_with_no_sign_in_is_an_issue(self, store, monkeypatch, capsys) -> None:
         from kiro_crew import cli_doctor
 
-        monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+        monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
         issues: list[str] = []
-        cli_doctor._doctor_enterprise_sign_in(issues)
+        cli_doctor._doctor_lts_sign_in(issues)
         assert "no Kiro sign-in was found" in capsys.readouterr().out
-        assert issues and issues[0].startswith("enterprise sign-in: no Kiro sign-in")
+        assert issues and issues[0].startswith("LTS sign-in: no Kiro sign-in")
 
     def test_an_oss_doctor_prints_no_sign_in_row(self, store, capsys) -> None:
         from kiro_crew import cli_doctor
 
         issues: list[str] = []
-        cli_doctor._doctor_enterprise_sign_in(issues)
+        cli_doctor._doctor_lts_sign_in(issues)
         assert capsys.readouterr().out == "" and issues == []
 
 
@@ -663,6 +661,6 @@ class TestEditionFree:
 
     @pytest.mark.asyncio
     async def test_the_gate_wiring_builds_no_source_in_oss(self) -> None:
-        from kiro_crew.dashboard.enterprise_gate_middleware import enterprise_login_source
+        from kiro_crew.dashboard.lts_gate_middleware import lts_login_source
 
-        assert await enterprise_login_source() is None
+        assert await lts_login_source() is None

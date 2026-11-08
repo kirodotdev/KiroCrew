@@ -13,8 +13,8 @@ imports only the ones listed before it, never the facade:
   that composes two controls of one archetype;
 * ``catalog`` -- which scopes exist: ``SCOPE_CATALOG`` with its archetype ids,
   ``register_scope`` and the scope aliases;
-* ``baseline`` -- the enterprise built-in baseline: the minimal set an unnamed scope
-  answers in an enterprise build (data only);
+* ``baseline`` -- the LTS built-in baseline: the minimal set an unnamed scope
+  answers in an LTS build (data only);
 * ``carriers`` -- what a parsed policy and profile hold: ``GovernanceCeiling`` and
   ``Profile`` with their boot, update, distribution and agentcore blocks, and profile
   inheritance;

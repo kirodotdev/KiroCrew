@@ -40,7 +40,7 @@ def _source_label() -> str:
 
 
 def _is_harness_refusal(exc: BaseException) -> bool:
-    """Whether *exc* is the enterprise pool's harness refusal (RFC D6).
+    """Whether *exc* is the LTS pool's harness refusal (RFC D6).
 
     It is not an extraction failure to store past: no chunk can be extracted, so it
     reaches the ingest, which fails the job rather than commit empty metadata.

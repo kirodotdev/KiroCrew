@@ -647,7 +647,7 @@ Three fields on `OtlpDestination` carry what an entry needs at reader build:
 Gates are unchanged and apply to every entry because every entry is a
 destination: the consent gate in `_build_recorder` runs before any is resolved,
 `otlp_governance.governed_destinations` applies the `otlp_hosts` check, and
-`gate_exporter` re-checks each export. An enterprise build blanks both local keys
+`gate_exporter` re-checks each export. An LTS build blanks both local keys
 in `_edition_locked_view` (`CONFIG_PATH_LOCKS` names both).
 
 The config view masks the whole `telemetry.otlp_endpoints` value

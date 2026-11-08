@@ -1,5 +1,5 @@
 /**
- * Screenshot harness for #24331: in an enterprise build the computer-use enable is
+ * Screenshot harness for #24331: in an LTS build the computer-use enable is
  * locked by policy (`GET /api/computer-use/config` carries `locked_by_policy`), so
  * Settings → Computer Use greys the switch out and shows a "Locked by policy" badge
  * with the reason, instead of a live switch whose save fails.

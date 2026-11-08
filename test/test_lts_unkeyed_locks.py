@@ -1,6 +1,6 @@
-"""Enterprise build: local switches for controls with no governance key are ignored.
+"""LTS build: local switches for controls with no governance key are ignored.
 
-RFC ``rfc-crew-enterprise-edition`` decision D3. Each control in
+RFC ``rfc-crew-lts-edition`` decision D3. Each control in
 ``kiro_crew.edition_locks.UNKEYED_LOCKS`` is checked at the point its feature reads
 its own switch: on, in the ``oss`` edition, the local value still applies.
 """
@@ -31,8 +31,8 @@ def _fresh_lock_log():
 
 
 @pytest.fixture
-def enterprise(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+def lts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
 
 
 @pytest.fixture
@@ -52,13 +52,12 @@ def test_oss_locks_nothing():
     assert not edition_locks.config_path_locked("tunnel.enabled")
 
 
-def test_enterprise_lock_logs_once(enterprise, caplog):
+def test_lts_lock_logs_once(lts, caplog):
     with caplog.at_level(logging.WARNING, logger="kiro_crew.edition_locks"):
         assert edition_locks.local_enable_locked("tunnel")
         assert edition_locks.local_enable_locked("tunnel")
     assert [r.getMessage() for r in caplog.records].count(
-        f"enterprise build: {edition_locks.UNKEYED_LOCKS['tunnel']} "
-        f"({edition_locks.LOCKED_BY_POLICY})"
+        f"LTS build: {edition_locks.UNKEYED_LOCKS['tunnel']} " f"({edition_locks.LOCKED_BY_POLICY})"
     ) == 1
 
 
@@ -66,13 +65,13 @@ def test_config_paths_name_listed_controls():
     assert set(edition_locks.CONFIG_PATH_LOCKS.values()) <= set(edition_locks.UNKEYED_LOCKS)
 
 
-def test_enterprise_reports_locked_config_paths(enterprise):
+def test_lts_reports_locked_config_paths(lts):
     assert edition_locks.config_path_locked("tunnel.enabled")
     assert edition_locks.config_path_locked("telemetry.otlp_endpoint")
     assert not edition_locks.config_path_locked("telemetry.enabled")
 
 
-def test_release_channel_file_is_ignored(enterprise, channel_file):
+def test_release_channel_file_is_ignored(lts, channel_file):
     assert update_layout.release_channel() == "stable"
 
 
@@ -86,7 +85,7 @@ def default_telemetry(monkeypatch: pytest.MonkeyPatch):
     return TelemetryConfig(otlp_endpoint="http://collector.example:4318/v1/metrics")
 
 
-def test_otlp_endpoint_is_ignored_before_any_provider_reads_it(enterprise, default_telemetry):
+def test_otlp_endpoint_is_ignored_before_any_provider_reads_it(lts, default_telemetry):
     assert metrics_provider._otlp_destinations(default_telemetry) == ()
     assert metrics_provider.otlp_egress_active(default_telemetry) is False
 
@@ -114,7 +113,7 @@ def _owner_request(body: object):
     return req
 
 
-def test_channel_switch_api_answers_locked_and_writes_nothing(enterprise, tmp_path, monkeypatch):
+def test_channel_switch_api_answers_locked_and_writes_nothing(lts, tmp_path, monkeypatch):
 
     from kiro_crew.platform.update_layout import InstallLayout
 
@@ -130,7 +129,7 @@ def test_channel_switch_api_answers_locked_and_writes_nothing(enterprise, tmp_pa
     assert not (tmp_path / "channel").exists()
 
 
-def test_schema_marks_locked_config_paths(enterprise):
+def test_schema_marks_locked_config_paths(lts):
     req = MagicMock()
     req.query = {}
     entries = json.loads(asyncio.run(api_config_schema(req)).body)["entries"]
@@ -141,7 +140,7 @@ def test_schema_marks_locked_config_paths(enterprise):
 # ── KIROCREW_DEV_MODE and slack.use_tunnel_url ──
 
 
-def test_dev_mode_env_does_not_enable_session_environments(enterprise, monkeypatch):
+def test_dev_mode_env_does_not_enable_session_environments(lts, monkeypatch):
     from kiro_crew import session_environment
 
     monkeypatch.setenv("KIROCREW_DEV_MODE", "1")
@@ -172,7 +171,7 @@ def _registers_simulate(monkeypatch, home: str) -> bool:
     )
 
 
-def test_dev_switches_do_not_register_the_update_simulator(enterprise, monkeypatch, tmp_path):
+def test_dev_switches_do_not_register_the_update_simulator(lts, monkeypatch, tmp_path):
     assert _registers_simulate(monkeypatch, str(tmp_path / "crew-dev")) is False
 
 
@@ -180,7 +179,7 @@ def test_oss_dev_switches_still_register_the_update_simulator(monkeypatch, tmp_p
     assert _registers_simulate(monkeypatch, str(tmp_path / "crew-dev")) is True
 
 
-def test_slack_tunnel_opt_in_reads_off(enterprise, monkeypatch):
+def test_slack_tunnel_opt_in_reads_off(lts, monkeypatch):
     from kiro_crew import tunnel
     from kiro_crew.dashboard import urls
 
@@ -223,7 +222,7 @@ def _send_link_ensure_calls(monkeypatch) -> int:
     return ensure.await_count
 
 
-def test_slack_link_does_not_provision_a_tunnel(enterprise, monkeypatch):
+def test_slack_link_does_not_provision_a_tunnel(lts, monkeypatch):
     assert _send_link_ensure_calls(monkeypatch) == 0
 
 

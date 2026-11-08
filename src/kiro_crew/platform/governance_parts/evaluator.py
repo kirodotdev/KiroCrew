@@ -97,10 +97,10 @@ def _every_operation_names_a_path(raw_params: object) -> bool:
 
 _PERMIT_NOT_GOVERNED = Decision(True, "not governed", rule="default", layer="default")
 
-_BASELINE_REASON = "enterprise baseline"
+_BASELINE_REASON = "LTS baseline"
 
 # A scope with neither a baseline row nor an ungated reason (one registered at run
-# time) is refused in an enterprise build: an empty allow-set denies every item.
+# time) is refused in an LTS build: an empty allow-set denies every item.
 _DENY_UNLISTED = ScopedRuleset(mode="allow", allow=())
 
 
@@ -109,7 +109,7 @@ def _policy_level(
 ) -> Tuple[object, bool]:
     """The policy level's control for *scope*, and whether the baseline supplied it.
 
-    The remote policy answers a scope it names. In an enterprise build a scope it
+    The remote policy answers a scope it names. In an LTS build a scope it
     does not name is answered by the built-in baseline (RFC D3), never left
     ungoverned. Only the POLICY level is filled in this way: a profile narrows the
     policy beneath it, so an unnamed profile scope stays ``None`` and cannot
@@ -119,7 +119,7 @@ def _policy_level(
     (``baseline=False``) get no baseline.
     """
     control = ceiling.get(scope) if ceiling is not None else None
-    if not baseline or isinstance(ceiling, Profile) or not edition.is_enterprise():
+    if not baseline or isinstance(ceiling, Profile) or not edition.is_lts():
         return control, False
     # A policy's ``folders.*`` rule is stored under its ``filesystem.*`` scope at
     # parse time, so an alias query must find it there before the baseline answers.
@@ -142,7 +142,7 @@ def policy_level_control(ceiling: Optional[GovernanceCeiling], scope: str) -> Op
     For readers that inspect a ceiling's control directly instead of calling
     :func:`resolve`, such as ``governance.may_skip_gate``; reading
     ``ceiling.get`` there would treat an unnamed scope as ungoverned in an
-    enterprise build and skip the gate the baseline is enforced at.
+    LTS build and skip the gate the baseline is enforced at.
     """
     return _policy_level(ceiling, scope)[0]
 
@@ -151,7 +151,7 @@ def _query_level(control: object, scope: str, item: str) -> Decision:
     """Query ONE level's control for *item* in *scope* (Rule 1).
 
     A ``None`` control means the level does not govern this scope → permit
-    (truth-table "not-governed" rows).  In an enterprise build the POLICY level
+    (truth-table "not-governed" rows).  In an LTS build the POLICY level
     is never ``None`` here for a gated scope: :func:`_policy_level` supplies the
     built-in baseline first, so only a profile reaches this permit.  Dispatch is by archetype, not scope
     name.  ``scope`` is used only to locate the sub-leaf for the structured
@@ -200,7 +200,7 @@ def resolve(
     level being ``None`` (or not governing the scope) contributes a permit, so
     ``resolve(None, None, …)`` permits everything (the ungoverned standalone
     default) and a policy-deny is final regardless of the profile. In an
-    enterprise build a scope the policy does not name is answered by the built-in
+    LTS build a scope the policy does not name is answered by the built-in
     baseline instead (:func:`_policy_level`); ``baseline=False`` asks the profile
     layer alone, for a caller that judges each layer separately.
     """

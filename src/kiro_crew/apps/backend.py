@@ -780,7 +780,7 @@ def _start_app_backend_body(app_name: str, manifest: Any) -> AppProcess | None:
     # start an app on a host that is running perfectly well.
     if central_ceiling_installed():
         _platform_extra[POLICY_CACHE_ONLY_ENV] = "1"
-        # An enterprise child adopts only the cache for the profile this gateway is
+        # An LTS child adopts only the cache for the profile this gateway is
         # pinned to; minimal_env() would otherwise drop the pin it inherits.
         from kiro_crew.platform.enterprise_policy_fetch import PROFILE_PIN_ENV
 

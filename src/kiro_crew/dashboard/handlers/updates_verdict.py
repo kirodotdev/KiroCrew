@@ -252,7 +252,7 @@ def _effective_min_version() -> str:
 
 
 def _downgrade_target_below_min_version(version: str, channel: str) -> bool:
-    """Whether *version* is a downgrade that crosses the enterprise floor.
+    """Whether *version* is a downgrade that crosses the LTS floor.
 
     A host already below the floor may still move upward toward compliance when
     its followed lane lags the pin. Target versions may carry prerelease stamps,

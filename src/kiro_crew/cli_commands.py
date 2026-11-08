@@ -364,7 +364,7 @@ def _tailnet(args: argparse.Namespace) -> None:
     enabled = bool(cfg.dashboard.tailscale.enabled)
 
     if action == "up":
-        # Asked first, so an enterprise build whose policy does not turn tailnet on
+        # Asked first, so an LTS build whose policy does not turn tailnet on
         # says so before any port or config advice. A pure read here; the refusal is
         # audited once, and a permit is audited by ``publish`` itself.
         refused = (

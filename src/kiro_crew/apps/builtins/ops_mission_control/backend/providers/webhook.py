@@ -344,7 +344,7 @@ def signals_from_payload(payload: dict[str, Any]) -> list[Signal]:
 def enqueue(raw_body: bytes, signature: str) -> tuple[bool, str]:
     """Verify and queue a delivery. Returns ``(accepted, detail)``."""
     # The ``webhooks`` governance scope names the sources that may deliver; in an
-    # enterprise build none may until a policy names one (RFC enterprise edition,
+    # LTS build none may until a policy names one (RFC LTS edition,
     # Red "Webhooks by source").
     refusal = source_refusal(SOURCE_OPS_MISSION_CONTROL)
     if refusal:

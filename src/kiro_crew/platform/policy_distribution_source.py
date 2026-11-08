@@ -55,15 +55,15 @@ POLICY_UNAVAILABLE_ENV = "KIROCREW_POLICY_ON_UNAVAILABLE"
 #: handed the means to fetch it — see :func:`cache_only`.
 POLICY_CACHE_ONLY_ENV = "KIROCREW_POLICY_CACHE_ONLY"
 
-#: The scheme of the enterprise build's policy source: the Kiro control plane's
+#: The scheme of the LTS build's policy source: the Kiro control plane's
 #: enterprise-management read for the signed-in profile
 #: (:mod:`kiro_crew.platform.enterprise_policy_fetch`). Not a URL scheme anyone types:
 #: the host is not in the URL at all, it comes from the build's control-plane region
 #: table (``kiro_crew.auth.login.control_plane``).
 ENTERPRISE_POLICY_SCHEME = "kirocps"
 
-#: The enterprise build's policy source (RFC rfc-crew-enterprise-edition, D2). In an
-#: enterprise build this is the ONLY source: :data:`POLICY_URL_ENV`, the other
+#: The LTS build's policy source (RFC rfc-crew-lts-edition, D2). In an
+#: LTS build this is the ONLY source: :data:`POLICY_URL_ENV`, the other
 #: ``KIROCREW_POLICY_*`` settings and any ``distribution.source`` in a local or fetched
 #: document are ignored. The host part names WHAT is read, not where: the address is the
 #: control-plane host for the signed-in profile's region, from a table fixed in the
@@ -448,7 +448,7 @@ register_policy_fetcher("file", _fetch_file)
 
 
 def _fetch_enterprise(request: FetchRequest) -> FetchedPolicy:
-    """The enterprise build's transport, imported on first use.
+    """The LTS build's transport, imported on first use.
 
     Lazy so this module binds no new project module and an oss process never imports
     the control-plane client. The fetcher itself refuses in an oss build.
@@ -523,7 +523,7 @@ def cache_only() -> bool:
     relaxation: there is one cache, the parent wrote it, and the parent applied the
     repoint rule when it did. The child is inheriting a decision, not making one.
 
-    **An enterprise build puts every sandboxed process in this mode too**, with no flag:
+    **An LTS build puts every sandboxed process in this mode too**, with no flag:
     a Kiro Crew MCP server kiro-cli starts inside the agent sandbox enters the central
     tier (RFC D2) but can reach neither the sign-in nor the control plane, and the
     sandbox shows it the cache read-only (``sandbox_tiers.enterprise_policy_cache_view``).
@@ -534,7 +534,7 @@ def cache_only() -> bool:
         return True
     from kiro_crew import sandbox_launch_mark
 
-    return _is_enterprise() and sandbox_launch_mark.launched_in_sandbox()
+    return _is_lts() and sandbox_launch_mark.launched_in_sandbox()
 
 
 def _env_number(name: str, *, whole: bool) -> Optional[float]:
@@ -602,16 +602,16 @@ def resolve_distribution(declared: Optional[PolicyDistribution] = None) -> Polic
     redirect a host to a canary endpoint, lengthen an interval during an incident —
     without editing (and re-signing) the published document.
 
-    **Enterprise build (RFC D2): no local channel.** The source is
+    **LTS build (RFC D2): no local channel.** The source is
     :data:`ENTERPRISE_POLICY_URL`, every ``KIROCREW_POLICY_*`` setting is ignored, and
     ``on_unavailable`` is ``fail_closed`` whatever *declared* says. The cadence, timeout
     and staleness bound come from *declared* alone, and every caller hands an
-    enterprise build only the FETCHED document's block: ``load_security_policy`` passes
+    LTS build only the FETCHED document's block: ``load_security_policy`` passes
     no local declaration, and ``compose_tier_ladder`` keeps the central block.
     """
     base = declared or PolicyDistribution()
 
-    if _is_enterprise():
+    if _is_lts():
         return replace(base, source=ENTERPRISE_POLICY_URL, on_unavailable=UNAVAILABLE_FAIL_CLOSED)
 
     source = os.environ.get(POLICY_URL_ENV, "").strip() or base.source
@@ -639,11 +639,11 @@ def resolve_distribution(declared: Optional[PolicyDistribution] = None) -> Polic
 def host_pinned_source() -> str:
     """The source this host names outside any document, or ``""``.
 
-    The build-time :data:`ENTERPRISE_POLICY_URL` in an enterprise build, otherwise
+    The build-time :data:`ENTERPRISE_POLICY_URL` in an LTS build, otherwise
     :data:`POLICY_URL_ENV`. A non-empty answer means a document's own
     ``distribution.source`` is not followed.
     """
-    if _is_enterprise():
+    if _is_lts():
         return ENTERPRISE_POLICY_URL
     return os.environ.get(POLICY_URL_ENV, "").strip()
 
@@ -658,12 +658,12 @@ def _body_digest(body: bytes) -> str:
     return hashlib.sha256(body).hexdigest()
 
 
-def _is_enterprise() -> bool:
-    """``kiro_crew.edition.is_enterprise()``, read at call time.
+def _is_lts() -> bool:
+    """``kiro_crew.edition.is_lts()``, read at call time.
 
     Imported here rather than at module scope so the facade family binds no new project
     module name (``test_policy_distribution_facade`` keeps that set closed).
     """
-    from kiro_crew.edition import is_enterprise
+    from kiro_crew.edition import is_lts
 
-    return is_enterprise()
+    return is_lts()

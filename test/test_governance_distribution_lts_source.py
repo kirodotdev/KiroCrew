@@ -1,12 +1,12 @@
-"""An enterprise build's policy source is a build-time constant (RFC D2).
+"""An LTS build's policy source is a build-time constant (RFC D2).
 
-``docs/request-for-change/rfc-crew-enterprise-edition.md``, decision D2: in an enterprise
+``docs/request-for-change/rfc-crew-lts-edition.md``, decision D2: in an LTS
 build the governance policy URL is :data:`ENTERPRISE_POLICY_URL`. No environment variable,
 config key or policy document field can point the build at another address, and the
 central policy is REQUIRED: a fetch that cannot complete aborts boot, whatever any local
 ``on_unavailable`` says. Every oss case here pins that an oss build behaves as before.
 
-The enterprise transport is replaced with a fake through the shared ``transport`` fixture,
+The LTS transport is replaced with a fake through the shared ``transport`` fixture,
 so nothing here opens a socket; the fixture restores the scheme table afterwards. The
 transport itself is tested in ``test_enterprise_policy_fetch.py``.
 """
@@ -46,7 +46,7 @@ _LOCAL_ENV = {
 }
 
 
-#: What the gateway records an enterprise copy against: the source plus the profile.
+#: What the gateway records an LTS copy against: the source plus the profile.
 _EE_CACHE_SOURCE = f"{pd.ENTERPRISE_POLICY_URL}?profile=one-profile&translation={TRANSLATION_TAG}"
 
 
@@ -62,9 +62,9 @@ def _one_signed_in_profile(_floor_monkeypatch):
     _floor_monkeypatch.setattr(epf, "pinned_scope", lambda: "one-profile")
 
 
-@pytest.fixture(name="enterprise")
-def enterprise_fixture(monkeypatch):
-    monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+@pytest.fixture(name="lts")
+def lts_fixture(monkeypatch):
+    monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
 
 
 def _set_local_env(monkeypatch) -> None:
@@ -72,8 +72,8 @@ def _set_local_env(monkeypatch) -> None:
         monkeypatch.setenv(name, value)
 
 
-def _enterprise_transport(transport, fetcher) -> None:
-    """Answer every enterprise-source fetch with *fetcher* (restored by the fixture)."""
+def _lts_transport(transport, fetcher) -> None:
+    """Answer every LTS-source fetch with *fetcher* (restored by the fixture)."""
     transport(fetcher, scheme=pd.ENTERPRISE_POLICY_URL.partition(":")[0])
 
 
@@ -91,17 +91,17 @@ class TestResolvedSettings:
         declared = governance.PolicyDistribution(source=_ELSEWHERE)
         assert pd.resolve_distribution(declared).source == _ELSEWHERE
 
-    def test_enterprise_ignores_every_env_setting(self, enterprise, monkeypatch):
+    def test_lts_ignores_every_env_setting(self, lts, monkeypatch):
         _set_local_env(monkeypatch)
         resolved = pd.resolve_distribution()
         assert resolved == governance.PolicyDistribution(source=pd.ENTERPRISE_POLICY_URL)
 
-    def test_enterprise_ignores_a_malformed_env_value_too(self, enterprise, monkeypatch):
+    def test_lts_ignores_a_malformed_env_value_too(self, lts, monkeypatch):
         """Ignored means not read: a typo an oss build refuses is not even parsed."""
         monkeypatch.setenv(pd.POLICY_REFRESH_ENV, "15m")
         assert pd.resolve_distribution().source == pd.ENTERPRISE_POLICY_URL
 
-    def test_enterprise_ignores_a_declared_source_and_disposition(self, enterprise):
+    def test_lts_ignores_a_declared_source_and_disposition(self, lts):
         declared = governance.PolicyDistribution(
             source=_ELSEWHERE,
             refresh_interval_secs=900,
@@ -112,15 +112,15 @@ class TestResolvedSettings:
         assert resolved.source == pd.ENTERPRISE_POLICY_URL
         assert resolved.on_unavailable == governance.UNAVAILABLE_FAIL_CLOSED
         # The cadence and the staleness bound of the block it is handed are kept: in
-        # enterprise that block is only ever the fetched document's.
+        # LTS that block is only ever the fetched document's.
         assert resolved.refresh_interval_secs == 900
         assert resolved.max_cache_age_secs == 3600
 
-    def test_enterprise_pins_the_source_with_no_env(self, enterprise):
+    def test_lts_pins_the_source_with_no_env(self, lts):
         assert pd.host_pinned_source() == pd.ENTERPRISE_POLICY_URL
         assert pd._env_pins_the_source() is True
 
-    def test_a_source_less_block_is_accepted_in_enterprise(self, enterprise):
+    def test_a_source_less_block_is_accepted_in_lts(self, lts):
         """The build names the address, so a block that only tunes cadence is not inert."""
         parsed = governance.PolicyDistribution.from_dict({"refresh_interval_secs": 900})
         assert parsed.refresh_interval_secs == 900
@@ -132,7 +132,7 @@ class TestResolvedSettings:
 
 class TestBoot:
     def test_env_and_local_config_cannot_redirect_the_fetch(
-        self, enterprise, transport, monkeypatch, tmp_path
+        self, lts, transport, monkeypatch, tmp_path
     ):
         local = _write_policy(
             tmp_path / "local.json",
@@ -146,9 +146,7 @@ class TestBoot:
         monkeypatch.setattr(governance, "_policy_home_path", lambda: home)
         _set_local_env(monkeypatch)
         seen: list = []
-        _enterprise_transport(
-            transport, _static_fetcher(pd.FetchedPolicy(body=_body("central")), seen)
-        )
+        _lts_transport(transport, _static_fetcher(pd.FetchedPolicy(body=_body("central")), seen))
 
         ceiling = governance.load_security_policy()
 
@@ -156,21 +154,21 @@ class TestBoot:
         assert ceiling.identity_issuer == "central"
         assert [request.url for request in seen] == [pd.ENTERPRISE_POLICY_URL]
 
-    def test_a_fetch_failure_aborts_boot(self, enterprise, transport, monkeypatch, tmp_path):
+    def test_a_fetch_failure_aborts_boot(self, lts, transport, monkeypatch, tmp_path):
         """No fallback: a local ``degrade`` (env or document) does not soften it."""
         local = _write_policy(
             tmp_path / "local.json", "local-file", distribution={"on_unavailable": "degrade"}
         )
         monkeypatch.setenv("KIROCREW_SECURITY_POLICY", str(local))
         _set_local_env(monkeypatch)
-        _enterprise_transport(transport, _failing_fetcher(TimeoutError("endpoint down")))
+        _lts_transport(transport, _failing_fetcher(TimeoutError("endpoint down")))
 
         with pytest.raises(PlatformCompositionError, match="requires its central policy"):
             governance.load_security_policy()
 
-    def test_with_nothing_configured_the_tier_still_runs(self, enterprise, transport):
-        """No source anywhere does not switch the tier off in enterprise."""
-        _enterprise_transport(transport, _failing_fetcher(TimeoutError("endpoint down")))
+    def test_with_nothing_configured_the_tier_still_runs(self, lts, transport):
+        """No source anywhere does not switch the tier off in LTS."""
+        _lts_transport(transport, _failing_fetcher(TimeoutError("endpoint down")))
         with pytest.raises(PlatformCompositionError, match="requires its central policy"):
             governance.load_security_policy()
 
@@ -187,7 +185,7 @@ class TestBoot:
 
 
 class TestFetchedDocument:
-    def test_a_fetched_source_is_ignored_and_its_cadence_kept(self, enterprise, transport):
+    def test_a_fetched_source_is_ignored_and_its_cadence_kept(self, lts, transport):
         body = _body(
             "central",
             distribution={
@@ -196,7 +194,7 @@ class TestFetchedDocument:
                 "on_unavailable": "degrade",
             },
         )
-        _enterprise_transport(transport, _static_fetcher(pd.FetchedPolicy(body=body)))
+        _lts_transport(transport, _static_fetcher(pd.FetchedPolicy(body=body)))
 
         ceiling = governance.load_security_policy()
 
@@ -208,7 +206,7 @@ class TestFetchedDocument:
         assert resolved.on_unavailable == governance.UNAVAILABLE_FAIL_CLOSED
 
     def test_a_local_block_does_not_fill_a_gap_the_fetched_one_left(
-        self, enterprise, transport, monkeypatch, tmp_path
+        self, lts, transport, monkeypatch, tmp_path
     ):
         """The fold must not hand the refresher a local cadence or staleness bound."""
         local = _write_policy(
@@ -217,7 +215,7 @@ class TestFetchedDocument:
             distribution={"source": _ELSEWHERE, "refresh_interval_secs": 60},
         )
         monkeypatch.setenv("KIROCREW_SECURITY_POLICY", str(local))
-        _enterprise_transport(transport, _static_fetcher(pd.FetchedPolicy(body=_body("central"))))
+        _lts_transport(transport, _static_fetcher(pd.FetchedPolicy(body=_body("central"))))
 
         ceiling = governance.load_security_policy()
 
@@ -227,13 +225,13 @@ class TestFetchedDocument:
 
 
 class TestCacheOnlyChild:
-    def test_a_cache_from_another_source_is_refused(self, enterprise, monkeypatch):
+    def test_a_cache_from_another_source_is_refused(self, lts, monkeypatch):
         _cache("planted", _ELSEWHERE)
         monkeypatch.setenv(pd.POLICY_CACHE_ONLY_ENV, "1")
         with pytest.raises(PlatformCompositionError, match="no cached ceiling"):
             pd.load_distributed_policy()
 
-    def test_the_cache_from_the_build_source_is_adopted(self, enterprise, monkeypatch):
+    def test_the_cache_from_the_build_source_is_adopted(self, lts, monkeypatch):
         _cache("central", _EE_CACHE_SOURCE)
         monkeypatch.setenv(pd.POLICY_CACHE_ONLY_ENV, "1")
         ceiling = pd.load_distributed_policy()
@@ -250,7 +248,7 @@ class TestCacheOnlyChild:
 class TestRunningProcess:
     """The refresher, the CLI helpers and the posture read the same resolution.
 
-    ``install_ceiling`` comes before ``enterprise`` in each signature so its base
+    ``install_ceiling`` comes before ``lts`` in each signature so its base
     context is composed as oss, before the edition flips.
     """
 
@@ -266,28 +264,24 @@ class TestRunningProcess:
         )
         install_ceiling(governance.parse_policy(doc))
 
-    def test_refresh_fetches_the_build_source(
-        self, transport, install_ceiling, enterprise, monkeypatch
-    ):
+    def test_refresh_fetches_the_build_source(self, transport, install_ceiling, lts, monkeypatch):
         self._install(install_ceiling)
         _set_local_env(monkeypatch)
         seen: list = []
-        _enterprise_transport(
-            transport, _static_fetcher(pd.FetchedPolicy(body=_body("pushed")), seen)
-        )
+        _lts_transport(transport, _static_fetcher(pd.FetchedPolicy(body=_body("pushed")), seen))
 
         assert pd.refresh_now().status == pd.REFRESH_APPLIED
         assert [request.url for request in seen] == [pd.ENTERPRISE_POLICY_URL]
 
     def test_cadence_and_bound_come_from_the_installed_document(
-        self, install_ceiling, enterprise, monkeypatch
+        self, install_ceiling, lts, monkeypatch
     ):
         self._install(install_ceiling)
         _set_local_env(monkeypatch)
         assert pd.effective_refresh_interval() == 900
         assert pd.effective_max_cache_age() == 3600
 
-    def test_the_posture_reports_the_build_source(self, install_ceiling, enterprise, monkeypatch):
+    def test_the_posture_reports_the_build_source(self, install_ceiling, lts, monkeypatch):
         self._install(install_ceiling)
         _set_local_env(monkeypatch)
         posture = pd.distribution_posture()
@@ -296,7 +290,7 @@ class TestRunningProcess:
         assert posture["refresh_interval_seconds"] == 900
         assert posture["on_unavailable"] == governance.UNAVAILABLE_FAIL_CLOSED
 
-    def test_with_nothing_installed_the_posture_is_still_configured(self, enterprise):
+    def test_with_nothing_installed_the_posture_is_still_configured(self, lts):
         posture = pd.distribution_posture()
         assert posture["configured"] is True
         assert posture["refresh_interval_seconds"] == 0

@@ -405,10 +405,10 @@ _LAZY_IMPORTS = {
     "kiro_crew.dashboard.chat": "_run_chat",
     "kiro_crew.dashboard.kiro_relay.ingress": "RELAY_INGRESS_APP_KEY",
     "kiro_crew.relay_client.provider": "publish_gateway_ingress",
-    "kiro_crew.dashboard.enterprise_gate_middleware": (
-        "enterprise_gate_middleware_for enterprise_login_source install_enterprise_gate"
+    "kiro_crew.dashboard.lts_gate_middleware": (
+        "lts_gate_middleware_for lts_login_source install_lts_gate"
     ),
-    "kiro_crew.enterprise_boot": "require_kiro_login",
+    "kiro_crew.lts_boot": "require_kiro_login",
     "kiro_crew.dashboard.handlers": "config_pending remote_puller wf_handlers work_ledger",
     "kiro_crew.dashboard.handlers.agents": "_remove_member_leftovers",
     "kiro_crew.dashboard.handlers.artifact_download": "register_artifact_download_routes",

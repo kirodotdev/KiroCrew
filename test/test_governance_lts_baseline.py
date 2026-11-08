@@ -1,7 +1,7 @@
-"""The enterprise built-in baseline: an unnamed scope answers its minimal set.
+"""The LTS built-in baseline: an unnamed scope answers its minimal set.
 
-RFC ``docs/request-for-change/rfc-crew-enterprise-edition.md`` decision D3: in an
-enterprise build a scope the remote policy does not name is locked to its
+RFC ``docs/request-for-change/rfc-crew-lts-edition.md`` decision D3: in an
+LTS build a scope the remote policy does not name is locked to its
 minimal set, or off when it has none. The remote policy may widen past it; a
 profile only narrows. The open controls of D3 keep Crew's
 own default when the policy is silent, and a policy that names one still wins.
@@ -87,8 +87,8 @@ def _ceiling(**controls: object) -> governance.GovernanceCeiling:
 
 
 @pytest.fixture
-def enterprise(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+def lts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
 
 
 def test_every_catalog_scope_has_a_baseline_entry() -> None:
@@ -128,9 +128,7 @@ def test_open_scopes_are_ungated_and_kept_off_scopes_are_not() -> None:
 
 @pytest.mark.parametrize("ceiling_kind", ["none", "empty"])
 @pytest.mark.parametrize("scope", sorted(set(SCOPE_CATALOG) - set(_OPEN_SCOPES)))
-def test_enterprise_unnamed_scope_answers_the_baseline(
-    enterprise: None, scope: str, ceiling_kind: str
-) -> None:
+def test_lts_unnamed_scope_answers_the_baseline(lts: None, scope: str, ceiling_kind: str) -> None:
     ceiling = None if ceiling_kind == "none" else _ceiling()
     permitted, denied = _row(scope)
     for item in permitted:
@@ -139,13 +137,13 @@ def test_enterprise_unnamed_scope_answers_the_baseline(
         decision = resolve(ceiling, None, scope, item)
         assert not decision.permitted, (scope, item)
         assert decision.layer == "policy"
-        assert "enterprise baseline" in decision.reason
+        assert "LTS baseline" in decision.reason
 
 
 @pytest.mark.parametrize("ceiling_kind", ["none", "empty"])
 @pytest.mark.parametrize("scope", sorted(_OPEN_SCOPES))
-def test_enterprise_unnamed_open_scope_keeps_crews_default(
-    enterprise: None, scope: str, ceiling_kind: str
+def test_lts_unnamed_open_scope_keeps_crews_default(
+    lts: None, scope: str, ceiling_kind: str
 ) -> None:
     """Policy silent: the open scope answers as in ``oss``, ungoverned."""
     ceiling = None if ceiling_kind == "none" else _ceiling()
@@ -173,17 +171,17 @@ _OPEN_DENIES: dict[str, dict[str, object]] = {
 
 
 @pytest.mark.parametrize("scope", sorted(_OPEN_SCOPES))
-def test_enterprise_policy_deny_still_closes_an_open_scope(enterprise: None, scope: str) -> None:
+def test_lts_policy_deny_still_closes_an_open_scope(lts: None, scope: str) -> None:
     decision = resolve(_ceiling(**_OPEN_DENIES[scope]), None, scope, _OPEN_SCOPES[scope])
     assert not decision.permitted, scope
     assert decision.layer == "policy"
 
 
-def test_enterprise_scope_with_no_baseline_row_is_denied(enterprise: None) -> None:
+def test_lts_scope_with_no_baseline_row_is_denied(lts: None) -> None:
     assert not resolve(_ceiling(), None, "made.up", "x").permitted
 
 
-def test_enterprise_policy_naming_a_scope_answers_and_may_widen(enterprise: None) -> None:
+def test_lts_policy_naming_a_scope_answers_and_may_widen(lts: None) -> None:
     ceiling = _ceiling(
         tools={"mode": "allow", "allow": ["fs_write"]},
         capabilities={"browse": {"enabled": True}},
@@ -199,7 +197,7 @@ def test_enterprise_policy_naming_a_scope_answers_and_may_widen(enterprise: None
 
 
 @pytest.mark.parametrize("scope", ["filesystem.read", "folders.read"])
-def test_enterprise_alias_query_finds_the_policy_rule(enterprise: None, scope: str) -> None:
+def test_lts_alias_query_finds_the_policy_rule(lts: None, scope: str) -> None:
     """A ``folders.*`` query answers from the ``filesystem.*`` rule it was stored under."""
     # Built with the host's own separators: the path matcher absolutizes the item.
     root = os.path.abspath(os.path.join(os.sep, "project"))
@@ -208,15 +206,15 @@ def test_enterprise_alias_query_finds_the_policy_rule(enterprise: None, scope: s
     assert not resolve(ceiling, None, scope, "/etc/passwd").permitted
 
 
-def test_enterprise_profile_not_naming_a_scope_keeps_the_remote_widening(
-    enterprise: None,
+def test_lts_profile_not_naming_a_scope_keeps_the_remote_widening(
+    lts: None,
 ) -> None:
     ceiling = _ceiling(tools={"mode": "allow", "allow": ["fs_write"]})
     profile = parse_profile({"name": "narrow", "commands": {"mode": "deny", "deny": ["rm *"]}})
     assert resolve(ceiling, profile, "tools", "fs_write").permitted
 
 
-def test_enterprise_alias_group_keeps_the_remote_grant_under_a_profile(enterprise: None) -> None:
+def test_lts_alias_group_keeps_the_remote_grant_under_a_profile(lts: None) -> None:
     """The per-layer alias pass asks the profile alone, so no baseline is added there."""
     ceiling = _ceiling(
         tools={"mode": "deny", "deny": []},
@@ -232,8 +230,8 @@ def test_enterprise_alias_group_keeps_the_remote_grant_under_a_profile(enterpris
     assert not gate_decision(closed, profile, "shell", alias_groups=groups).permitted
 
 
-def test_enterprise_may_skip_gate_asked_about_a_profile_adds_no_baseline(
-    enterprise: None,
+def test_lts_may_skip_gate_asked_about_a_profile_adds_no_baseline(
+    lts: None,
 ) -> None:
     """``governance_profiles`` asks ``may_skip_gate`` about one profile in the ceiling slot."""
     profile = parse_profile({"name": "narrow", "mcp": {"mode": "deny", "deny": ["@x"]}})
@@ -241,7 +239,7 @@ def test_enterprise_may_skip_gate_asked_about_a_profile_adds_no_baseline(
     assert governance.may_skip_gate("@x", profile) is False  # type: ignore[arg-type]
 
 
-def test_enterprise_profile_narrows_the_baseline(enterprise: None) -> None:
+def test_lts_profile_narrows_the_baseline(lts: None) -> None:
     ceiling = _ceiling(tools={"mode": "allow", "allow": ["fs_read", "grep"]})
     profile = parse_profile({"name": "narrow", "tools": {"mode": "deny", "deny": ["grep"]}})
     assert not resolve(ceiling, profile, "tools", "grep").permitted
@@ -250,7 +248,7 @@ def test_enterprise_profile_narrows_the_baseline(enterprise: None) -> None:
     assert not resolve(_ceiling(), profile, "agent_backend", "kiro").permitted
 
 
-def test_enterprise_gate_leaves_a_shell_command_to_crews_default(enterprise: None) -> None:
+def test_lts_gate_leaves_a_shell_command_to_crews_default(lts: None) -> None:
     """``commands`` is open: the gate passes it on to the approval prompt."""
     assert gate_decision(_ceiling(), None, "Running: ls").permitted
     closed = _ceiling(commands={"mode": "allow", "allow": []})
@@ -259,17 +257,15 @@ def test_enterprise_gate_leaves_a_shell_command_to_crews_default(enterprise: Non
 
 @pytest.mark.parametrize("ceiling_kind", ["none", "empty"])
 @pytest.mark.parametrize("ref", ["web_fetch", "web_search", "@other", "@other/x"])
-def test_enterprise_auto_approve_cannot_skip_the_gate_for_an_unnamed_scope(
-    enterprise: None, ref: str, ceiling_kind: str
+def test_lts_auto_approve_cannot_skip_the_gate_for_an_unnamed_scope(
+    lts: None, ref: str, ceiling_kind: str
 ) -> None:
     ceiling = None if ceiling_kind == "none" else _ceiling()
     assert governance.may_skip_gate(ref, ceiling) is False
 
 
 @pytest.mark.parametrize("ceiling_kind", ["none", "empty"])
-def test_enterprise_auto_approve_skips_the_gate_for_an_open_scope(
-    enterprise: None, ceiling_kind: str
-) -> None:
+def test_lts_auto_approve_skips_the_gate_for_an_open_scope(lts: None, ceiling_kind: str) -> None:
     """``capabilities.spawn`` is open, so a sub-agent call skips as in ``oss``."""
     ceiling = None if ceiling_kind == "none" else _ceiling()
     assert governance.may_skip_gate("use_subagent", ceiling) is True
@@ -306,7 +302,7 @@ def _tier(tier: str, **controls: object) -> governance.GovernanceCeiling:
 _WS = os.path.abspath(os.path.join(os.sep, "ws"))
 
 
-def test_enterprise_local_curl_deny_stays_denied(enterprise: None) -> None:
+def test_lts_local_curl_deny_stays_denied(lts: None) -> None:
     central = _tier(governance.TIER_CENTRAL, commands={"mode": "deny", "deny": []})
     home = _tier(governance.TIER_HOME, commands={"mode": "deny", "deny": ["curl *"]})
     composed = governance.compose_tier_ladder(central, home)
@@ -314,7 +310,7 @@ def test_enterprise_local_curl_deny_stays_denied(enterprise: None) -> None:
     assert resolve(composed, None, "commands", "ls").permitted
 
 
-def test_enterprise_local_tier_narrows_an_open_scope(enterprise: None) -> None:
+def test_lts_local_tier_narrows_an_open_scope(lts: None) -> None:
     """With the central policy silent on ``commands``, a local deny still narrows it."""
     central = _tier(governance.TIER_CENTRAL)
     home = _tier(governance.TIER_HOME, commands={"mode": "deny", "deny": ["curl *"]})
@@ -323,7 +319,7 @@ def test_enterprise_local_tier_narrows_an_open_scope(enterprise: None) -> None:
     assert resolve(composed, None, "commands", "ls").permitted
 
 
-def test_enterprise_local_write_allowlist_still_narrows_writes(enterprise: None) -> None:
+def test_lts_local_write_allowlist_still_narrows_writes(lts: None) -> None:
     central = _tier(
         governance.TIER_CENTRAL,
         filesystem={"write": {"mode": "allow", "allow": [os.path.join(_WS, "**")]}},
@@ -338,9 +334,7 @@ def test_enterprise_local_write_allowlist_still_narrows_writes(enterprise: None)
 
 
 @pytest.mark.parametrize("local_tier", ["env", "home"])
-def test_enterprise_local_tier_cannot_permit_what_the_baseline_denies(
-    enterprise: None, local_tier: str
-) -> None:
+def test_lts_local_tier_cannot_permit_what_the_baseline_denies(lts: None, local_tier: str) -> None:
     central = _tier(governance.TIER_CENTRAL)
     local = _tier(
         local_tier,
@@ -352,7 +346,7 @@ def test_enterprise_local_tier_cannot_permit_what_the_baseline_denies(
     assert not resolve(composed, None, "capabilities.browse", "").permitted
     assert not resolve(composed, None, "network.egress", "example.com").permitted
     assert not resolve(composed, None, "agent_backend", "claude").permitted
-    # Kiro CLI is outside the enterprise baseline (RFC D6), so a local tier
+    # Kiro CLI is outside the LTS baseline (RFC D6), so a local tier
     # cannot add it either.
     assert not resolve(composed, None, "agent_backend", "kiro").permitted
     # In the baseline and in the local allow-set, so both levels permit it.
@@ -374,8 +368,8 @@ def test_oss_tier_fold_is_unchanged() -> None:
 
 
 @pytest.mark.parametrize("local_tier", ["env", "bundled", "home"])
-def test_enterprise_local_authority_with_no_central_only_narrows_the_baseline(
-    enterprise: None, local_tier: str
+def test_lts_local_authority_with_no_central_only_narrows_the_baseline(
+    lts: None, local_tier: str
 ) -> None:
     """With no central document the top tier is local, so it may not replace the baseline."""
     local = _tier(
@@ -399,8 +393,8 @@ def test_enterprise_local_authority_with_no_central_only_narrows_the_baseline(
 
 
 @pytest.mark.parametrize("doc", [None, {}], ids=["no-policy", "empty"])
-def test_enterprise_process_switch_keeps_an_open_scope(
-    enterprise: None, monkeypatch: pytest.MonkeyPatch, doc: "dict[str, object] | None"
+def test_lts_process_switch_keeps_an_open_scope(
+    lts: None, monkeypatch: pytest.MonkeyPatch, doc: "dict[str, object] | None"
 ) -> None:
     """``policy_permits`` (milestones) lets an open scope's default permit stand."""
     from types import SimpleNamespace

@@ -268,7 +268,7 @@ def _stamp_probe(self: KiroPrerequisiteService, identity: str) -> None:
 def _latch_login_only(
     self: KiroPrerequisiteService, whoami: ProcessResult, probe_identity: str
 ) -> PrerequisiteStatus:
-    """Latch the sign-in verdict alone, for the enterprise boot check.
+    """Latch the sign-in verdict alone, for the LTS boot check.
 
     Readiness stays False and the probe is NOT marked done, so the next read
     (the post-bind warm-up, the login watch) runs the full probe with the spec
@@ -391,8 +391,8 @@ async def _probe(
             if sandbox_failure is not None and candidate_runnable:
                 from kiro_crew import edition
 
-                if edition.is_enterprise():
-                    # The enterprise sign-in check re-runs its two fixed probes
+                if edition.is_lts():
+                    # The LTS sign-in check re-runs its two fixed probes
                     # through ``wrap_argv``'s first-party carve-out, which lets
                     # them run unconfined ONLY on a ``no_backend`` host with no
                     # governance floor; a ``transient`` or ``foreign_sandbox``
@@ -422,7 +422,7 @@ async def _probe(
                 if carve_out_whoami is not None and carve_out_whoami.ok:
                     # Still a WARNING: agent sessions cannot start on this host.
                     logger.warning(
-                        "Kiro CLI at %s is signed in (confirmed by the enterprise sign-in "
+                        "Kiro CLI at %s is signed in (confirmed by the LTS sign-in "
                         "check); agent sessions still need a sandbox, which this host "
                         "cannot build (%s: %s)",
                         first_candidate,
@@ -445,7 +445,7 @@ async def _probe(
                     installed=True,
                     # Unknown, not false: whoami also runs through the probe
                     # path, so we cannot claim either way -- unless the
-                    # enterprise sign-in check above answered signed in.
+                    # LTS sign-in check above answered signed in.
                     authenticated=bool(carve_out_whoami and carve_out_whoami.ok),
                     ready=False,
                     repair_required=False,
@@ -771,7 +771,7 @@ async def _audited_probe(
 ) -> ProcessResult:
     """Run one credential-free status probe with paired SEL lifecycle events.
 
-    *first_party_fixed_argv* is for the enterprise sign-in check's fixed
+    *first_party_fixed_argv* is for the LTS sign-in check's fixed
     ``--version`` only (``_probe``): it claims ``wrap_argv``'s first-party
     carve-out and opts into reaping survivors.
     """
@@ -829,7 +829,7 @@ async def _run_auth_command(
 ) -> ProcessResult:
     """Run one Kiro auth command against a sandboxed, trusted executable.
 
-    *first_party_fixed_argv* is for the enterprise sign-in check's fixed
+    *first_party_fixed_argv* is for the LTS sign-in check's fixed
     ``whoami`` only (``_probe``), against the real home: it claims
     ``wrap_argv``'s first-party carve-out and opts into reaping survivors.
 

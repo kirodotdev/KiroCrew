@@ -1,6 +1,6 @@
-"""The enterprise gate's login half: gate state, login watch and middleware.
+"""The LTS gate's login half: gate state, login watch and middleware.
 
-Design: docs/request-for-change/rfc-crew-enterprise-edition.md, "Enterprise gate".
+Design: docs/request-for-change/rfc-crew-lts-edition.md, "LTS gate".
 """
 
 from __future__ import annotations
@@ -14,11 +14,11 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
-from kiro_crew import enterprise_sign_in
-from kiro_crew.dashboard import enterprise_gate_middleware as gate_mw
+from kiro_crew import lts_sign_in
+from kiro_crew.dashboard import lts_gate_middleware as gate_mw
 from kiro_crew.dashboard import routes as routes_pkg
-from kiro_crew.enterprise_gate import REASON_LOGIN_REQUIRED, EnterpriseGate, LoginWatch
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
+from kiro_crew.lts_gate import REASON_LOGIN_REQUIRED, LoginWatch, LtsGate
 from kiro_crew.testing.wait import async_wait_until
 
 
@@ -42,8 +42,8 @@ class FakeLogin:
 
 
 @pytest.fixture
-def enterprise(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+def lts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
 
 
 # --------------------------------------------------------------------------- #
@@ -51,7 +51,7 @@ def enterprise(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_gate_starts_closed_for_login() -> None:
-    gate = EnterpriseGate()
+    gate = LtsGate()
     status = gate.status()
     assert not gate.is_open
     assert status.open is False
@@ -59,7 +59,7 @@ def test_gate_starts_closed_for_login() -> None:
 
 
 def test_gate_opens_only_when_every_reason_is_cleared() -> None:
-    gate = EnterpriseGate()
+    gate = LtsGate()
     seen: list[bool] = []
     gate.add_listener(lambda status: seen.append(status.open))
     assert gate.close("governance_unavailable") is False  # already closed
@@ -72,7 +72,7 @@ def test_gate_opens_only_when_every_reason_is_cleared() -> None:
 
 
 def test_gate_clearing_an_absent_reason_changes_nothing() -> None:
-    gate = EnterpriseGate(closed_for=())
+    gate = LtsGate(closed_for=())
     assert gate.is_open
     assert gate.clear("governance_unavailable") is False
     assert gate.is_open
@@ -80,13 +80,13 @@ def test_gate_clearing_an_absent_reason_changes_nothing() -> None:
 
 @pytest.mark.parametrize("reason", ["", "Login", "has space", "x" * 65, None])
 def test_gate_refuses_a_malformed_reason(reason: Any) -> None:
-    gate = EnterpriseGate()
+    gate = LtsGate()
     with pytest.raises(ValueError):
         gate.close(reason)
 
 
 def test_a_failing_listener_does_not_stop_the_others() -> None:
-    gate = EnterpriseGate()
+    gate = LtsGate()
     seen: list[bool] = []
 
     def boom(_status: Any) -> None:
@@ -104,7 +104,7 @@ def test_a_failing_listener_does_not_stop_the_others() -> None:
 
 @pytest.mark.asyncio
 async def test_watch_check_opens_on_login_and_closes_on_expiry() -> None:
-    gate = EnterpriseGate()
+    gate = LtsGate()
     login = FakeLogin(signed_in=True)
     watch = LoginWatch(gate, login)
     assert await watch.check() is True
@@ -119,7 +119,7 @@ async def test_watch_check_opens_on_login_and_closes_on_expiry() -> None:
 
 @pytest.mark.asyncio
 async def test_a_close_wakes_a_watch_sleeping_its_open_interval() -> None:
-    gate = EnterpriseGate()
+    gate = LtsGate()
     sleeps: list[float] = []
     second_check = asyncio.Event()
 
@@ -151,7 +151,7 @@ async def test_a_close_wakes_a_watch_sleeping_its_open_interval() -> None:
 
 @pytest.mark.asyncio
 async def test_watch_check_fails_closed_when_the_probe_raises() -> None:
-    gate = EnterpriseGate(closed_for=())
+    gate = LtsGate(closed_for=())
     login = FakeLogin(signed_in=True)
     login.raise_on_verify = True
     assert await LoginWatch(gate, login).check() is False
@@ -159,7 +159,7 @@ async def test_watch_check_fails_closed_when_the_probe_raises() -> None:
 
 
 def test_watch_sync_closes_on_a_signed_out_latch_and_never_opens() -> None:
-    gate = EnterpriseGate(closed_for=())
+    gate = LtsGate(closed_for=())
     login = FakeLogin(signed_in=False)
     watch = LoginWatch(gate, login)
     watch.sync()
@@ -171,7 +171,7 @@ def test_watch_sync_closes_on_a_signed_out_latch_and_never_opens() -> None:
 
 @pytest.mark.asyncio
 async def test_watch_run_checks_at_once_then_on_each_interval() -> None:
-    gate = EnterpriseGate()
+    gate = LtsGate()
     login = FakeLogin(signed_in=True)
     sleeps: list[float] = []
     stop = asyncio.Event()
@@ -229,9 +229,7 @@ async def test_login_verified_probes_when_never_probed(
     assert service.authenticated is True
 
 
-def test_test_mode_does_not_assume_a_login_in_an_enterprise_build(
-    tmp_path: Any, enterprise: None
-) -> None:
+def test_test_mode_does_not_assume_a_login_in_an_lts_build(tmp_path: Any, lts: None) -> None:
     service = KiroPrerequisiteService(
         platform_name="linux",
         environ={},
@@ -257,8 +255,8 @@ def test_test_mode_still_assumes_a_login_in_oss(tmp_path: Any) -> None:
 
 
 @pytest.mark.asyncio
-async def test_enterprise_test_mode_login_check_still_probes(
-    tmp_path: Any, enterprise: None, monkeypatch: pytest.MonkeyPatch
+async def test_lts_test_mode_login_check_still_probes(
+    tmp_path: Any, lts: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     service = KiroPrerequisiteService(
         platform_name="linux",
@@ -275,7 +273,7 @@ async def test_enterprise_test_mode_login_check_still_probes(
         calls.append(force)
 
     monkeypatch.setattr(service, "_probe", fake_probe)
-    gate = EnterpriseGate()
+    gate = LtsGate()
     assert await LoginWatch(gate, service).check() is False
     assert calls == [True]
     assert not gate.is_open
@@ -342,12 +340,12 @@ async def _ws(request: web.Request) -> web.WebSocketResponse:
 def _install(app: web.Application, login: FakeLogin) -> None:
     """Install the gate as boot does (after a seen login), then apply *login*.
 
-    A boot with no login exits before this (``test_enterprise_boot.py``), so a
+    A boot with no login exits before this (``test_lts_boot.py``), so a
     closed gate here is always a login lost while the gateway runs.
     """
     wanted = login.signed_in
     login.signed_in = True
-    gate_mw.install_enterprise_gate(app, login)
+    gate_mw.install_lts_gate(app, login)
     login.signed_in = wanted
     if not wanted:
         app[gate_mw.GATE_APP_KEY].close(REASON_LOGIN_REQUIRED)
@@ -356,7 +354,7 @@ def _install(app: web.Application, login: FakeLogin) -> None:
 def _gated_app(login: FakeLogin) -> web.Application:
     app = web.Application()
     _install(app, login)
-    middleware = gate_mw.enterprise_gate_middleware_for(app, spa_shell_handler=_shell)
+    middleware = gate_mw.lts_gate_middleware_for(app, spa_shell_handler=_shell)
     assert middleware is not None
     app.middlewares.append(middleware)
     app.router.add_get("/api/kiro-prerequisite", _ok)
@@ -381,14 +379,14 @@ async def _client(app: web.Application, *, keep_alive: bool = False) -> TestClie
 
 
 @pytest.mark.asyncio
-async def test_closed_gate_denies_an_api_route_and_allows_login(enterprise: None) -> None:
+async def test_closed_gate_denies_an_api_route_and_allows_login(lts: None) -> None:
     login = FakeLogin(signed_in=False)
     client = await _client(_gated_app(login))
     try:
         denied = await client.get("/api/status")
         assert denied.status == 403
         body = await denied.json()
-        assert body["code"] == "enterprise_gate_closed"
+        assert body["code"] == "lts_gate_closed"
         assert body["reason"] == REASON_LOGIN_REQUIRED
         assert "secret" not in await denied.text()
 
@@ -403,13 +401,13 @@ async def test_closed_gate_denies_an_api_route_and_allows_login(enterprise: None
 
 
 @pytest.mark.asyncio
-async def test_closed_gate_denies_an_unknown_route(enterprise: None) -> None:
+async def test_closed_gate_denies_an_unknown_route(lts: None) -> None:
     client = await _client(_gated_app(FakeLogin()))
     try:
         for path in ("/api/not-a-route", "/v1/models", "/feature-videos/x"):
             resp = await client.get(path)
             assert resp.status == 403, path
-            assert (await resp.json())["code"] == "enterprise_gate_closed"
+            assert (await resp.json())["code"] == "lts_gate_closed"
         resp = await client.post("/api/not-a-route")
         assert resp.status == 403
     finally:
@@ -417,7 +415,7 @@ async def test_closed_gate_denies_an_unknown_route(enterprise: None) -> None:
 
 
 @pytest.mark.asyncio
-async def test_closed_gate_serves_only_the_static_shell_for_a_page(enterprise: None) -> None:
+async def test_closed_gate_serves_only_the_static_shell_for_a_page(lts: None) -> None:
     client = await _client(_gated_app(FakeLogin()))
     try:
         resp = await client.get("/chat/some-session", headers={"Accept": "text/html"})
@@ -428,7 +426,7 @@ async def test_closed_gate_serves_only_the_static_shell_for_a_page(enterprise: N
 
 
 @pytest.mark.asyncio
-async def test_closed_gate_denies_a_websocket_upgrade(enterprise: None) -> None:
+async def test_closed_gate_denies_a_websocket_upgrade(lts: None) -> None:
     client = await _client(_gated_app(FakeLogin()))
     try:
         with pytest.raises(aiohttp.WSServerHandshakeError) as exc:
@@ -439,12 +437,12 @@ async def test_closed_gate_denies_a_websocket_upgrade(enterprise: None) -> None:
 
 
 @pytest.mark.asyncio
-async def test_login_opens_expiry_closes_and_relogin_reopens(enterprise: None) -> None:
+async def test_login_opens_expiry_closes_and_relogin_reopens(lts: None) -> None:
     login = FakeLogin(signed_in=False)
     app = _gated_app(login)
     client = await _client(app)
     watch: LoginWatch = app[gate_mw.LOGIN_WATCH_APP_KEY]
-    gate: EnterpriseGate = app[gate_mw.GATE_APP_KEY]
+    gate: LtsGate = app[gate_mw.GATE_APP_KEY]
     try:
         await watch.stop()  # drive checks by hand
         assert (await client.get("/api/status")).status == 403
@@ -473,12 +471,12 @@ async def test_login_opens_expiry_closes_and_relogin_reopens(enterprise: None) -
 
 
 @pytest.mark.asyncio
-async def test_closing_the_gate_drops_an_open_websocket(enterprise: None) -> None:
+async def test_closing_the_gate_drops_an_open_websocket(lts: None) -> None:
     login = FakeLogin(signed_in=True)
     app = _gated_app(login)
     client = await _client(app)
     watch: LoginWatch = app[gate_mw.LOGIN_WATCH_APP_KEY]
-    gate: EnterpriseGate = app[gate_mw.GATE_APP_KEY]
+    gate: LtsGate = app[gate_mw.GATE_APP_KEY]
     try:
         await watch.stop()
         await watch.check()
@@ -499,7 +497,7 @@ async def test_closing_the_gate_drops_an_open_websocket(enterprise: None) -> Non
 
 @pytest.mark.asyncio
 async def test_closing_the_gate_drops_a_connection_after_its_handler_returned(
-    enterprise: None,
+    lts: None,
 ) -> None:
     # aiohttp sends a returned response (a FileResponse download) after the
     # middleware has returned, so the connection must stay tracked past that.
@@ -514,7 +512,7 @@ async def test_closing_the_gate_drops_a_connection_after_its_handler_returned(
     app.router.add_get("/api/download", capture)
     client = await _client(app, keep_alive=True)
     watch: LoginWatch = app[gate_mw.LOGIN_WATCH_APP_KEY]
-    gate: EnterpriseGate = app[gate_mw.GATE_APP_KEY]
+    gate: LtsGate = app[gate_mw.GATE_APP_KEY]
     closed = asyncio.Event()
     try:
         await watch.stop()
@@ -531,7 +529,7 @@ async def test_closing_the_gate_drops_a_connection_after_its_handler_returned(
 
 
 @pytest.mark.asyncio
-async def test_closed_gate_allows_session_revocation(enterprise: None) -> None:
+async def test_closed_gate_allows_session_revocation(lts: None) -> None:
     app = _gated_app(FakeLogin())
     app.router.add_post("/api/auth/logout", _ok)
     app.router.add_post("/api/logout", _ok)
@@ -570,7 +568,7 @@ def _status_app(
 
     app = web.Application(middlewares=[as_dashboard_user])
     _install(app, login)
-    middleware = gate_mw.enterprise_gate_middleware_for(app, spa_shell_handler=None)
+    middleware = gate_mw.lts_gate_middleware_for(app, spa_shell_handler=None)
     assert middleware is not None
     app.middlewares.append(middleware)
     app.router.add_get("/api/kiro-prerequisite", prereq.api_kiro_prerequisite_status)
@@ -588,7 +586,7 @@ def _status_app(
     "path", ["/api/kiro-prerequisite/update-cli", "/api/kiro-prerequisite/repair-specs"]
 )
 async def test_closed_gate_marks_the_remedy_responses_locked_too(
-    enterprise: None, monkeypatch: pytest.MonkeyPatch, path: str
+    lts: None, monkeypatch: pytest.MonkeyPatch, path: str
 ) -> None:
     # The dashboard replaces its cached status with each remedy's response, so
     # an undecorated one would reopen the app while the gateway still refuses it.
@@ -599,7 +597,7 @@ async def test_closed_gate_marks_the_remedy_responses_locked_too(
         await app[gate_mw.LOGIN_WATCH_APP_KEY].stop()
         body = await (await client.post(path)).json()
         assert body["initial_setup_complete"] is False
-        assert body["enterprise_login_required"] is True
+        assert body["lts_login_required"] is True
     finally:
         await client.close()
 
@@ -607,7 +605,7 @@ async def test_closed_gate_marks_the_remedy_responses_locked_too(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("owner", [True, False])
 async def test_closed_gate_status_asks_an_established_install_to_sign_in(
-    enterprise: None, monkeypatch: pytest.MonkeyPatch, owner: bool
+    lts: None, monkeypatch: pytest.MonkeyPatch, owner: bool
 ) -> None:
     login = FakeLogin(signed_in=False)
     app = _status_app(monkeypatch, login, owner=owner)
@@ -617,36 +615,36 @@ async def test_closed_gate_status_asks_an_established_install_to_sign_in(
         await watch.stop()
         body = await (await client.get("/api/kiro-prerequisite")).json()
         assert body["initial_setup_complete"] is False
-        assert body["enterprise_login_required"] is True
+        assert body["lts_login_required"] is True
         # The gate reads Crew's vault sign-in, so the remedy is the vault command.
-        assert body["enterprise_sign_in_command"].endswith("kas login --provider idc --start-url")
+        assert body["lts_sign_in_command"].endswith("kas login --provider idc --start-url")
         # Copied into a shell as-is, so it never carries a `<placeholder>`.
-        assert "<" not in body["enterprise_sign_in_command"]
-        assert ">" not in body["enterprise_sign_in_command"]
+        assert "<" not in body["lts_sign_in_command"]
+        assert ">" not in body["lts_sign_in_command"]
         if owner:
-            assert isinstance(body["enterprise_sign_in_needs_start_url"], bool)
+            assert isinstance(body["lts_sign_in_needs_start_url"], bool)
         else:
-            assert "enterprise_sign_in_needs_start_url" not in body
+            assert "lts_sign_in_needs_start_url" not in body
             # A non-owner never learns this host's launcher path.
-            assert body["enterprise_sign_in_command"] == enterprise_sign_in.BARE_SIGN_IN_COMMAND
+            assert body["lts_sign_in_command"] == lts_sign_in.BARE_SIGN_IN_COMMAND
 
         login.signed_in = True
         await watch.check()
         body = await (await client.get("/api/kiro-prerequisite")).json()
         assert body["initial_setup_complete"] is True
-        assert "enterprise_login_required" not in body
-        assert "enterprise_sign_in_command" not in body
+        assert "lts_login_required" not in body
+        assert "lts_sign_in_command" not in body
     finally:
         await client.close()
 
 
 @pytest.mark.asyncio
 async def test_closed_gate_status_reads_the_vault_off_the_event_loop(
-    enterprise: None, monkeypatch: pytest.MonkeyPatch
+    lts: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import threading
 
-    from kiro_crew import enterprise_sign_in
+    from kiro_crew import lts_sign_in
 
     loop_thread = threading.get_ident()
     readers: list[int] = []
@@ -664,7 +662,7 @@ async def test_closed_gate_status_reads_the_vault_off_the_event_loop(
     try:
         await watch.stop()
         body = await (await client.get("/api/kiro-prerequisite")).json()
-        assert body["enterprise_sign_in_command"] == enterprise_sign_in.vault_sign_in_command()
+        assert body["lts_sign_in_command"] == lts_sign_in.vault_sign_in_command()
         # The vault read decrypts a file: it must never block the event loop.
         assert readers and loop_thread not in readers
     finally:
@@ -682,10 +680,10 @@ def test_login_screen_is_never_required_without_a_gate() -> None:
 def test_oss_installs_no_gate_and_no_middleware() -> None:
     app = web.Application()
     startup, cleanup = len(app.on_startup), len(app.on_cleanup)
-    gate_mw.install_enterprise_gate(app, FakeLogin())
+    gate_mw.install_lts_gate(app, FakeLogin())
     assert gate_mw.GATE_APP_KEY not in app
     assert (len(app.on_startup), len(app.on_cleanup)) == (startup, cleanup)
-    assert gate_mw.enterprise_gate_middleware_for(app, spa_shell_handler=_shell) is None
+    assert gate_mw.lts_gate_middleware_for(app, spa_shell_handler=_shell) is None
 
 
 def test_oss_chain_insert_is_a_no_op() -> None:
@@ -694,16 +692,16 @@ def test_oss_chain_insert_is_a_no_op() -> None:
     app = web.Application()
     marker = object()
     app.middlewares.append(marker)  # type: ignore[arg-type]
-    server._insert_enterprise_gate(app, spa_shell_handler=None)
+    server._insert_lts_gate(app, spa_shell_handler=None)
     assert list(app.middlewares) == [marker]
 
 
-def test_enterprise_without_an_installed_gate_refuses_to_build(enterprise: None) -> None:
+def test_lts_without_an_installed_gate_refuses_to_build(lts: None) -> None:
     with pytest.raises(RuntimeError):
-        gate_mw.enterprise_gate_middleware_for(web.Application(), spa_shell_handler=None)
+        gate_mw.lts_gate_middleware_for(web.Application(), spa_shell_handler=None)
 
 
-def test_enterprise_chain_puts_the_gate_right_after_token_auth(enterprise: None) -> None:
+def test_lts_chain_puts_the_gate_right_after_token_auth(lts: None) -> None:
     from kiro_crew.dashboard import server
 
     async def token_auth(request: web.Request, handler: Any) -> Any:
@@ -712,12 +710,12 @@ def test_enterprise_chain_puts_the_gate_right_after_token_auth(enterprise: None)
     token_auth._is_token_auth = True  # type: ignore[attr-defined]
     before, after = object(), object()
     app = web.Application()
-    gate_mw.install_enterprise_gate(app, FakeLogin(signed_in=True))
+    gate_mw.install_lts_gate(app, FakeLogin(signed_in=True))
     app.middlewares.extend([before, token_auth, after])  # type: ignore[list-item]
-    server._insert_enterprise_gate(app, spa_shell_handler=None)
+    server._insert_lts_gate(app, spa_shell_handler=None)
     chain = list(app.middlewares)
     assert chain[0] is before and chain[1] is token_auth and chain[3] is after
-    assert getattr(chain[2], "__name__", "") == "enterprise_gate_middleware"
+    assert getattr(chain[2], "__name__", "") == "lts_gate_middleware"
 
 
 # --------------------------------------------------------------------------- #

@@ -1,7 +1,7 @@
-"""Enterprise sign-in-only gateway: a signed-out first run gets a sign-in screen.
+"""LTS sign-in-only gateway: a signed-out first run gets a sign-in screen.
 
-Design: ``docs/request-for-change/rfc-crew-enterprise-edition.md``, section
-"Enterprise gate". When an enterprise build's rules could not load and the only
+Design: ``docs/request-for-change/rfc-crew-lts-edition.md``, section
+"LTS gate". When an LTS build's rules could not load and the only
 reason is that nobody is signed in, the gateway does not exit at once. It serves a
 small app on 127.0.0.1 that holds only the sign-in screen and the sign-in API and
 waits for a sign-in. Then it ends the sign-in page's session and exits 0, telling
@@ -51,7 +51,7 @@ ALLOWED_ROUTES: dict[str, frozenset[str]] = {
     # Liveness only. No readiness: this gateway is not ready for app traffic.
     "/api/health": _GET,
     "/api/live": _GET,
-    # Tells the SPA to show the sign-in screen (``enterprise_sign_in_only``).
+    # Tells the SPA to show the sign-in screen (``lts_sign_in_only``).
     "/api/kiro-prerequisite": _GET,
     # Crew's own organisation sign-in (Identity Center device code). Sign-out and
     # the browser-redirect flow, which serves only personal accounts, are not offered.
@@ -96,13 +96,13 @@ def allowed(method: str, path: str) -> bool:
 def signed_in() -> bool:
     """Whether a sign-in the rules fetch can use exists now.
 
-    Reads the one enterprise sign-in (:func:`kiro_crew.enterprise_sign_in.select`),
+    Reads the one LTS sign-in (:func:`kiro_crew.lts_sign_in.select`),
     the same answer the boot login check and the rules fetch read. Only its "no
     sign-in" refusal is "signed out": an unreadable vault, a lapsed sign-in or one
     with no profile counts as signed in, so it errors and exits as before instead of
     showing a sign-in screen that cannot fix it.
     """
-    from kiro_crew import enterprise_sign_in as sign_in
+    from kiro_crew import lts_sign_in as sign_in
 
     try:
         sign_in.select()
@@ -125,10 +125,10 @@ def applies(exc: BaseException) -> bool:
     Only when the failure itself is the missing sign-in (its recorded cause) AND
     nobody is signed in now. Any other composition failure exits as before.
     """
-    from kiro_crew import enterprise_sign_in as sign_in
+    from kiro_crew import lts_sign_in as sign_in
     from kiro_crew.platform.context import PlatformCompositionError
 
-    if not edition.is_enterprise() or not isinstance(exc, PlatformCompositionError):
+    if not edition.is_lts() or not isinstance(exc, PlatformCompositionError):
         return False
     # A process inside a Crew agent sandbox never serves a gateway of its own.
     if os.environ.get("KIROCREW_SANDBOX_ACTIVE") or os.environ.get(DESKTOP_GATEWAY_ENV):
@@ -158,7 +158,7 @@ def start_command(start_args: tuple[str, ...] = (), *, platform: str | None = No
     """
     import shlex
 
-    from kiro_crew import enterprise_sign_in as sign_in
+    from kiro_crew import lts_sign_in as sign_in
 
     command = sign_in.render_command(
         [sign_in._launcher(), "gateway", *start_args], platform=platform
@@ -172,19 +172,19 @@ def start_command(start_args: tuple[str, ...] = (), *, platform: str | None = No
 
 
 #: App key: the launch flags the restart command repeats.
-_START_ARGS_KEY = "enterprise_start_args"
+_START_ARGS_KEY = "lts_start_args"
 
 
 #: App key: an :class:`asyncio.Event` set once a sign-in is stored.
-_SIGNED_IN_KEY = "enterprise_signed_in"
+_SIGNED_IN_KEY = "lts_signed_in"
 #: App key: an :class:`asyncio.Event` set once the page has read "signed in".
-_SEEN_KEY = "enterprise_signed_in_seen"
+_SEEN_KEY = "lts_signed_in_seen"
 
 
 async def _prerequisite_status(request: web.Request) -> web.Response:
     """GET /api/kiro-prerequisite: no data, only "show the sign-in screen".
 
-    Once a sign-in is stored it also says ``enterprise_signed_in_restart``, so the
+    Once a sign-in is stored it also says ``lts_signed_in_restart``, so the
     page tells the user to start Kiro Crew again, and marks that it was read.
     """
     signed = request.app[_SIGNED_IN_KEY].is_set()
@@ -193,7 +193,7 @@ async def _prerequisite_status(request: web.Request) -> web.Response:
         request.app[_SEEN_KEY].set()
         # The command that starts Kiro Crew again, for the page to show with a
         # copy button: the sign-in app is gone by the time the user acts.
-        extra["enterprise_start_command"] = start_command(request.app.get(_START_ARGS_KEY, ()))
+        extra["lts_start_command"] = start_command(request.app.get(_START_ARGS_KEY, ()))
     return web.json_response(
         {
             **extra,
@@ -202,9 +202,9 @@ async def _prerequisite_status(request: web.Request) -> web.Response:
             "installed": True,
             "initial_setup_complete": False,
             "setup_allowed": True,
-            "enterprise_login_required": True,
-            "enterprise_sign_in_only": True,
-            "enterprise_signed_in_restart": signed,
+            "lts_login_required": True,
+            "lts_sign_in_only": True,
+            "lts_signed_in_restart": signed,
         }
     )
 
@@ -300,7 +300,7 @@ async def serve_until_signed_in(
     Kiro Crew again; the app waits briefly for it to read that, then stops, and its
     socket closes with it. Returns the port served.
     """
-    from kiro_crew import enterprise_sign_in as sign_in
+    from kiro_crew import lts_sign_in as sign_in
     from kiro_crew.dashboard import token_auth_tokens as tokens
     from kiro_crew.dashboard.boot_id import current_boot_id
     from kiro_crew.dashboard.urls import build_dashboard_url
@@ -380,15 +380,15 @@ def sign_in_then_exit(
 ) -> None:
     """Show the sign-in screen for *exc* if it applies; after a sign-in, exit 0.
 
-    Returns, having done nothing, when *exc* is not a signed-out enterprise boot.
+    Returns, having done nothing, when *exc* is not a signed-out LTS boot.
     Otherwise it never returns. After a usable sign-in it exits 0, so the next
     start loads the rules with that sign-in; no gateway starts in this process,
     and the sign-in page's session (bound to this process) ends with it.
     """
     if not applies(exc):
         return
-    from kiro_crew import enterprise_sign_in as sign_in
-    from kiro_crew.enterprise_boot import fix_for, refuse_boot
+    from kiro_crew import lts_sign_in as sign_in
+    from kiro_crew.lts_boot import fix_for, refuse_boot
 
     try:
         with asyncio.Runner() as loop_runner:

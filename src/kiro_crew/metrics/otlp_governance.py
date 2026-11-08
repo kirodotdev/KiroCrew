@@ -1,7 +1,7 @@
 """Which OTLP collectors metrics may reach: ``capabilities.telemetry`` ``otlp_hosts``.
 
 A policy names collector hosts in the row's inner ``otlp_hosts`` ruleset (RFC
-crew-enterprise-edition, appendix row "Diagnostic telemetry target"). Two places
+crew-lts-edition, appendix row "Diagnostic telemetry target"). Two places
 hold metrics to it:
 
 * :func:`governed_destinations` -- before a reader is built, a destination whose

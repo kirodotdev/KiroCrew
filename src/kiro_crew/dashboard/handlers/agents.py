@@ -499,7 +499,7 @@ async def api_config_schema(request: web.Request) -> web.Response:
         if entry.sensitive or dataclasses.is_dataclass(d.get("defaultValue")):
             d["defaultValue"] = None
         _supply_live_enum(d)
-        # An enterprise build ignores this local value (RFC D3, kiro_crew.edition_locks).
+        # An LTS build ignores this local value (RFC D3, kiro_crew.edition_locks).
         if config_path_locked(entry.path):
             d["lockedByPolicy"] = LOCKED_BY_POLICY
         result.append(d)

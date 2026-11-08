@@ -1,23 +1,23 @@
-"""Enterprise boot: no kiro sign-in or no governance rules, no Crew.
+"""LTS boot: no kiro sign-in or no governance rules, no Crew.
 
-Design: ``docs/request-for-change/rfc-crew-enterprise-edition.md``, section
-"Enterprise gate" and D4. In an enterprise build (``edition.is_enterprise()``) the
+Design: ``docs/request-for-change/rfc-crew-lts-edition.md``, section
+"LTS gate" and D4. In an LTS build (``edition.is_lts()``) the
 gateway checks both before its HTTP server binds, and exits non-zero with a message
 naming what failed and how to fix it. It never serves a locked gateway for a failed
 boot. The one exception is a ``gateway`` start with nobody signed in: it first
-serves a sign-in-only app (``kiro_crew.enterprise_signin_gateway``), then boots
+serves a sign-in-only app (``kiro_crew.lts_signin_gateway``), then boots
 again and exits here on any failure. An ``oss`` build does nothing here.
 
-* One sign-in (D4): :func:`kiro_crew.enterprise_sign_in.resolve`, Crew's own vault
+* One sign-in (D4): :func:`kiro_crew.lts_sign_in.resolve`, Crew's own vault
   sign-in, or kiro-cli's when the vault holds none. The rules fetch reads it first, so the sign-in check and
   the fetch are one step inside ``boot_platform``, before any port binds. A
   :class:`~kiro_crew.platform.context.PlatformCompositionError` from it reaches
   :func:`refuse_policy_boot`, which picks the fix from the recorded cause.
 * :func:`require_kiro_login` re-checks the same resolver at gateway start; ``kiro-cli
-  whoami`` is not the enterprise gate.
+  whoami`` is not the LTS gate.
 
-Once the gateway is up, a sign-in that is lost closes the enterprise gate
-(``kiro_crew.enterprise_gate``, fed by :class:`~kiro_crew.enterprise_sign_in.SignInLoginSource`).
+Once the gateway is up, a sign-in that is lost closes the LTS gate
+(``kiro_crew.lts_gate``, fed by :class:`~kiro_crew.lts_sign_in.SignInLoginSource`).
 """
 
 from __future__ import annotations
@@ -28,19 +28,19 @@ import sys
 from typing import TYPE_CHECKING, NoReturn
 
 from kiro_crew import edition
-from kiro_crew import enterprise_sign_in as sign_in
+from kiro_crew import lts_sign_in as sign_in
 
 if TYPE_CHECKING:
     from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 
 logger = logging.getLogger(__name__)
 
-#: The exit status of a refused enterprise boot.
+#: The exit status of a refused LTS boot.
 EXIT_CODE = 1
 
 _RESTART = "then start Kiro Crew again"
 
-#: The fix sentence for each refusal cause (``enterprise_sign_in.CAUSE_*``).
+#: The fix sentence for each refusal cause (``lts_sign_in.CAUSE_*``).
 _FIX_FOR_CAUSE = {
     sign_in.CAUSE_NO_SIGN_IN: f"Sign in with {{sign_in}}, {_RESTART}.",
     sign_in.CAUSE_SIGN_IN_UNUSABLE: f"Sign in again with {{sign_in}}, {_RESTART}.",
@@ -80,7 +80,7 @@ def refuse_boot(failed: str, fix: str) -> NoReturn:
     tail of that log in its start-failure window, so the same two lines reach a
     desktop user.
     """
-    logger.critical("Enterprise boot refused: %s. %s", failed, fix)
+    logger.critical("LTS boot refused: %s. %s", failed, fix)
     print(f"❌ Kiro Crew cannot start: {failed}.\n   {fix}", file=sys.stderr, flush=True)
     raise SystemExit(EXIT_CODE)
 
@@ -92,7 +92,7 @@ def fix_for(cause: str) -> str:
 
 
 def refuse_policy_boot(exc: BaseException) -> None:
-    """Exit if *exc* is an enterprise build's failed policy load. Else return.
+    """Exit if *exc* is an LTS build's failed policy load. Else return.
 
     Returns (so the caller re-raises as before) in an ``oss`` build and for any
     error that is not a ``PlatformCompositionError``. The fix sentence comes from the
@@ -100,12 +100,12 @@ def refuse_policy_boot(exc: BaseException) -> None:
     """
     from kiro_crew.platform.context import PlatformCompositionError
 
-    if not edition.is_enterprise() or not isinstance(exc, PlatformCompositionError):
+    if not edition.is_lts() or not isinstance(exc, PlatformCompositionError):
         return
     from kiro_crew.platform.enterprise_policy_fetch import last_failure_cause
 
     refuse_boot(
-        f"the organisation's governance rules or enterprise platform could not be loaded ({exc})",
+        f"the organisation's governance rules or LTS platform could not be loaded ({exc})",
         fix_for(last_failure_cause(str(exc))),
     )
 
@@ -182,7 +182,7 @@ def _main_runs_kas(cfg: object) -> bool:
     """Whether this install's MAIN sessions run on KAS, through the one selection gate.
 
     Only the main backend decides the gateway start. Absent, it defaults to KAS, the
-    enterprise default this check exists for. A policy-allowed Kiro CLI pick keeps the
+    LTS default this check exists for. A policy-allowed Kiro CLI pick keeps the
     start (the decision entry "A Kiro CLI harness choice runs on Kiro Crew's KAS path")
     whatever the member backend says: a session that does run KAS is refused at its own start
     (:func:`refuse_unstartable_kas`). Resolved through ``resolve_selected_backend``,
@@ -209,9 +209,9 @@ def kas_refusal() -> tuple[str, str] | None:
 
 
 def require_kas_harness(cfg: object, *, test_mode: bool = False) -> None:
-    """In an enterprise build, exit when the main sessions run KAS and it cannot start.
+    """In an LTS build, exit when the main sessions run KAS and it cannot start.
 
-    RFC ``rfc-crew-enterprise-edition.md`` D6: KAS is the enterprise harness and the
+    RFC ``rfc-crew-lts-edition.md`` D6: KAS is the LTS harness and the
     ``agent_backend`` floor, and a KAS proven unable to start on its route refuses the
     start instead of falling back to the Kiro CLI harness. The start is refused only
     when the MAIN backend runs KAS (:func:`_main_runs_kas`); a check that raises then
@@ -229,17 +229,17 @@ def require_kas_harness(cfg: object, *, test_mode: bool = False) -> None:
     """
     global _kas_refusal
     _kas_refusal = None
-    if not edition.is_enterprise() or test_mode:
+    if not edition.is_lts() or test_mode:
         return
     try:
         main_kas = _main_runs_kas(cfg)
     except Exception as exc:
-        logger.warning("Enterprise boot KAS role check raised", exc_info=True)
+        logger.warning("LTS boot KAS role check raised", exc_info=True)
         refuse_boot(f"KAS could not be checked ({type(exc).__name__})", KAS_FIX_UNKNOWN)
     try:
         refusal = kas_unrunnable()
     except Exception as exc:
-        logger.warning("Enterprise boot KAS check raised", exc_info=True)
+        logger.warning("LTS boot KAS check raised", exc_info=True)
         if main_kas:
             refuse_boot(f"KAS could not be checked ({type(exc).__name__})", KAS_FIX_UNKNOWN)
         return
@@ -268,7 +268,7 @@ def refuse_unstartable_kas() -> None:
     refusal handles this one. Nothing falls back to the Kiro CLI harness. In-memory
     only; does nothing in an ``oss`` build or when nothing was recorded.
     """
-    if not edition.is_enterprise():
+    if not edition.is_lts():
         return
     refusal = _kas_refusal
     if refusal is None:
@@ -279,16 +279,16 @@ def refuse_unstartable_kas() -> None:
 
 
 async def require_kiro_login(*, assume_ready: bool = False) -> KiroPrerequisiteService | None:
-    """In an enterprise build, exit unless the one enterprise sign-in resolves now.
+    """In an LTS build, exit unless the one LTS sign-in resolves now.
 
-    Reads :func:`kiro_crew.enterprise_sign_in.resolve` (Crew's vault, else kiro-cli's), the
+    Reads :func:`kiro_crew.lts_sign_in.resolve` (Crew's vault, else kiro-cli's), the
     same identity the rules fetch and the account lock read. Returns
     ``None`` in every build: the caller builds its own setup service, and the gate's
-    login source is :class:`~kiro_crew.enterprise_sign_in.SignInLoginSource`.
+    login source is :class:`~kiro_crew.lts_sign_in.SignInLoginSource`.
     *assume_ready* (``--test-mode``) changes nothing here.
     """
     del assume_ready
-    if not edition.is_enterprise():
+    if not edition.is_lts():
         return None
     try:
         await asyncio.to_thread(sign_in.resolve)
@@ -297,7 +297,7 @@ async def require_kiro_login(*, assume_ready: bool = False) -> KiroPrerequisiteS
     except sign_in.SignInError as exc:
         refuse_boot(str(exc), fix_for(exc.cause))
     except Exception as exc:
-        logger.warning("Enterprise boot sign-in check raised", exc_info=True)
+        logger.warning("LTS boot sign-in check raised", exc_info=True)
         refuse_boot(
             f"the Kiro sign-in could not be checked ({type(exc).__name__})",
             fix_for(sign_in.CAUSE_SIGN_IN_UNUSABLE),

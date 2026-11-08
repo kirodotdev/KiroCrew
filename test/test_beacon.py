@@ -603,10 +603,10 @@ class TestReasonCodes:
         info = beacon.status("", enabled=True, app_version="1.2.3", acked=True)
         assert info["reason_code"] == "no_endpoint"
 
-    def test_enterprise_build_never_sends_the_heartbeat(self, _isolated_home, monkeypatch):
+    def test_lts_build_never_sends_the_heartbeat(self, _isolated_home, monkeypatch):
         import kiro_crew.sel as sel_mod
 
-        monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+        monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
         fake_sel = MagicMock()
         monkeypatch.setattr(sel_mod, "sel", lambda: fake_sel)
         calls: list = []
@@ -621,7 +621,7 @@ class TestReasonCodes:
         assert [(r["tool_name"], r["scope"], r["outcome"]) for r in rows] == [
             ("beacon_send", "capabilities.telemetry", "denied")
         ]
-        assert "enterprise edition" in rows[0]["reason"]
+        assert "LTS edition" in rows[0]["reason"]
         # The other routes on the same ladder: no Privacy chapter records an ack
         # there, so each says why it is refused rather than "awaiting the chapter".
         # The admin's policy turned telemetry on, so no policy pin refuses it.

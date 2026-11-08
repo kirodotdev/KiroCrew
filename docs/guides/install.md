@@ -638,7 +638,7 @@ Override the Python interpreter with `make PY=python3.12 build`, or
 the `<data-home>/python-bin` marker `ensure-python.sh` records; a `PY` exported
 in the environment does not, so the marker still wins over it.
 
-`make wheel`, `make backend-bin` and `make desktop` take `EDITION=oss` or `EDITION=enterprise`, stamped into the built package's `kiro_crew/edition.py`. Only `EDITION=` on the `make` command line counts; an exported shell `EDITION` is ignored, even under `make -e`. Without it, the value comes from the `KIROCREW_BUILD_EDITION` environment variable, and then defaults to `oss`. Both set to different values, or any other value (wildcards such as `%` included), fails the build before it starts. On Windows, set `KIROCREW_BUILD_EDITION` before `.\make.ps1`. See [platform-context](../system-specs/modules/platform-context.md#build-time-edition-constant).
+`make wheel`, `make backend-bin` and `make desktop` take `EDITION=oss` or `EDITION=lts`, stamped into the built package's `kiro_crew/edition.py`. Only `EDITION=` on the `make` command line counts; an exported shell `EDITION` is ignored, even under `make -e`. Without it, the value comes from the `KIROCREW_BUILD_EDITION` environment variable, and then defaults to `oss`. Both set to different values, or any other value (wildcards such as `%` included), fails the build before it starts. On Windows, set `KIROCREW_BUILD_EDITION` before `.\make.ps1`. See [platform-context](../system-specs/modules/platform-context.md#build-time-edition-constant).
 
 Both desktop targets run `packaging/build-desktop.sh` on every platform,
 including Windows, where `make.ps1` invokes it through the Git for Windows bash:
