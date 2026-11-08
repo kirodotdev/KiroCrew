@@ -1196,9 +1196,24 @@ servers:
   `mcpServers`, `tools`, `allowedTools`, `prompt`. Each is derived from the
   manifest, the per-app policy, or the running install — a stale value is a bug,
   not a preference.
-- **Everything else on disk wins**: `model`, `description`, extra
-  `toolsSettings`… it can only be there because the user put it there. Preserved
+- **Everything else on disk wins when the user changed it**: `model`,
+  `description`, `toolsSettings`, `excludedTools`, `permissions`… A previous
+  registration also wrote the template's own values there, so each registration
+  keeps a **template record** beside the spec, `<app>--<agent>.template`: the values
+  it took from the template for these keys (`_template_record`). A value on disk
+  that still equals the record is the template's, so it follows the new template,
+  which can also drop the key. Any other value is the user's and is kept. Without
+  this, an app version that adds an agent to `toolsSettings.subagent.availableAgents`
+  or drops an `excludedTools` entry never reaches an updated install. A spec with no
+  record (written before records existed, or one whose record write failed) keeps
+  every value on disk, and the record written then serves the next update. Kept
   keys are logged so the reason a template change did not appear is visible.
+
+The record is not `.json`, so kiro-cli and every spec scan skip it. It lives in the
+agents directory, which the sandbox seals read-only like the spec, so only the
+gateway writes it. It is written after the spec, under the same lock, and only when
+the spec write succeeded. A deregister keeps it, so the local update below can still
+use it, and uninstall removes it with the spec's lock (`purge_uninstalled_agent_residue`).
 
 The prior file is snapshotted BEFORE the replace (the write path unlinks a legacy
 symlink first, so reading afterwards would find nothing). An unreadable prior file
@@ -1227,12 +1242,15 @@ loses them all: suspended on success, deregistered on a failure. Pinned by
 `test_a_registry_update_that_needs_consent_leaves_no_agent_file`.
 
 Both keep a user's `model` or `description` across a registry update, a pin-follow of
-an adopted former built-in, or a local update. Disable and re-enable still start from
+an adopted former built-in, or a local update, and both bring a template value the user
+did not change up to the new version. Pinned by
+`test_an_update_refreshes_what_the_user_did_not_edit`. Disable and re-enable still start from
 the template: a disabled app keeps no agent file and no snapshot, so the same is true
 when an update newly asks for `sessionApproval` and suspends the app.
 
 Writer: `apps/bridges_agents.py::_register_agents`, `_preserve_user_agent_edits`,
-`_read_agent_config`, `snapshot_app_agent_configs`; the update route
+`_template_record`, `_write_template_record`, `_read_agent_config`,
+`snapshot_app_agent_configs`; the update route
 `apps/routes_install.py::handle_update_app` with
 `apps/routes_lifecycle.py::_snapshot_agent_configs_off_loop` and
 `_reinstall_from_registry`.

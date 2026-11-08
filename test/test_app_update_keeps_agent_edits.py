@@ -286,6 +286,110 @@ class TestUpdateKeepsAgentEdits:
         assert renamed["description"] == "v2 text"
 
 
+_T1 = {
+    "name": "helper",
+    "model": "auto",
+    "description": "v1 text",
+    "tools": ["read"],
+    "toolsSettings": {"subagent": {"availableAgents": ["research"]}},
+    "excludedTools": ["shell"],
+}
+_T2 = {
+    "name": "helper",
+    "model": "auto",
+    "description": "v2 text",
+    "tools": ["read"],
+    "toolsSettings": {"subagent": {"availableAgents": ["research", "code"]}},
+}
+
+
+class TestUpdateRefreshesUntouchedTemplateValues:
+    """A value the user never changed follows the new template; an edit still wins.
+
+    Before the template record, every key outside ``_FRAMEWORK_OWNED_AGENT_KEYS`` kept
+    its old value, so an app that adds an agent to ``subagent.availableAgents`` or drops
+    an ``excludedTools`` entry never reached an updated install on any update path.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("path", "body", "status", "registry"),
+        [
+            (f"/api/apps/{APP}/update", None, 200, False),
+            (f"/api/apps/{APP}/update", {}, 200, True),
+            ("/api/apps/registry/install", {"name": APP}, 201, True),
+            ("/api/apps/registry/install-stream", {"name": APP}, 200, True),
+        ],
+    )
+    async def test_an_update_refreshes_what_the_user_did_not_edit(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        path: str,
+        body: dict[str, Any] | None,
+        status: int,
+        registry: bool,
+    ) -> None:
+        _setup_env(tmp_path, monkeypatch)
+        monkeypatch.setattr(routes_mod, "stop_app_backend", lambda n: None)
+        monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
+        assert install_app(_source(tmp_path, "1.0.0", _T1)).ok
+        assert enable_app(APP).ok
+        register_app(APP)
+        spec = _agent_file(tmp_path)
+        config = json.loads(spec.read_text(encoding="utf-8"))
+        config["model"] = "my-own-model"
+        spec.write_text(json.dumps(config), encoding="utf-8")
+        v2 = _source(tmp_path, "1.1.0", _T2)
+
+        if registry:
+
+            async def _install_v2(name: str, **kwargs: Any) -> dict[str, Any]:
+                await kwargs["before_replace"]()
+                result = await asyncio.to_thread(update_app, v2, expected_name=name)
+                return {"ok": result.ok, "name": name, "error": result.error}
+
+            monkeypatch.setattr(routes_mod, "is_registry_source", lambda s: True)
+            monkeypatch.setattr(routes_mod, "registry_name_from_source", lambda s: APP)
+            monkeypatch.setattr(routes_mod, "install_from_registry", _install_v2)
+        else:
+            body = {"source": str(v2)}
+
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post(path, json=body)
+            text = await resp.text()  # the stream route installs while it streams
+            assert resp.status == status, text
+
+        after = json.loads(spec.read_text(encoding="utf-8"))
+        assert after["model"] == "my-own-model"
+        assert after["description"] == "v2 text"
+        assert after["toolsSettings"] == _T2["toolsSettings"]
+        assert "excludedTools" not in after
+
+    def test_a_spec_with_no_record_keeps_every_value_on_disk(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A spec written before records existed cannot tell an edit from a template
+        value, so it keeps all of them, and the record written then serves the next
+        update."""
+        _setup_env(tmp_path, monkeypatch)
+        assert install_app(_source(tmp_path, "1.0.0", _T1)).ok
+        assert enable_app(APP).ok
+        register_app(APP)
+        spec = _agent_file(tmp_path)
+        record = spec.with_suffix(".template")
+        assert json.loads(record.read_text(encoding="utf-8"))["description"] == "v1 text"
+        record.unlink()
+        assert update_app(_source(tmp_path, "1.1.0", _T2)).ok
+
+        register_app(APP)
+
+        after = json.loads(spec.read_text(encoding="utf-8"))
+        assert after["description"] == "v1 text"
+        assert after["excludedTools"] == ["shell"]
+        assert json.loads(record.read_text(encoding="utf-8"))["description"] == "v2 text"
+
+
 class TestSnapshotAppAgentConfigs:
     """``snapshot_app_agent_configs`` is imported per test so that, with the fix
     reverted, the route tests above still collect and show the edits being lost."""

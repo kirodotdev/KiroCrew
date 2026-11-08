@@ -640,11 +640,15 @@ class TestUninstall:
 
         mine_lock = agents / "test-app--bg.lock"
         mine_lock.touch()
+        mine_record = agents / "test-app--bg.template"
+        mine_record.write_text("{}", encoding="utf-8")
         mine_overlay = overlay / "test-app--bg.json"
         mine_overlay.write_text("{}", encoding="utf-8")
         # Another app's files, and a user agent's, must be left alone.
         other_lock = agents / "test-app-two--bg.lock"
         other_lock.touch()
+        other_record = agents / "test-app-two--bg.template"
+        other_record.write_text("{}", encoding="utf-8")
         other_overlay = overlay / "test-app-two--bg.json"
         other_overlay.write_text("{}", encoding="utf-8")
         user_overlay = overlay / "kirocrew.json"
@@ -655,8 +659,10 @@ class TestUninstall:
 
         assert result.ok
         assert not mine_lock.exists()
+        assert not mine_record.exists()
         assert not mine_overlay.exists()
         assert other_lock.exists()
+        assert other_record.exists()
         assert other_overlay.exists()
         assert user_overlay.exists()
 
@@ -677,6 +683,8 @@ class TestUninstall:
         (agents / "test-app--live.json").write_text("{}", encoding="utf-8")
         live_lock = agents / "test-app--live.lock"
         live_lock.touch()
+        live_record = agents / "test-app--live.template"
+        live_record.write_text("{}", encoding="utf-8")
         live_overlay = overlay / "test-app--live.json"
         live_overlay.write_text("{}", encoding="utf-8")
         full_lock = agents / "test-app--gone.lock"
@@ -686,6 +694,7 @@ class TestUninstall:
         assert uninstall_app("test-app").ok
 
         assert live_lock.exists()
+        assert live_record.exists()
         assert live_overlay.exists()
         assert full_lock.exists()
 

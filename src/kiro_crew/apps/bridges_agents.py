@@ -682,8 +682,54 @@ def snapshot_app_agent_configs(app_name: str) -> dict[str, dict[str, Any]]:
     return snapshot
 
 
+#: Suffix of the template record kept beside each materialized app agent spec:
+#: ``<agents dir>/<app>--<agent>.template``. Not ``.json``, so kiro-cli and every
+#: spec scan (``snapshot_app_agent_configs``, ``_deregister_agents``) skip it, the
+#: way they skip the ``.lock`` beside the same spec.
+_TEMPLATE_RECORD_SUFFIX = ".template"
+
+
+def _template_record_path(spec_path: Path) -> Path:
+    """Where the template record of the spec at *spec_path* lives."""
+    return spec_path.with_suffix(_TEMPLATE_RECORD_SUFFIX)
+
+
+def _template_record(fresh: Mapping[str, Any]) -> dict[str, Any]:
+    """The values a registration takes from the template for the keys a user may edit.
+
+    The framework-owned keys are refreshed on every registration, so only the
+    others need to be told apart from a user's edit (see
+    :func:`_preserve_user_agent_edits`). Every pass after the merge rewrites a
+    framework-owned key only, so for these keys this is also what the file holds
+    when the template's value was not carried over.
+    """
+    return {k: v for k, v in fresh.items() if k not in _FRAMEWORK_OWNED_AGENT_KEYS}
+
+
+def _write_template_record(spec_path: Path, record: Mapping[str, Any]) -> None:
+    """Write *record* beside the spec just written, or remove a stale one.
+
+    Best-effort: the spec is already in place, so a failure is not an agent write
+    failure. An old record that stays behind could name values of an older
+    template, so it is removed, and the next registration then carries every
+    value as before.
+    """
+    path = _template_record_path(spec_path)
+    try:
+        atomic_write(path, json.dumps(record, indent=2, sort_keys=True) + "\n")
+    except OSError as exc:
+        logger.warning("Could not record the template values of %s: %s", spec_path.name, exc)
+        try:
+            path.unlink()
+        except OSError:
+            pass
+
+
 def _preserve_user_agent_edits(
-    name: str, prior: dict[str, Any] | None, fresh: dict[str, Any]
+    name: str,
+    prior: dict[str, Any] | None,
+    fresh: dict[str, Any],
+    template_record: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Carry a user's own edits in an existing agent config across a refresh.
 
@@ -699,16 +745,20 @@ def _preserve_user_agent_edits(
     every other key present in the on-disk file wins over the template.
 
     "Can only have gotten there by the user" would be the natural reading of that
-    second half, and it is WRONG — the previous boot's materialization wrote the
-    template's own values there too. Nothing here records what the last template
-    wrote, so there is no provenance to tell a hand edit from a stale copy of the
-    template. Rather than introduce that provenance (a sidecar file to keep in
-    sync, for the sake of two keys), the ownership line is drawn by what a key
-    MEANS:
+    second half, and alone it is WRONG — the previous materialization wrote the
+    template's own values there too. *template_record* is the provenance that
+    tells them apart: what the previous registration took from the template for
+    each of these keys (:func:`_template_record`, kept beside the spec). A value on
+    disk that still equals it was written from the template, not chosen, so it
+    follows the new template, which may also drop the key. Without that, an app
+    version that widens ``toolsSettings.subagent.availableAgents`` or tightens
+    ``excludedTools`` never reaches an existing install. With no record (a spec
+    written before records existed, or one whose record could not be written),
+    every value on disk is carried as before.
 
-    * A **preference** (``model``, ``description``, extra ``toolsSettings``) is
-      preserved. A template change that never reaches an existing install is the
-      intended outcome — the user's choice outranks the template's default.
+    * A **preference** (``model``, ``description``, extra ``toolsSettings``) that
+      the user changed is preserved — the user's choice outranks the template's
+      default.
     * **Containment** (``managedToolPolicy``, ``includeMcpJson``) is framework-owned
       and always refreshed, because preserving it is wrong in BOTH directions: a
       template that later tightens ``managedToolPolicy.exclude`` would never reach
@@ -727,8 +777,11 @@ def _preserve_user_agent_edits(
 
     merged = dict(fresh)
     kept: list[str] = []
+    missing = object()
     for key, value in prior.items():
         if key in _FRAMEWORK_OWNED_AGENT_KEYS:
+            continue
+        if template_record is not None and template_record.get(key, missing) == value:
             continue
         if merged.get(key) != value:
             merged[key] = value
@@ -1044,6 +1097,11 @@ def _register_agents(
             prior_on_disk = _read_agent_config(link_path)
             if prior_on_disk is None and prior_configs:
                 prior_on_disk = prior_configs.get(link_name)
+            # What the previous registration took from the template. It sits in the
+            # agents directory, which the sandbox seals read-only like the spec beside
+            # it, so only the gateway writes it. A deregister keeps it, which is what
+            # lets an update tell a template value from a user's edit.
+            template_record = _read_agent_config(_template_record_path(link_path))
 
             # Drop a legacy SYMLINK from an older Kiro Crew (which pointed at a file
             # inside the app) so the write below lands a real file at this path.
@@ -1079,7 +1137,10 @@ def _register_agents(
                 # value is the one carried across the refresh.
                 merged = _enforce_declared_mcp_tools(merged, manifest)
                 merged = _apply_agent_prompt(merged, agent_name, policy, app_name, app_root)
-                merged = _preserve_user_agent_edits(link_name, prior_on_disk, merged)
+                new_template_record = _template_record(merged)
+                merged = _preserve_user_agent_edits(
+                    link_name, prior_on_disk, merged, template_record
+                )
                 # LAST governance pass, on the map that is about to be written. By this
                 # point `autoApprove` could have come from the app's own manifest, the
                 # per-agent MCP policy, a materialized managed ref, or a preserved
@@ -1130,6 +1191,7 @@ def _register_agents(
                     if _agent._declined_foreign_spec_write(link_path):
                         continue
                     atomic_write(link_path, json.dumps(merged, indent=2) + "\n")
+                    _write_template_record(link_path, new_template_record)
                 _audit_declared_mcp_tools(app_name, agent_name, manifest, merged)
                 registered.append(_namespace(app_name, agent_name))
                 # The DECLARED name only — kiro-cli enumerates agents by their
@@ -1233,10 +1295,14 @@ def purge_uninstalled_agent_residue(app_name: str) -> None:
     """Remove the per-agent files an uninstalled app's agents left behind.
 
     :func:`_deregister_agents` unlinks ``<app>--<agent>.json`` from the agents
-    directory, but two files derived from that same name outlive it:
+    directory, but three files derived from that same name outlive it:
 
     * ``~/.kiro/agents/<app>--<agent>.lock`` -- the empty per-spec lock a
       launcher takes beside each spec it rewrites.
+    * ``~/.kiro/agents/<app>--<agent>.template`` -- the template record
+      (:func:`_template_record`). A deregister keeps it on purpose, so an
+      update that deregisters first can still tell a template value from a
+      user's edit.
     * ``<mcp_gateway.overlay_dir>/<app>--<agent>.json`` -- the MCP gateway's
       rewritten copy of the spec. The rewriter prunes it only on its next pass
       (broker start), so until then a session asking for the agent by its bare
@@ -1296,6 +1362,22 @@ def purge_uninstalled_agent_residue(app_name: str) -> None:
                 continue
             overlay.unlink()
             removed.append(str(overlay))
+        except OSError:
+            pass
+
+    try:
+        records = list(agents_dir.glob(f"{prefix}*{_TEMPLATE_RECORD_SUFFIX}"))
+    except OSError:
+        records = []
+    for record in records:
+        if _spec_present(record.stem):
+            continue
+        try:
+            # lstat, so a link at the name is refused rather than followed.
+            if not stat.S_ISREG(os.lstat(record).st_mode):
+                continue
+            record.unlink()
+            removed.append(str(record))
         except OSError:
             pass
 

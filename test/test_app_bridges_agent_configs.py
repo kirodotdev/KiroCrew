@@ -93,6 +93,50 @@ class TestUserAgentEditsSurviveRefresh:
         assert out["allowedTools"] == ["@fresh"]
         assert out["prompt"] == "file:///new/path.md"
 
+    def test_a_value_that_still_equals_the_template_record_follows_the_template(
+        self,
+    ) -> None:
+        from kiro_crew.apps.bridges import _preserve_user_agent_edits
+
+        record = {
+            "model": "auto",
+            "description": "old text",
+            "toolsSettings": {"subagent": {"availableAgents": ["a"]}},
+            "excludedTools": ["shell"],
+        }
+        prior = {
+            "name": "app--agent",
+            **record,
+            "model": "user-pinned",  # changed by the user after the last registration
+            "welcomeMessage": "hi",  # added by the user, absent from the record
+        }
+        fresh = {
+            "name": "app--agent",
+            "model": "auto",
+            "description": "new text",
+            "toolsSettings": {"subagent": {"availableAgents": ["a", "b"]}},
+        }
+
+        out = _preserve_user_agent_edits("app--agent.json", prior, fresh, record)
+
+        assert out["description"] == "new text"
+        assert out["toolsSettings"] == {"subagent": {"availableAgents": ["a", "b"]}}
+        assert "excludedTools" not in out, "a key the template dropped must go too"
+        assert out["model"] == "user-pinned"
+        assert out["welcomeMessage"] == "hi"
+        # Without a record every value on disk is carried, as before.
+        legacy = _preserve_user_agent_edits("app--agent.json", prior, fresh)
+        assert legacy["description"] == "old text"
+        assert legacy["excludedTools"] == ["shell"]
+
+    def test_the_template_record_holds_only_keys_a_user_may_edit(self) -> None:
+        from kiro_crew.apps.bridges import _FRAMEWORK_OWNED_AGENT_KEYS, _template_record
+
+        fresh = {key: "x" for key in _FRAMEWORK_OWNED_AGENT_KEYS}
+        fresh.update({"model": "auto", "description": "d"})
+
+        assert _template_record(fresh) == {"model": "auto", "description": "d"}
+
     def test_no_prior_file_is_a_no_op(self) -> None:
         from kiro_crew.apps.bridges import _preserve_user_agent_edits
 
