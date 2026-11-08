@@ -818,11 +818,13 @@ turn auto-memory back on. The same key therefore also goes into the flag tier's
 `settings.env` (a copy of any inline settings, which stay unchanged). A persistent
 session's envelope is unchanged. `AcpProvider.start` sets the client's `memory_mode`
 before the client starts, and a restricted session never takes a warm-pool child or a
-native resume, so every `session/new` it sends carries the variable. Not covered: a
-sub-agent spawned with `include_memory=false` (that choice shapes the prompt only and
-does not reach the client), and a live chat tightened to incognito or temporary while
-its claude session runs, which keeps the envelope it started with until its next
-`session/new`. Contract tests: `test_claude_auto_memory_envelope.py`.
+native resume, so every `session/new` it sends carries the variable. A sub-agent
+spawned with `include_memory=false` gets the same envelope in any memory mode, never
+takes a warm-pool child, and keeps it across a continuation, a reset successor and a
+compaction restart. Not covered: a live chat tightened to
+incognito or temporary while its claude session runs, which keeps the envelope it
+started with until its next `session/new`. Contract tests:
+`test_claude_auto_memory_envelope.py`.
 
 ### Known gap: the user's global `~/.claude` is inherited
 

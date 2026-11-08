@@ -1422,6 +1422,10 @@ class KiroCrewConfig:
             # reason: swallowed by the catch-all, a claude side session would
             # start with the user's full tool set under READ_ONLY.
             side_read_only: bool = False,
+            # A sub-agent spawned with ``include_memory=false``. NAMED for the
+            # same reason: swallowed, its claude session would load and write
+            # Claude Code's auto-memory.
+            include_memory: bool = True,
             **_kwargs: object,
         ):  # return type inferred from build_acp_provider (SDK boundary: config may not name AcpProvider)
             wdir = Path(cwd) if cwd else _session_work_dir(session_key)
@@ -1601,6 +1605,7 @@ class KiroCrewConfig:
                 on_gate_acquired=on_gate_acquired,
                 on_gate_queued=on_gate_queued,
                 side_read_only=side_read_only,
+                include_memory=include_memory,
                 # Only a work dir DERIVED from a one-run key is the provider's
                 # to reclaim at shutdown; an explicit ``cwd`` is the caller's
                 # directory whatever the key says (session_work_dir).

@@ -344,6 +344,9 @@ async def _run_inner_impl(
         extra_kwargs["allowed_tools"] = info.allowed_tools
     if info.cwd:
         extra_kwargs["cwd"] = info.cwd
+    # A run that withholds memory keeps the harness's own memory out too.
+    if not info.include_memory:
+        extra_kwargs["include_memory"] = False
     # A dedicated process joins its parent's session tree: the parent's
     # ``$KIROCREW_SCRATCH`` is mounted beside the child's own scratch and is
     # what the child's ``$KIROCREW_SCRATCH`` names, so a brief the parent

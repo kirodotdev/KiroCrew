@@ -44,7 +44,7 @@ SHARED_BINDINGS_CHECKS = ("the_field_scan_counts_every_read_and_write_shape",)
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now.
 _MEMBERS: dict[str, tuple[str, object, str, str]] = {
-    "__init__": ("function", False, "0da0e673600b", "client_class"),
+    "__init__": ("function", False, "51d4cc79ba1f", "client_class"),
     "_add_orphan_steers": ("function", False, "b3c41cdccc27", "client_turn_control"),
     "_advertised_model_ids": ("function", False, "6806e867af4e", "client_model_selection"),
     "_agent_env_for_spawn": ("function", False, "8cab7a4db01b", "client_spawn_env"),
@@ -881,6 +881,7 @@ _INIT_HINTS = {
     "audit_source": "str | None",
     "channel_id": "str | None",
     "extra_env": "dict[str, str] | None",
+    "include_memory": "<class 'bool'>",
     "mcp_gateway_overlay": "str | pathlib.Path | None",
     "mcp_gateway_socket": "str | pathlib.Path | None",
     "model": "str | None",
