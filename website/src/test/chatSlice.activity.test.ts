@@ -244,6 +244,17 @@ describe('activity viewer reducers', () => {
     expect(state.toolLog[0].output).toBe('found 3 matches')
   })
 
+  it('a final sseToolResult marks the call row done, a mid-stream one does not', () => {
+    // A row whose log entry is trimmed (100 entries) or was never there (a
+    // reload) reads its return from `meta.done`, as the server stores it.
+    const row = { role: 'tool' as const, content: '🔧 sh', cls: '', meta: { tool_call_id: 'tc1', kind: 'execute' } }
+    let state = reducer({ ...withSlot, messages: [row] }, sseToolActivity({ slot: 'slot-1', tool: 'sh', kind: 'execute', purpose: '', input_preview: '', tool_call_id: 'tc1' }))
+    state = reducer(state, sseToolResult({ slot: 'slot-1', tool_call_id: 'tc1', output: 'line 1', final: false }))
+    expect(state.messages[0].meta?.done).toBeUndefined()
+    state = reducer(state, sseToolResult({ slot: 'slot-1', tool_call_id: 'tc1', output: 'done' }))
+    expect(state.messages[0].meta?.done).toBe(true)
+  })
+
   it('sseToolResult is noop without prior tool entry', () => {
     const state = reducer(withSlot, sseToolResult({ slot: 'slot-1', output: 'orphan' }))
     expect(state.toolLog).toHaveLength(0)
