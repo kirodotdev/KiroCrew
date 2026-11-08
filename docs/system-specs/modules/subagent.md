@@ -4310,7 +4310,13 @@ rewrites `result.txt` whole from the text it holds in memory — capped in bytes
 character boundaries (`cap_result_bytes`), written by temp file and rename,
 fsynced with its folder; an empty answer leaves no `result.txt` at all — and only
 then records `result_complete` in `state.json`, both in one drained worker
-(`write_finished_result`). A failed write records `result_complete=False` and
+(`write_finished_result`). That text, and the completion event's result of every
+ending that gets past the stream loop, first lose kiro-cli's complete `[STEERING
+steer-…]` acks (`messaging.driver.strip_steering_markers`): the line acknowledges a
+steer the host or the parent sent, and it is protocol, not the answer (#29807). The
+text is finished, so an unclosed `[STEER…` tail is the answer's own and stays. A streamed
+file an ending caps in place, and the turn-limit and escalation bails' result, keep
+them. A failed write records `result_complete=False` and
 falls back to capping the streamed file in place. Every other ending -- the
 tail's, the turn-limit and escalation bails, the deadline, a cancel, a raised
 error, a reap -- caps the streamed file in place (`cap_result_file`) and records
