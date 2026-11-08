@@ -14453,7 +14453,7 @@
       "role_conductor": "コンドクター",
       "bar_vague": "受け入れ基準なし",
       "decision": "判断",
-      "fails": "失敗した回数",
+      "fails_other": "失敗 {{n}} 回",
       "events": "イベント",
       "orphaned_note": "この項目の指揮セッションはもうありません。レポートを読む人はいません。",
       "action_stop": "現在のターンを停止",

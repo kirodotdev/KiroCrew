@@ -14453,7 +14453,7 @@
       "role_conductor": "지휘자",
       "bar_vague": "인수 기준 없음",
       "decision": "결정",
-      "fails": "실패한 시도",
+      "fails_other": "실패한 시도 {{n}}회",
       "events": "이벤트",
       "orphaned_note": "이 항목의 지휘 세션이 사라졌습니다. 이제 보고서를 읽는 사람이 없습니다.",
       "action_stop": "현재 턴 중지",
