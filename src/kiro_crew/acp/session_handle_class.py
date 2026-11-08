@@ -707,6 +707,8 @@ class AcpSessionHandle:
         # (``kas_write_allowlist.projected_answered_paths``): the gate answers a
         # write every target of which one covers, after its checks.
         self.kas_crew_answered_paths: tuple[str, ...] = ()
+        # The same for the read tool's `allowedPaths` (a covered read).
+        self.kas_crew_answered_read_paths: tuple[str, ...] = ()
         # The agent this session runs: the one the batch was registered for, then
         # whichever a KAS mode switch moves it to ("" with no batch). A turn that
         # names no agent runs this one, so its spec hooks are this agent's.

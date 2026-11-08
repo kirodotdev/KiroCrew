@@ -1268,6 +1268,35 @@ def _spec_write_granted(call: ToolCall, names: tuple[str, ...]) -> bool:
     )
 
 
+def _spec_read_granted(call: ToolCall, names: tuple[str, ...]) -> bool:
+    """Whether a spec's read ``allowedPaths`` grants this call.
+
+    Only KAS's ``read_file`` (kiro-cli's ``fs_read`` among its names) with exactly
+    one target, which one of ``spec_granted_read_paths`` covers as written and
+    symlink-resolved (:func:`_write_target_uncovered`), and which is a file now.
+    The last check keeps the read to that file: on a miss ``read_file`` retries
+    another name (a leading folder dropped, a whitespace variant beside it) that
+    no entry was checked against. KAS expands only ``~`` and ``~/``, so a
+    ``~user`` target grants nothing. Any other read keeps its prompt.
+    """
+    if not call.spec_granted_read_paths or "fs_read" not in names:
+        return False
+    if call.mcp_tool != "read_file":
+        return False
+    targets = target_paths(call.raw_params)
+    if targets.truncated or len(targets) != 1:
+        return False
+    target = targets[0]
+    if target.startswith("~") and target != "~" and not target.startswith("~/"):
+        return False
+    patterns, cwd = call.spec_granted_read_paths, call.spec_write_cwd
+    if _write_target_uncovered(target, patterns, cwd) is not None:
+        return False
+    # shortcut: a file removed between this check and KAS's read lets the retry
+    # run; upgrade if KAS ever reads the approved path only.
+    return os.path.isfile(os.path.join(cwd, os.path.expanduser(target)))
+
+
 def _spec_command_composed(call: ToolCall, names: tuple[str, ...], patterns: Sequence[str]) -> bool:
     """Whether a shell call is kept from *patterns* only by its shell composition
     (:func:`kiro_crew.platform.allowed_commands.composition_blocks_match`). It only
@@ -1525,7 +1554,11 @@ def grant_spec_builtin(
     call = facts.call
     granted = call.spec_granted_builtins
     if not (
-        granted or call.spec_granted_commands or call.spec_denied_grant or call.spec_granted_paths
+        granted
+        or call.spec_granted_commands
+        or call.spec_denied_grant
+        or call.spec_granted_paths
+        or call.spec_granted_read_paths
     ):
         return None
     if not call.kas_builtin_ids or not call.identity_trusted:
@@ -1540,6 +1573,7 @@ def grant_spec_builtin(
         and not _spec_command_granted(call, names)
         and not denied_grant_applies(call, names)
         and not _spec_write_granted(call, names)
+        and not _spec_read_granted(call, names)
     ):
         if _spec_command_composed(call, names, call.spec_granted_commands):
             from kiro_crew.platform.allowed_commands import COMPOSITION_NOTICE

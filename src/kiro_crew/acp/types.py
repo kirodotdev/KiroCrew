@@ -1192,6 +1192,10 @@ class AcpEvent:
     #: ``spec-builtin-grant`` tier approves a file write every target of which one
     #: covers. Empty everywhere else, which grants nothing.
     spec_granted_paths: tuple[str, ...] = ()
+    #: spec_granted_read_paths: the same for the agent's read ``allowedPaths``
+    #: (``AcpSessionHandle.kas_crew_answered_read_paths``), against the one target
+    #: of a ``read_file``. Empty grants nothing.
+    spec_granted_read_paths: tuple[str, ...] = ()
     #: native_child_call: a permission request a native KAS sub-agent made under
     #: this session's own id, told apart by the tool-call id its
     #: ``agentSubtaskId`` frame recorded (``_is_native_child_call``), or one

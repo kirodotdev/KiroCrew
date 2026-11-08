@@ -895,6 +895,7 @@ class KasHarness(MembershipHarness):
         # agent (`spec-write-allowlist` tier).
         from kiro_crew.acp.kas_write_allowlist import (
             projected_answered_paths,
+            projected_answered_read_paths,
             projected_write_allowlist,
         )
 
@@ -912,6 +913,9 @@ class KasHarness(MembershipHarness):
             custom_agents, active_agent
         )
         handle.kas_crew_answered_paths = projected_answered_paths(
+            custom_agents, active_agent, getattr(handle, "_bound_cwd", "")
+        )
+        handle.kas_crew_answered_read_paths = projected_answered_read_paths(
             custom_agents, active_agent, getattr(handle, "_bound_cwd", "")
         )
         handle.kas_projected_agent = active_agent if custom_agents else ""

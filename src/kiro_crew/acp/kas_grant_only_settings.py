@@ -130,3 +130,12 @@ def without_write_grant_keys(tools_settings: Any) -> Any:
     (:func:`_write_key_grants_only`), for the write ``allowedPaths`` reading, like
     :func:`without_shell_grant_keys`."""
     return _without_keys(tools_settings, _WRITE_SETTINGS_KEYS, _write_key_grants_only)
+
+
+def without_read_grant_keys(tools_settings: Any) -> Any:
+    """*tools_settings* with the ``allowedPaths`` of each read, ``grep`` and ``glob``
+    entry left out, for the read ``allowedPaths`` reading, like
+    :func:`without_write_grant_keys`: on kiro-cli each only grants. Any other key on
+    them (``deniedPaths``, ``allowReadOnly``) still withholds."""
+    keys = (*_READ_SETTINGS_KEYS, "grep", "glob")
+    return _without_keys(tools_settings, keys, lambda key, _v: key == "allowedPaths")

@@ -60,7 +60,9 @@ from kiro_crew.acp.kas_hook_mcp import (  # noqa: F401 - cached_mcp_tool_names i
 from kiro_crew.acp.kas_settings_mcp import CREW_SETTINGS_MCP_KEY
 from kiro_crew.acp.kas_spec_grants import (
     CREW_ANSWERED_PATHS_KEY,
+    CREW_ANSWERED_READ_PATHS_KEY,
     CREW_SHELL_READONLY_KEY,
+    READ_SETTINGS_KEYS,
     SHELL_SETTINGS_KEYS,
     WRITE_SETTINGS_KEYS,
 )
@@ -204,6 +206,7 @@ CREW_ONLY_ENTRY_KEYS: frozenset[str] = frozenset(
         CREW_SHELL_ALLOWLIST_KEY,
         CREW_WRITE_ALLOWLIST_KEY,
         CREW_ANSWERED_PATHS_KEY,
+        CREW_ANSWERED_READ_PATHS_KEY,
         CREW_SHELL_READONLY_KEY,
         CREW_SETTINGS_MCP_KEY,
     }
@@ -495,12 +498,15 @@ def write_denies_by_default(tools_settings: Any) -> bool:
     return any(_write_falls_back_to_deny(tools_settings.get(k)) for k in _WRITE_SETTINGS_KEYS)
 
 
-def _usable_allowed_paths(tools_settings: Any) -> list[str]:
-    """Every distinct usable ``allowedPaths`` entry of both write keys, in order."""
+def _usable_allowed_paths(
+    tools_settings: Any, keys: tuple[str, ...] = WRITE_SETTINGS_KEYS
+) -> list[str]:
+    """Every distinct usable ``allowedPaths`` entry of the *keys* entries (both write
+    keys by default), in order."""
     if not isinstance(tools_settings, dict):
         return []
     out: list[str] = []
-    for key in _WRITE_SETTINGS_KEYS:
+    for key in keys:
         settings = tools_settings.get(key)
         entries = settings.get("allowedPaths") if isinstance(settings, dict) else None
         for raw in entries if isinstance(entries, list) else ():
@@ -535,6 +541,22 @@ def crew_answered_paths(tools_settings: Any) -> list[str]:
     """The write ``allowedPaths`` Crew answers a KAS write for (``kas_spec_grants``),
     usable and bounded like :func:`spec_write_allowlist`. The caller asks the ceiling."""
     return _usable_allowed_paths(tools_settings)[:_MAX_ALLOWED_PATHS]
+
+
+def _paths_not_all_carried(paths: Any, tools_settings: Any, tool: str) -> bool:
+    """Whether some of *tool*'s ``allowedPaths`` cannot be answered: an entry is
+    unusable, or the bound cuts the list. Those paths keep prompting."""
+    keys = READ_SETTINGS_KEYS if tool in READ_SETTINGS_KEYS else WRITE_SETTINGS_KEYS
+    return bool(paths) and (
+        not isinstance(paths, list)
+        or any(allowed_paths_mod.parse(p) is None for p in paths)
+        or len(_usable_allowed_paths(tools_settings, keys)) > _MAX_ALLOWED_PATHS
+    )
+
+
+def crew_answered_read_paths(tools_settings: Any) -> list[str]:
+    """The same for the read tool's ``allowedPaths`` (``fs_read`` / ``read``)."""
+    return _usable_allowed_paths(tools_settings, READ_SETTINGS_KEYS)[:_MAX_ALLOWED_PATHS]
 
 
 def crew_answered_builtins(allowed_tools: Any, authored_permissions: Any = None) -> frozenset[str]:
@@ -1858,6 +1880,11 @@ def tools_settings_to_permissions(
             subtrees = [f"{p.rstrip('/')}/**" for p in fits if not p.endswith("*")]
             denied_paths = list(dict.fromkeys(denied_paths + subtrees))
             rules.extend(_chunked_rules(capability, "deny", denied_paths))
+            if tool in READ_SETTINGS_KEYS:
+                # No rule: Crew's gate answers a covered read (`crew_answered_read_paths`).
+                handled.add("allowedPaths")
+                if _paths_not_all_carried(settings.get("allowedPaths"), tools_settings, tool):
+                    lost.append(f"{tool}.allowedPaths")
             # Kept apart so they never cost the denies above their place: they
             # travel only when the whole block still fits (below).
             star_twins = [
@@ -1877,12 +1904,7 @@ def tools_settings_to_permissions(
                 # No rule: Crew's gate answers a covered write (`crew_answered_paths`).
                 # Named when an entry is unusable or the bound cuts the list.
                 handled.add("allowedPaths")
-                paths = settings.get("allowedPaths")
-                if paths and (
-                    not isinstance(paths, list)
-                    or any(allowed_paths_mod.parse(p) is None for p in paths)
-                    or len(_usable_allowed_paths(tools_settings)) > _MAX_ALLOWED_PATHS
-                ):
+                if _paths_not_all_carried(settings.get("allowedPaths"), tools_settings, tool):
                     lost.append(f"{tool}.allowedPaths")
                 if settings.get("fallbackAction") not in (
                     None,
