@@ -545,7 +545,7 @@ async def api_connections_mint(request: web.Request) -> web.Response:
         # ``dashboard.feature_previews.crew_oauth``: the gateway runs the sign-in itself and keeps
         # the tokens in the vault; the card polls the same mint row as before. An
         # entry routing keeps native (its own credential header) mints natively.
-        token = await crew_oauth.start_mint_row(slug)
+        token = await crew_oauth.start_mint_row(slug, _open_project_dirs(request.app.get("state")))
         return web.json_response({"ok": True, "slug": slug, "state": "minting", "token": token})
 
     # Function-local by DESIGN, not for a cycle: this handlers package is imported

@@ -1,0 +1,598 @@
+"""Crew-owned OAuth for DCR cards: discovery, registration, tokens, revoke, callback.
+
+Every vendor answer comes from an in-memory table: ``_post`` and the discovery
+fetch are replaced, so nothing here reaches the network.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import urllib.parse
+
+import pytest
+
+from kiro_crew.connections import crew_oauth, crew_oauth_dcr, registry
+from kiro_crew.connections.crew_oauth import CrewOAuthError, Tokens, TokenStore
+from kiro_crew.connections.crew_oauth_dcr import ClientStore
+
+STRIPE_MCP = "https://mcp.stripe.com"
+STRIPE_ISS = "https://access.stripe.com/mcp"
+ATL_MCP = "https://mcp.atlassian.com/v2/mcp"
+ATL_ISS = "https://auth.atlassian.com/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3"
+
+
+def _as_doc(issuer: str, base: str, **over):
+    return {
+        "issuer": issuer,
+        "authorization_endpoint": f"{base}/authorize",
+        "token_endpoint": f"{base}/token",
+        "registration_endpoint": f"{base}/register",
+        "revocation_endpoint": f"{base}/revoke",
+        "code_challenge_methods_supported": ["S256"],
+        "token_endpoint_auth_methods_supported": ["none"],
+        **over,
+    }
+
+
+class Vendor:
+    """GET documents and POST answers by URL; records every call."""
+
+    def __init__(self) -> None:
+        self.docs: dict[str, dict] = {}
+        self.posts: dict[str, list] = {}
+        self.calls: list[tuple] = []
+
+    async def fetch(self, url):
+        self.calls.append(("GET", url))
+        if url not in self.docs:
+            raise ValueError(f"{url} returned HTTP 404")
+        return self.docs[url]
+
+    async def post(self, url, *, form=None, body=None, auth=None, headers=None):
+        self.calls.append(("POST", url, form, body, auth))
+        answers = self.posts.get(url) or [(404, {}, "")]
+        return answers.pop(0) if len(answers) > 1 else answers[0]
+
+    def card(self, mcp, issuer, base, as_path, **as_over):
+        rm = f"{urllib.parse.urlsplit(mcp).scheme}://{urllib.parse.urlsplit(mcp).netloc}/rm"
+        self.posts[mcp] = [(401, {}, f'Bearer resource_metadata="{rm}", error="invalid_token"')]
+        self.docs[rm] = {"resource": mcp, "authorization_servers": [issuer]}
+        self.docs[as_path] = _as_doc(issuer, base, **as_over)
+        self.posts[f"{base}/register"] = [(201, {"client_id": "cid-1"}, "")]
+
+
+@pytest.fixture()
+def vendor(tmp_path, monkeypatch):
+    import kiro_crew.config.paths as paths
+    import kiro_crew.mcp_oauth_discovery as disc
+
+    monkeypatch.setattr(paths, "config_dir", lambda: tmp_path)
+    v = Vendor()
+    monkeypatch.setattr(crew_oauth_dcr, "_post", v.post)
+    monkeypatch.setattr(disc, "_fetch_json", v.fetch)
+    monkeypatch.setattr(crew_oauth_dcr, "_audit", lambda *a, **k: None)
+    monkeypatch.setattr(crew_oauth, "_audit", lambda *a, **k: None)
+    v.card(
+        STRIPE_MCP,
+        STRIPE_ISS,
+        "https://access.stripe.com/mcp/oauth2",
+        "https://access.stripe.com/.well-known/oauth-authorization-server/mcp",
+    )
+    return v
+
+
+def _registered(vendor):
+    return [c for c in vendor.calls if c[0] == "POST" and c[1].endswith("/register")]
+
+
+# --- discovery and registration ----------------------------------------------
+
+
+def test_a_public_card_registers_kiro_crew_once_and_asks_for_resource(vendor):
+    plan = asyncio.run(crew_oauth_dcr.prepare("stripe"))
+    (call,) = _registered(vendor)
+    body = call[3]
+    assert body["client_name"] == "Kiro Crew"
+    assert body["redirect_uris"] == ["http://127.0.0.1:48100/callback"]
+    assert body["token_endpoint_auth_method"] == "none"
+    assert plan.client.client_id == "cid-1" and plan.client.client_secret is None
+    query = urllib.parse.parse_qs(
+        urllib.parse.urlsplit(crew_oauth_dcr.authorize_url(plan, "st", "ch")).query
+    )
+    assert query["resource"] == [STRIPE_MCP]
+    assert query["code_challenge_method"] == ["S256"] and query["state"] == ["st"]
+    # A second sign-in reuses the stored client.
+    asyncio.run(crew_oauth_dcr.prepare("stripe"))
+    assert len(_registered(vendor)) == 1
+
+
+def test_a_path_issuer_is_discovered_and_offline_access_is_asked_when_listed(vendor):
+    vendor.card(
+        ATL_MCP,
+        ATL_ISS,
+        "https://auth.atlassian.com",
+        "https://auth.atlassian.com/.well-known/oauth-authorization-server/VCeDsk8ZHncYF1g234fKtc4lNipbBhu3",
+        scopes_supported=["read", "offline_access"],
+    )
+    plan = asyncio.run(crew_oauth_dcr.prepare("atlassian"))
+    assert plan.client.issuer == ATL_ISS
+    assert "offline_access" in plan.scope.split()
+
+
+def test_a_confidential_only_card_sends_basic_and_keeps_the_secret_out_of_the_form(vendor):
+    vendor.docs["https://access.stripe.com/.well-known/oauth-authorization-server/mcp"][
+        "token_endpoint_auth_methods_supported"
+    ] = ["client_secret_basic", "client_secret_post"]
+    vendor.posts["https://access.stripe.com/mcp/oauth2/register"] = [
+        (201, {"client_id": "cid-2", "client_secret": "s3cr:t"}, "")
+    ]
+    vendor.posts["https://access.stripe.com/mcp/oauth2/token"] = [
+        (200, {"access_token": "at", "refresh_token": "rt", "expires_in": 60}, "")
+    ]
+    plan = asyncio.run(crew_oauth_dcr.prepare("stripe"))
+    assert _registered(vendor)[0][3]["token_endpoint_auth_method"] == "client_secret_basic"
+    asyncio.run(crew_oauth_dcr.exchange(plan.client, "code", "verifier"))
+    _, _, form, _, auth = vendor.calls[-1]
+    assert "client_secret" not in form and form["resource"] == STRIPE_MCP
+    assert auth is not None and base64.b64decode(auth.encode().split()[1]) == b"cid-2:s3cr%3At"
+
+
+def test_a_secret_method_without_a_secret_is_refused(vendor):
+    vendor.docs["https://access.stripe.com/.well-known/oauth-authorization-server/mcp"][
+        "token_endpoint_auth_methods_supported"
+    ] = ["client_secret_post"]
+    with pytest.raises(CrewOAuthError) as err:
+        asyncio.run(crew_oauth_dcr.prepare("stripe"))
+    assert err.value.code == "registration_refused"
+
+
+def test_a_registry_client_name_overrides_the_default(vendor, monkeypatch):
+    real = crew_oauth_dcr.get_provider
+    monkeypatch.setattr(
+        crew_oauth_dcr, "get_provider", lambda s: {**real(s), "dcr_client_name": "kiro"}
+    )
+    asyncio.run(crew_oauth_dcr.prepare("stripe"))
+    assert _registered(vendor)[0][3]["client_name"] == "kiro"
+
+
+def test_a_moved_issuer_fails_closed_and_the_new_host_is_never_fetched(vendor):
+    vendor.docs["https://mcp.stripe.com/rm"]["authorization_servers"] = ["https://evil.example"]
+    with pytest.raises(CrewOAuthError) as err:
+        asyncio.run(crew_oauth_dcr.prepare("stripe"))
+    assert err.value.code == "issuer_changed"
+    assert not any("evil.example" in c[1] for c in vendor.calls)
+    assert _registered(vendor) == []
+
+
+@pytest.mark.parametrize(
+    ("over", "code"),
+    [
+        ({"code_challenge_methods_supported": ["plain"]}, "no_s256"),
+        ({"code_challenge_methods_supported": None}, "no_s256"),
+        ({"registration_endpoint": None}, "dcr_unsupported"),
+        ({"issuer": "https://access.stripe.com/other"}, "issuer_changed"),
+    ],
+)
+def test_metadata_without_what_crew_needs_fails_closed(vendor, over, code):
+    doc = vendor.docs["https://access.stripe.com/.well-known/oauth-authorization-server/mcp"]
+    doc.update(over)
+    with pytest.raises(CrewOAuthError) as err:
+        asyncio.run(crew_oauth_dcr.prepare("stripe"))
+    assert err.value.code == code and _registered(vendor) == []
+
+
+def test_no_metadata_never_falls_back_to_guessed_endpoints(vendor):
+    vendor.docs.clear()
+    with pytest.raises(CrewOAuthError) as err:
+        asyncio.run(crew_oauth_dcr.prepare("stripe"))
+    assert err.value.code == "discovery_failed"
+    assert not any(c[1].endswith(("/authorize", "/token", "/register")) for c in vendor.calls)
+
+
+def test_a_moved_redirect_registers_again_and_drops_the_old_pair(vendor, tmp_path, monkeypatch):
+    asyncio.run(crew_oauth_dcr.prepare("stripe"))
+    TokenStore().replace("stripe", Tokens("a", "r", None, ""))
+    monkeypatch.setattr(crew_oauth_dcr, "DCR_CALLBACK_PORT", 48199)
+    plan = asyncio.run(crew_oauth_dcr.prepare("stripe"))
+    assert len(_registered(vendor)) == 2
+    assert plan.client.redirect_uri == "http://127.0.0.1:48199/callback"
+    assert TokenStore().read("stripe") is None
+
+
+# --- refresh, revoke, iss ------------------------------------------------------
+
+
+def _signed_in(vendor):
+    asyncio.run(crew_oauth_dcr.prepare("stripe"))
+    TokenStore().replace("stripe", Tokens("a", "r", 0.0, ""))
+
+
+def test_invalid_client_forgets_the_registration_so_the_next_connect_registers(vendor):
+    _signed_in(vendor)
+    vendor.posts["https://access.stripe.com/mcp/oauth2/token"] = [
+        (401, {"error": "invalid_client"}, "")
+    ]
+    with pytest.raises(CrewOAuthError) as err:
+        asyncio.run(crew_oauth.access_token("stripe", force=True))
+    assert err.value.code == "needs_auth"
+    assert ClientStore().read("stripe") == (None, None)
+    assert TokenStore().read("stripe") is None
+    asyncio.run(crew_oauth_dcr.prepare("stripe"))
+    assert len(_registered(vendor)) == 2
+
+
+@pytest.mark.parametrize(
+    ("error", "forgotten"), [("invalid_client", True), ("invalid_grant", False)]
+)
+def test_a_code_swap_refused_for_the_client_forgets_it(vendor, monkeypatch, error, forgotten):
+    monkeypatch.setattr(crew_oauth_dcr, "DCR_CALLBACK_PORT", 0)
+    vendor.posts["https://access.stripe.com/mcp/oauth2/token"] = [(401, {"error": error}, "")]
+
+    async def _run():
+        sign_in = crew_oauth.SignIn("stripe")
+        await sign_in.start()
+        sign_in._done.set_result("code")
+        try:
+            await sign_in.finish()
+        finally:
+            await sign_in.shutdown()
+
+    with pytest.raises(CrewOAuthError) as err:
+        asyncio.run(_run())
+    assert err.value.code == error
+    assert (ClientStore().read("stripe")[0] is None) is forgotten
+
+
+def test_invalid_grant_is_needs_auth_and_keeps_client_and_pair(vendor):
+    _signed_in(vendor)
+    vendor.posts["https://access.stripe.com/mcp/oauth2/token"] = [
+        (400, {"error": "invalid_grant"}, "")
+    ]
+    with pytest.raises(CrewOAuthError) as err:
+        asyncio.run(crew_oauth.access_token("stripe", force=True))
+    assert err.value.code == "needs_auth"
+    assert ClientStore().read("stripe")[0] is not None
+    assert TokenStore().read("stripe") is not None
+
+
+def test_a_refresh_sends_resource_and_commits_the_new_pair(vendor):
+    _signed_in(vendor)
+    vendor.posts["https://access.stripe.com/mcp/oauth2/token"] = [
+        (200, {"access_token": "a2", "refresh_token": "r2", "expires_in": 3600}, "")
+    ]
+    assert asyncio.run(crew_oauth.access_token("stripe", force=True)) == "a2"
+    form = vendor.calls[-1][2]
+    assert form["resource"] == STRIPE_MCP and form["client_id"] == "cid-1"
+    assert TokenStore().read("stripe")[0].refresh == "r2"
+
+
+def test_disconnect_revokes_with_rfc7009_and_keeps_the_client(vendor):
+    _signed_in(vendor)
+    vendor.posts["https://access.stripe.com/mcp/oauth2/revoke"] = [(200, {}, "")]
+    assert asyncio.run(crew_oauth.disconnect("stripe")) == {"removed": True, "revoked": True}
+    form = vendor.calls[-1][2]
+    assert form["token"] == "r" and form["token_type_hint"] == "refresh_token"
+    assert ClientStore().read("stripe")[0] is not None
+
+
+def test_without_a_revocation_endpoint_disconnect_deletes_locally(vendor):
+    vendor.docs["https://access.stripe.com/.well-known/oauth-authorization-server/mcp"][
+        "revocation_endpoint"
+    ] = None
+    _signed_in(vendor)
+    assert asyncio.run(crew_oauth.disconnect("stripe")) == {"removed": True, "revoked": False}
+
+
+def test_the_callback_iss_is_checked(vendor):
+    client = asyncio.run(crew_oauth_dcr.prepare("stripe")).client
+    assert crew_oauth_dcr.iss_ok(client, None) is True
+    assert crew_oauth_dcr.iss_ok(client, STRIPE_ISS) is True
+    assert crew_oauth_dcr.iss_ok(client, "https://evil.example") is False
+    strict = crew_oauth_dcr.replace(client, iss_param=True)
+    assert crew_oauth_dcr.iss_ok(strict, None) is False
+
+
+def test_the_challenge_parser_reads_quoted_and_bare_values():
+    params = crew_oauth_dcr._challenge_params('Bearer resource_metadata="https://x/rm", scope=read')
+    assert params == {"resource_metadata": "https://x/rm", "scope": "read"}
+    assert crew_oauth_dcr._challenge_params('Basic realm="x"') == {}
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        # A quoted value keeps an escaped quote and a comma.
+        (
+            'Bearer error_description="say \\"hi\\", then go"',
+            {"error_description": 'say "hi", then go'},
+        ),
+        ("Bearer scope=read", {"scope": "read"}),
+        ('Bearer  Scope  =  "a b" ,  error = x', {"scope": "a b", "error": "x"}),
+        ('Basic realm="x", scope=read', {}),
+        ('Bearer scope="read", 9bad=1, error=x', {"scope": "read"}),
+        ('Bearer scope="unterminated', {}),
+    ],
+)
+def test_the_challenge_reader_cases(header, expected):
+    assert crew_oauth_dcr._challenge_params(header) == expected
+
+
+# --- shared callback ------------------------------------------------------------
+
+
+def test_one_port_serves_every_pending_sign_in_by_state(monkeypatch):
+    import aiohttp
+
+    monkeypatch.setattr(crew_oauth_dcr, "DCR_CALLBACK_PORT", 0)
+    seen: list[str] = []
+
+    def _handler(name):
+        async def _h(request):
+            from aiohttp import web
+
+            seen.append(name)
+            return web.Response(text=name)
+
+        return _h
+
+    async def _run():
+        port = await crew_oauth_dcr.listen("state-a", _handler("a"))
+        assert await crew_oauth_dcr.listen("state-b", _handler("b")) == port
+        async with aiohttp.ClientSession() as s:
+            for state, want in (("state-b", 200), ("state-a", 200), ("nope", 400)):
+                async with s.get(f"http://127.0.0.1:{port}/callback?state={state}") as r:
+                    assert r.status == want
+        await crew_oauth_dcr.unlisten("state-a")
+        assert "runner" in crew_oauth_dcr._listener
+        await crew_oauth_dcr.unlisten("state-b")
+        assert "runner" not in crew_oauth_dcr._listener
+
+    asyncio.run(_run())
+    assert seen == ["b", "a"]
+
+
+# --- gate, registry, cleanup --------------------------------------------------------
+
+
+def test_a_dcr_entry_routes_only_at_its_registry_url(monkeypatch):
+    monkeypatch.setattr(crew_oauth, "manages", lambda slug: True)
+    assert crew_oauth.routed_slug("stripe", {"url": STRIPE_MCP}, lambda *a: None) == "stripe"
+    assert crew_oauth.routed_slug("stripe", {"url": "https://other.example"}, lambda *a: None) == ""
+    headers = {"url": STRIPE_MCP, "headers": {"Authorization": "x"}}
+    assert crew_oauth.routed_slug("stripe", headers, lambda *a: None) == ""
+
+
+def test_the_shared_port_is_reserved_in_the_registry():
+    raw = {"mode": "preregistered", "confidential": True, "redirect_port": 48100}
+    raw["registration_guide"] = "oauth-app-registration/github.md"
+    with pytest.raises(registry.RegistryValidationError, match="reserved"):
+        registry._validate_auth(raw, 0)
+    assert registry.DCR_CALLBACK_PORT == 48100
+
+
+def test_forget_kas_grant_deletes_only_that_urls_entries(tmp_path):
+    from kiro_crew.mcp_grant_kas import forget_kas_grant, kas_connection_hash
+    from kiro_crew.secrets import SecretVault
+
+    vault = SecretVault(tmp_path)
+    digest = kas_connection_hash(STRIPE_MCP)
+    for name in (f"kiro.mcp.{digest}.tokens", f"kiro.mcp.{digest}.client", "kiro.mcp.other.tokens"):
+        vault.set_sync(name, "v")
+    asyncio.run(forget_kas_grant(STRIPE_MCP, store_root=tmp_path))
+    assert vault.list_names() == ["kiro.mcp.other.tokens"]
+
+
+@pytest.mark.parametrize(
+    ("project_dirs", "shared", "unlinked"),
+    [(None, (), False), ((), ("x",), False), ((), (), True)],
+)
+def test_harness_grants_go_only_when_the_full_census_finds_no_sharer(
+    monkeypatch, project_dirs, shared, unlinked
+):
+    import kiro_crew.connections.ownership as ownership
+    import kiro_crew.mcp_grant as mcp_grant
+    import kiro_crew.mcp_grant_kas as mcp_grant_kas
+
+    forgot: list[str] = []
+    gone: list[str] = []
+    asked: list = []
+
+    async def _forget(url):
+        forgot.append(url)
+
+    async def _sharers(pairs, dirs):
+        asked.append(dirs)
+        return {
+            s: ownership.GrantSharing(shared_with=shared, census_incomplete=False) for s, _ in pairs
+        }
+
+    monkeypatch.setattr(mcp_grant_kas, "forget_kas_grant", _forget)
+    monkeypatch.setattr(ownership, "grant_sharers_map", _sharers)
+    monkeypatch.setattr(mcp_grant, "revoke_local_grant", lambda url: gone.append(url) or [])
+    asyncio.run(crew_oauth_dcr.drop_harness_grants("stripe", project_dirs))
+    # Both URL-keyed grants (KAS and kiro-cli) follow the same census.
+    assert forgot == ([STRIPE_MCP] if unlinked else [])
+    assert gone == ([STRIPE_MCP] if unlinked else [])
+    assert asked == ([] if project_dirs is None else [project_dirs])
+
+
+@pytest.mark.parametrize("iss", [None, "https://evil.example"])
+def test_a_dcr_sign_in_runs_end_to_end_on_the_shared_port(vendor, monkeypatch, iss):
+    import aiohttp
+
+    monkeypatch.setattr(crew_oauth_dcr, "DCR_CALLBACK_PORT", 0)
+    dropped: list[str] = []
+
+    async def _drop(slug, project_dirs):
+        dropped.append(slug)
+
+    monkeypatch.setattr(crew_oauth_dcr, "drop_harness_grants", _drop)
+    vendor.posts["https://access.stripe.com/mcp/oauth2/token"] = [
+        (200, {"access_token": "at", "refresh_token": "rt", "expires_in": 60}, "")
+    ]
+
+    async def _run():
+        sign_in = crew_oauth.SignIn("stripe")
+        url = await sign_in.start()
+        state = urllib.parse.parse_qs(urllib.parse.urlsplit(url).query)["state"][0]
+        query = {"state": state, "code": "c", **({"iss": iss} if iss else {})}
+        async with aiohttp.ClientSession() as s:
+            target = f"http://127.0.0.1:{sign_in.bound_port}/callback"
+            async with s.get(target, params=query) as r:
+                assert r.status == (400 if iss else 200)
+        try:
+            await sign_in.finish()
+        finally:
+            await sign_in.shutdown()
+        assert "runner" not in crew_oauth_dcr._listener
+
+    if iss:
+        with pytest.raises(CrewOAuthError) as err:
+            asyncio.run(_run())
+        assert err.value.code == "issuer_mismatch" and dropped == []
+        return
+    asyncio.run(_run())
+    assert TokenStore().read("stripe")[0].access == "at" and dropped == ["stripe"]
+    form = vendor.calls[-1][2]
+    assert form["grant_type"] == "authorization_code" and form["resource"] == STRIPE_MCP
+
+
+def test_post_reads_a_bounded_answer_and_never_follows_a_redirect(monkeypatch):
+    import aiohttp
+    from aiohttp import web
+    from aiohttp.test_utils import TestServer
+
+    async def _answer(request):
+        if request.path == "/big":
+            return web.Response(text='{"a": "' + "x" * (70 * 1024) + '"}')
+        if request.path == "/moved":
+            raise web.HTTPFound("https://evil.example/")
+        return web.json_response(
+            {"error": "invalid_token"}, status=401, headers={"WWW-Authenticate": 'Bearer scope="r"'}
+        )
+
+    async def _run():
+        app = web.Application()
+        app.router.add_post("/{tail:.*}", _answer)
+        server = TestServer(app)
+        await server.start_server()
+
+        async def _session(url):
+            return aiohttp.ClientSession(), str(server.make_url(urllib.parse.urlsplit(url).path))
+
+        monkeypatch.setattr(crew_oauth_dcr, "_session", _session)
+        try:
+            assert await crew_oauth_dcr._post("https://v.example/mcp", body={}) == (
+                401,
+                {"error": "invalid_token"},
+                'Bearer scope="r"',
+            )
+            assert (await crew_oauth_dcr._post("https://v.example/big", form={}))[:2] == (200, {})
+            assert (await crew_oauth_dcr._post("https://v.example/moved"))[0] == 302
+        finally:
+            await server.close()
+
+    asyncio.run(_run())
+
+
+def test_post_reads_an_answer_that_arrives_in_pieces(monkeypatch):
+    """A single read() returns only the first piece; the body must be read to EOF."""
+    pieces = [b'{"access_token": "a', b't"}']
+
+    class _Content:
+        async def read(self, n=-1):
+            return pieces[0]
+
+        async def iter_chunked(self, n):
+            for piece in pieces:
+                yield piece
+
+    class _Resp:
+        status, headers, content = 200, {}, _Content()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    class _Session:
+        def post(self, *a, **k):
+            return _Resp()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    async def _session(url):
+        return _Session(), url
+
+    monkeypatch.setattr(crew_oauth_dcr, "_session", _session)
+    status, doc, _ = asyncio.run(crew_oauth_dcr._post("https://v.example/token", form={}))
+    assert (status, doc) == (200, {"access_token": "at"})
+
+
+def test_an_unreachable_endpoint_is_a_coded_failure(monkeypatch):
+    from kiro_crew.link_unfurl import UnfurlRejected
+
+    async def _session(url):
+        raise UnfurlRejected("blocked_url")
+
+    monkeypatch.setattr(crew_oauth_dcr, "_session", _session)
+    with pytest.raises(CrewOAuthError) as err:
+        asyncio.run(crew_oauth_dcr._post("https://10.0.0.1/x"))
+    # The code the proxy maps to "try again", not "the provider rejected it".
+    assert err.value.code == "token_unreachable"
+
+
+def test_a_dcr_connect_reaches_waiting_through_the_mint_row(vendor, monkeypatch):
+    from kiro_crew.connections import mint
+
+    monkeypatch.setattr(crew_oauth_dcr, "DCR_CALLBACK_PORT", 0)
+    monkeypatch.setattr(mint, "_mints", {})
+
+    async def _run():
+        await crew_oauth.start_mint_row("stripe", ())
+        row = mint._mints["stripe"]
+        assert row["state"] == "waiting", row.get("reason")
+        assert row["oauth_url"].startswith("https://access.stripe.com/mcp/oauth2/authorize?")
+        row["watcher"].cancel()
+        await row["client"].shutdown()
+
+    asyncio.run(_run())
+
+
+@pytest.mark.parametrize(
+    "authorize",
+    [
+        "https://auth.atlassian.com/authorize",
+        "https://mcp.notion.com/authorize",
+        "https://mcp.linear.app/authorize",
+        "https://access.stripe.com/mcp/oauth2/authorize",
+        "https://vercel.com/oauth/authorize",
+        "https://gitlab.com/oauth/authorize",
+    ],
+)
+def test_each_cards_consent_link_passes_the_banner_gate(authorize):
+    """The six live ``authorization_endpoint`` values, with ``resource`` and the shared redirect."""
+    from kiro_crew.security import oauth_url_contains_credential
+
+    client = crew_oauth_dcr.Client(
+        client_id="3f9c2a7e-1b4d-4c8a-9e0f-5a6b7c8d9e0f",
+        client_secret=None,
+        secret_expires_at=0.0,
+        auth_method="none",
+        redirect_uri=crew_oauth_dcr.redirect_uri(),
+        issuer="https://issuer.example",
+        resource="https://mcp.example/mcp",
+        authorize=authorize,
+        token="https://issuer.example/token",
+        revoke=None,
+        iss_param=False,
+    )
+    plan = crew_oauth_dcr.Plan(client, "read offline_access")
+    fixed = "A" * 43
+    assert oauth_url_contains_credential(crew_oauth_dcr.authorize_url(plan, fixed, fixed)) is False

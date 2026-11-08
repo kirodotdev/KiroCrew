@@ -15,6 +15,8 @@ The gateway runs the OAuth chain itself instead of handing it to the harness
   access token is used, and a failed refresh never deletes the stored pair.
 * :func:`disconnect` revokes upstream (best effort) and deletes the entry. A
   Google card whose grant another held Google card shares only deletes its entry.
+* a DCR card (:data:`DCR_SLUGS`) has no operator client: Crew discovers its
+  endpoints and registers its own client (:mod:`kiro_crew.connections.crew_oauth_dcr`).
 
 Off by default (Settings > Feature previews). With the flag off :func:`manages` is
 False everywhere and
@@ -56,6 +58,8 @@ _GOOGLE: dict[str, Any] = {
     # judged by the project number that leads each client id.
     "grant_by_project": True,
 }
+#: The visible DCR cards Crew can own; their endpoints come from discovery.
+DCR_SLUGS = frozenset({"atlassian", "notion", "linear", "stripe", "vercel", "gitlab"})
 
 #: Per-provider OAuth endpoints, fixed per vendor (not discovered via RFC 8414).
 #: ``revoke_form`` names the form fields of a POST revoke (``token`` is the refresh
@@ -89,8 +93,8 @@ _ENDPOINTS: dict[str, dict[str, Any]] = {
         )
     },
 }
-#: The slugs Crew can own: exactly those with endpoints.
-SUPPORTED_SLUGS = frozenset(_ENDPOINTS)
+#: The slugs Crew can own: those with endpoints, and the DCR cards.
+SUPPORTED_SLUGS = frozenset(_ENDPOINTS) | DCR_SLUGS
 #: Refresh this long before the recorded expiry.
 _REFRESH_SKEW_SECS = 120.0
 #: How long one consent may stay open.
@@ -175,10 +179,20 @@ def routed_slug(name: str, entry: Any, provider_for_server: Any) -> str:
     """
     if name not in SUPPORTED_SLUGS or has_credential_header(entry.get("headers")):
         return ""
-    provider = provider_for_server(name, entry)
+    provider = _dcr_provider(name, entry) if name in DCR_SLUGS else provider_for_server(name, entry)
     if provider is None or not manages(str(provider["slug"])):
         return ""
     return str(provider["slug"])
+
+
+def _dcr_provider(name: str, entry: Any) -> Any:
+    """The DCR registry provider *entry* is an instance of (slug AND url), else ``None``."""
+    from kiro_crew.connections.registry import get_provider, is_preregistered
+
+    provider = get_provider(name)
+    if provider is None or is_preregistered(provider) or entry.get("url") != provider["mcp_url"]:
+        return None
+    return provider
 
 
 def configured_entry_routed(slug: str) -> bool | None:
@@ -429,8 +443,10 @@ class SignIn:
     expired after :data:`SIGN_IN_TTL_SECS`).
     """
 
-    def __init__(self, slug: str) -> None:
+    def __init__(self, slug: str, project_dirs: Any = None) -> None:
         self.slug = slug
+        # The open checkouts the harness-grant census reads; ``None``: unknown.
+        self._project_dirs = project_dirs
         self._state = secrets.token_urlsafe(32)
         # The one PKCE S256 implementation the product carries.
         from kiro_crew.auth.login.portal import generate_code_challenge, generate_code_verifier
@@ -443,6 +459,8 @@ class SignIn:
         self.bound_port = 0
         self._closing = False
         self._write: asyncio.Future[None] | None = None
+        self._dcr: Any = None
+        self._listening = False
 
     async def start(self) -> str:
         """Bind the callback listener and return the consent URL."""
@@ -450,6 +468,16 @@ class SignIn:
 
         from kiro_crew.connections.registry import CALLBACK_PATH, get_provider, redirect_uri
 
+        if self.slug in DCR_SLUGS:
+            from kiro_crew.connections import crew_oauth_dcr as dcr
+
+            self._dcr = await dcr.prepare(self.slug)
+            # One port for every DCR sign-in; ``state`` routes the callback here.
+            self.bound_port = await dcr.listen(self._state, self._callback)
+            self._listening = True
+            self._redirect = self._dcr.client.redirect_uri
+            self.url = dcr.authorize_url(self._dcr, self._state, self._challenge)
+            return self.url
         provider = get_provider(self.slug)
         client = await asyncio.to_thread(_client, self.slug)
         redirect = redirect_uri(provider) if provider else None
@@ -485,6 +513,13 @@ class SignIn:
         # Bytes: compare_digest raises on a non-ASCII str, which would answer 500.
         if self._done.done() or not secrets.compare_digest(state.encode(), self._state.encode()):
             return web.Response(status=400, text="This sign-in link is not the current one.")
+        if self._dcr is not None:
+            from kiro_crew.connections.crew_oauth_dcr import iss_ok
+
+            if not iss_ok(self._dcr.client, request.query.get("iss")):
+                # RFC 9207 mix-up defence: the answer came from another server.
+                self._done.set_exception(CrewOAuthError("issuer_mismatch"))
+                return web.Response(status=400, text="This sign-in answer is not trusted.")
         if not code:
             self._done.set_exception(CrewOAuthError("consent_declined"))
             return web.Response(text="Sign-in was not completed. You can close this tab.")
@@ -511,24 +546,46 @@ class SignIn:
                 # revokes it instead of leaving unseen tokens live upstream.
                 if self._closing:
                     raise CrewOAuthError("cancelled")
-                doc = await _post_token(
-                    self.slug,
-                    {
-                        "grant_type": "authorization_code",
-                        "client_id": self._client.client_id,
-                        "client_secret": self._client.client_secret,
-                        "code": code,
-                        "redirect_uri": self._redirect,
-                        "code_verifier": self._verifier,
-                    },
-                )
+                if self._dcr is not None:
+                    doc = await self._dcr_exchange(code)
+                    issued_to = self._dcr.client.client_id
+                else:
+                    doc = await _post_token(
+                        self.slug,
+                        {
+                            "grant_type": "authorization_code",
+                            "client_id": self._client.client_id,
+                            "client_secret": self._client.client_secret,
+                            "code": code,
+                            "redirect_uri": self._redirect,
+                            "code_verifier": self._verifier,
+                        },
+                    )
+                    issued_to = self._client.client_id
                 tokens = dataclasses.replace(
-                    tokens_from_response(doc, time.time()), client=self._client.client_id
+                    tokens_from_response(doc, time.time()), client=issued_to
                 )
                 await asyncio.to_thread(target.replace, self.slug, tokens)
 
         self._write = asyncio.ensure_future(_swap_and_write())
         await asyncio.shield(self._write)
+        if self._dcr is not None:
+            # One custody: the harness's own grant for this URL goes (RFC §4.2).
+            from kiro_crew.connections.crew_oauth_dcr import drop_harness_grants
+
+            await drop_harness_grants(self.slug, self._project_dirs)
+
+    async def _dcr_exchange(self, code: str) -> dict[str, Any]:
+        """The DCR code swap; a client the vendor does not know is forgotten."""
+        from kiro_crew.connections.crew_oauth_dcr import exchange, forget_client
+
+        try:
+            return await exchange(self._dcr.client, code, self._verifier)
+        except CrewOAuthError as exc:
+            if exc.code in ("invalid_client", "unauthorized_client"):
+                # The next Connect registers again instead of reusing the dead one.
+                await forget_client(self.slug)
+            raise
 
     async def shutdown(self) -> None:
         """Close the listener and wait for any token write already started."""
@@ -538,6 +595,11 @@ class SignIn:
         runner, self._runner = self._runner, None
         if runner is not None:
             await runner.cleanup()
+        if self._listening:
+            from kiro_crew.connections.crew_oauth_dcr import unlisten
+
+            self._listening = False
+            await unlisten(self._state)
         write = self._write
         if write is not None and not write.done():
             await asyncio.wait({write})
@@ -548,17 +610,22 @@ async def _refresh(slug: str, store: TokenStore, held: tuple[Tokens, str]) -> To
     tokens, revision = held
     if not tokens.refresh:
         raise CrewOAuthError("needs_auth")
-    client = await asyncio.to_thread(_client, slug)
+    from kiro_crew.connections import crew_oauth_dcr as dcr
+
+    client = None if slug in DCR_SLUGS else await asyncio.to_thread(_client, slug)
     try:
-        doc = await _post_token(
-            slug,
-            {
-                "grant_type": "refresh_token",
-                "refresh_token": tokens.refresh,
-                "client_id": client.client_id,
-                "client_secret": client.client_secret,
-            },
-        )
+        if client is None:
+            doc = await dcr.refresh(slug, tokens.refresh)
+        else:
+            doc = await _post_token(
+                slug,
+                {
+                    "grant_type": "refresh_token",
+                    "refresh_token": tokens.refresh,
+                    "client_id": client.client_id,
+                    "client_secret": client.client_secret,
+                },
+            )
         fresh = tokens_from_response(doc, time.time())
     except CrewOAuthError as exc:
         # Another writer (a second gateway on this data home) may have rotated the
@@ -566,6 +633,12 @@ async def _refresh(slug: str, store: TokenStore, held: tuple[Tokens, str]) -> To
         again = await asyncio.to_thread(store.read, slug)
         if again is not None and again[1] != revision:
             return again[0]
+        if client is None and exc.code == "invalid_client":
+            # The vendor dropped Crew's registration: the next Connect registers
+            # again, and the pair bound to the dead client goes with it.
+            await dcr.forget_client(slug)
+            await store.delete_if(slug, revision)
+            raise CrewOAuthError("needs_auth") from None
         code = "needs_auth" if exc.code in _DEAD_GRANT_ERRORS else exc.code
         raise CrewOAuthError(code) from None
     # Google and Asana keep their refresh token; the account and issuing client
@@ -624,7 +697,8 @@ def _shares_upstream_grant(slug: str, store: TokenStore) -> bool:
     stored with each pair: revoking would end that one too. An unknown account or
     client, or anything unreadable, counts as not shared, so the revoke happens.
     """
-    group = _ENDPOINTS[slug].get("grant_group")
+    # A DCR card has no entry here: each registers its own client, so none shares.
+    group = _ENDPOINTS.get(slug, {}).get("grant_group")
     if not group:
         return False
     try:
@@ -633,7 +707,7 @@ def _shares_upstream_grant(slug: str, store: TokenStore) -> bool:
             return False
         mine = held[0]
         for other in sorted(SUPPORTED_SLUGS - {slug}):
-            if _ENDPOINTS[other].get("grant_group") != group:
+            if _ENDPOINTS.get(other, {}).get("grant_group") != group:
                 continue
             theirs = store.read(other)
             if (
@@ -658,6 +732,10 @@ async def _revoke(slug: str, tokens: Tokens) -> bool:
     """Upstream revoke of *tokens* in the vendor's shape; best effort, never raises."""
     import aiohttp
 
+    if slug in DCR_SLUGS:
+        from kiro_crew.connections.crew_oauth_dcr import revoke
+
+        return await revoke(slug, tokens)
     try:
         timeout = aiohttp.ClientTimeout(total=_HTTP_TIMEOUT_SECS)
         form_fields = _ENDPOINTS[slug].get("revoke_form")
@@ -762,7 +840,7 @@ def _audit(operation: str, outcome: str, slug: str, detail: str = "") -> None:
         logger.debug("crew oauth audit failed", exc_info=True)
 
 
-async def start_mint_row(slug: str) -> str:
+async def start_mint_row(slug: str, project_dirs: Any = None) -> str:
     """Run a Crew-owned sign-in through the Connections card's mint row; the row token.
 
     The card's contract is unchanged: it polls ``GET /api/connections/mint`` for
@@ -773,16 +851,16 @@ async def start_mint_row(slug: str) -> str:
     attempt it replaces has registered its listener, so it can dispose of it.
     """
     async with _startup_locks.setdefault(slug, asyncio.Lock()):
-        return await _start_mint_row(slug)
+        return await _start_mint_row(slug, project_dirs)
 
 
-async def _start_mint_row(slug: str) -> str:
+async def _start_mint_row(slug: str, project_dirs: Any) -> str:
     from kiro_crew.connections import mint
 
     token, prior = await mint.reserve_mint_row(slug)
     if prior is not None:
         await mint._dispose_mint(prior)
-    sign_in = SignIn(slug)
+    sign_in = SignIn(slug, project_dirs)
     try:
         url = await sign_in.start()
     except CrewOAuthError as exc:
@@ -795,7 +873,12 @@ async def _start_mint_row(slug: str) -> str:
     # credential pattern can match by chance; the gate reads the link with one fixed
     # value of the same shape in their place, and every other part as it is.
     fixed = "A" * 43
-    vetted = authorize_url(slug, sign_in._client.client_id, sign_in._redirect, fixed, fixed)
+    if sign_in._dcr is not None:
+        from kiro_crew.connections.crew_oauth_dcr import authorize_url as dcr_authorize_url
+
+        vetted = dcr_authorize_url(sign_in._dcr, fixed, fixed)
+    else:
+        vetted = authorize_url(slug, sign_in._client.client_id, sign_in._redirect, fixed, fixed)
     if await asyncio.to_thread(oauth_url_contains_credential, vetted):
         await sign_in.shutdown()
         await _set_row(slug, token, {"state": "failed", "reason": "mint_url_rejected"})
