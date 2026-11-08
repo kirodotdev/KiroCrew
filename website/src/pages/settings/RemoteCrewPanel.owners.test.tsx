@@ -55,6 +55,7 @@ describe('RemoteCrewPanel owners', () => {
     expect(OWNERS).toEqual([
       'RemoteCrewPanelCrewRow.tsx',
       'RemoteCrewPanelLaunch.tsx',
+      'RemoteCrewPanelRestartBanner.tsx',
       'remoteCrewPanelModel.ts',
     ])
   })

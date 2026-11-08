@@ -22336,7 +22336,7 @@
         "label": "Import / Export"
       },
       "instances": {
-        "description": "Gérez les crews distantes via des tunnels SSH ; basculez de l'une à l'autre depuis l'en-tête supérieur",
+        "description": "Gère les crews distantes via SSH ou AWS Session Manager ; bascule de l'une à l'autre depuis l'en-tête supérieur",
         "label": "Crew distante"
       },
       "notifications": {

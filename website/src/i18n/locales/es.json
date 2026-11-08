@@ -22336,7 +22336,7 @@
         "label": "Importar / Exportar"
       },
       "instances": {
-        "description": "Gestiona crews remotos por túneles SSH; cambia entre ellos desde la cabecera superior",
+        "description": "Gestiona crews remotos por SSH o AWS Session Manager; cambia entre ellos desde la cabecera superior",
         "label": "Crew remoto"
       },
       "notifications": {

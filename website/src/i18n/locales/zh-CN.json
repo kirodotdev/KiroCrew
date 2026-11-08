@@ -21272,7 +21272,7 @@
         "label": "导入 / 导出"
       },
       "instances": {
-        "description": "通过 SSH 隧道管理远程 Crew；可在顶部标题栏切换",
+        "description": "通过 SSH 或 AWS Session Manager 管理远程 Crew；可在顶部标题栏切换",
         "label": "远程 Crew"
       },
       "notifications": {
