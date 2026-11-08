@@ -6661,6 +6661,7 @@
       "stop_failed_server": "서버에 문제가 생겨 이 턴을 중지하지 못했습니다. 중지를 다시 누르세요.",
       "stop_failed_signed_out": "로그아웃되어 아무것도 중지되지 않았습니다. 다시 로그인한 후 중지를 누르세요.",
       "stop_failed_network": "서버에 연결할 수 없어 이 턴을 중지하지 못했습니다. 중지를 다시 누르세요.",
+      "stop_failed_owner_only": "대시보드 소유자만 이 실행을 중지할 수 있습니다. 소유자에게 중지를 요청하세요.",
       "split_down": "아래로 분할",
       "split_right": "오른쪽으로 분할",
       "split_right_d": "오른쪽으로 분할 (⌘D)",

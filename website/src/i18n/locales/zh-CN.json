@@ -6661,6 +6661,7 @@
       "stop_failed_server": "服务器出现问题，未能停止此轮对话。请再按一次“停止”。",
       "stop_failed_signed_out": "你已退出登录，因此没有停止任何内容。请重新登录，然后按“停止”。",
       "stop_failed_network": "无法连接服务器以停止此轮对话。请再按一次“停止”。",
+      "stop_failed_owner_only": "只有仪表板所有者才能停止此次运行。请让所有者来停止。",
       "split_down": "向下分屏",
       "split_right": "向右分屏",
       "split_right_d": "向右分屏（⌘D）",
