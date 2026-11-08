@@ -114,6 +114,14 @@ Either one opens a new draft session, as `autoSend: false` does: the `message` i
 staged in the composer for the user to send. A host older than these options opens an
 ordinary new chat instead.
 
+With `slotKey` naming a session your app created moments earlier (for example through
+`POST /api/chat/slots`), the chat page waits up to five seconds for its session list to
+show it before opening it, so an immediate `openChat` after the create lands on the new
+session. A session the user opens during that wait wins, and a `message` the launch
+carried comes back to the user in the "send cancelled" notice. An older host may open the
+session before its list has it and stay on the previous chat; an app that must also
+run there can keep a short wait of its own before opening a just-created session.
+
 Level-1 additions to the SDK, each also re-exported by the vendor stub an app's bundle
 resolves through:
 
@@ -1341,12 +1349,49 @@ process. It is always present, like `ctx.scrub`, because it adds no reach your
 in-gateway code lacks. On an older host, `getattr(ctx, "embed", None)` is `None`;
 fall back to `asyncio.to_thread` and keyword search.
 
+### App lifecycle (`ctx.lifecycle`)
+
+Your app's own on/off switch, and a way to start work that cannot race the
+operator switching the app off. A plain enabled check can say yes while a disable is
+between your `on_shutdown` hook and its `enabled` write, and work started then keeps
+running after the hook that should have stopped it. `admit` reads the switch under
+the same lock the disable holds, so either it sees the app off or your `on_shutdown`
+runs after it and stops the work.
+
+```python
+async def start_run(request, ctx):
+    admission = await ctx.lifecycle.admit(lambda: runner.stop_seq())
+    if not admission.admitted:
+        code = "busy" if admission.timed_out else "app_disabled"
+        return web.json_response({"code": code}, status=409 if admission.timed_out else 403)
+    runner.start(admitted_at=admission.value)
+```
+
+| Member | Returns |
+|---|---|
+| `is_enabled()` | `True` when this app is installed and switched on. A **blocking** file read: call it through `asyncio.to_thread` from the event loop. No install record reads as `False`. |
+| `await admit(check=None, *, timeout=10.0)` | An `Admission(admitted, value, timed_out)`. Under this app's lifecycle lock it reads the switch and, when the app is on, runs `check()` on a worker thread; `value` is what `check` returned. An exception `check` raises propagates. |
+
+It answers for your app only: the name comes from the context, and no member takes
+one. `admit` never hands you the lock. `timeout` (seconds, at most 30; anything
+else falls back to 10) covers both the wait for the lock and the check. Past it you
+get `Admission(False, timed_out=True)`, the lock is released, and a check still
+running finishes on its own with its answer discarded. So keep `check` to a short
+read: it runs while the operator's disable, update or uninstall of your app waits.
+Do not call `admit` from your `on_shutdown` hook: the disable holds the lock around
+that hook, so the call only waits out its timeout. Awaited on the gateway's event
+loop only. It needs no permission and is present on every context the gateway
+builds; on an older host `getattr(ctx, "lifecycle", None)` is `None` and
+`ctx.sdk_level` is below 2.
+
 ### App Kit seam level (`ctx.sdk_level`)
 
 An `int`, the App Kit seam level this host provides. Level 1 means the owner gate,
 the shared embedder, structural routes (see `backend.hooks.routes` in
 [manifest-reference.md](manifest-reference.md)) and the dashboard SDK additions
-listed under [App SDK Hooks](#app-sdk-hooks-dashboard-ui) are all present. Read it
+listed under [App SDK Hooks](#app-sdk-hooks-dashboard-ui) are all present. Level 2
+adds [`ctx.lifecycle`](#app-lifecycle-ctxlifecycle) to everything level 1 has; each
+level includes every level below it. Read it
 with `getattr(ctx, "sdk_level", 0)`. When it is lower than your app needs, call
 `ctx.health.mark_degraded(...)` with the consequence and keep serving what you can.
 The dashboard exports the same number as `APP_SDK_LEVEL`.

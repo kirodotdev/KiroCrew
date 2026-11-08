@@ -22,6 +22,7 @@ from kiro_crew.apps.cron_sdk import CronSDK
 from kiro_crew.apps.embed_sdk import EmbedSDK
 from kiro_crew.apps.event_bus import EventBus
 from kiro_crew.apps.job_sdk import JobSDK
+from kiro_crew.apps.lifecycle_sdk import AppLifecycleSDK
 from kiro_crew.apps.scrub_sdk import ScrubSDK
 from kiro_crew.apps.spawn_sdk import SpawnSDK
 
@@ -96,6 +97,12 @@ class AppContext:
     # `build_app_context` always populates it, so a context built by the factory
     # never sees None.
     audit: AuditSDK | None = None
+    # `| None` for the same reason as `audit`: it answers for one app, and a
+    # default instance would have to invent which. `build_app_context` always
+    # populates it. See lifecycle_sdk.AppLifecycleSDK: the app's own switch, and
+    # admission under its own lifecycle lock, bounded so the app cannot keep its
+    # own disable waiting.
+    lifecycle: AppLifecycleSDK | None = None
     # The gateway's own aiohttp Application, for an app whose background work has
     # to be anchored on it -- a poller that reads the dashboard state its request
     # handlers already read, and stashes the running service where those handlers
@@ -274,5 +281,6 @@ def build_app_context(
         # Both unconditional: see the fields' comments on AppContext.
         scrub=ScrubSDK(),
         audit=AuditSDK(app_name),
+        lifecycle=AppLifecycleSDK(app_name),
         http_app=http_app,
     )

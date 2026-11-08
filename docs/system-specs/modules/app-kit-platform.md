@@ -367,6 +367,21 @@ a new draft session through the existing session controller. With `slotKey`, the
 routed chat activates that exact slot on cold entry and hot navigation before
 filling or sending. Target activation owns the mount fetch, so a previously
 active Redux slot cannot refresh itself over the app's target.
+A target the session list does not show yet (an app that created the slot through
+`POST /api/chat/slots` and opened it at once, before the create broadcast) is not
+switched to straight away: its first detail read can 404, and that unwinds to the
+outgoing chat. The claim holds URL sync, takes the sid from the deep-link path (so
+neither the mount activation nor its not-found deadline acts on it) and waits for the
+list, up to `APP_LAUNCH_LIST_WAIT_MS` (5s) from the launch, then switches either way.
+A session the user opens during the wait, or an address that stops naming the target,
+abandons the launch: the claim frees URL sync and hands the launch to the intake, whose
+"send cancelled" notice returns an unsent message for copying. The `?sid=` in the
+address bar keeps the page's auto-select from moving meanwhile. A claimed wait is
+owned by the claim until it switches or is abandoned, past the 10s a staged intent
+stays claimable, so a socket drop that outlasts that window resumes it on reconnect. A
+newer launch supersedes the wait silently, as it does a pending activation. Pinned
+by `src/test/ChatPageNewSessionPrefill.test.tsx` ("into a session the list does not
+show yet").
 The controller retains a claimed message through slow
 activation; a rejected switch reports failure and the unsent message together
 in the existing copyable session-open notice, without sending to another slot.
@@ -6093,6 +6108,43 @@ Writers: `apps/app_sdk_level.py`, `apps/route_registry.py`, `apps/context.py`,
 `website/src/pages/chat/useChatPageSessionController.ts`,
 `website/src/pages/chat/page/launchIntake.ts`, `website/src/appNav.ts`,
 `website/src/components/appstore/appManifest.ts`.
+
+## 32b. `ctx.lifecycle`: an app's own switch and admission (seam level 2)
+
+`APP_SDK_LEVEL` is 2 on both sides, and `AppContext.lifecycle` is part of level 2: an
+`AppLifecycleSDK` (`apps/lifecycle_sdk.py`) bound to `ctx.name`, the public form of
+the `apps.manager.is_app_enabled` / `app_lifecycle_lock` pair that the auto-improvement,
+auto-research and aws-control built-ins read for their own name (auto-improvement's
+external copy still reaches that pair by private name through its `_host`).
+
+- `is_enabled()` is `apps.manager.is_app_enabled(ctx.name)`: blocking, read-only,
+  no record reads `False`.
+- `admit(check=None, *, timeout)` takes `apps.manager.app_lifecycle_lock(ctx.name)`,
+  reads the switch and, when on, runs `check` through `asyncio.to_thread`, all inside
+  one `asyncio.wait_for` deadline. The deadline is clamped to
+  `MAX_ADMIT_TIMEOUT_SEC` (30s, the lifecycle hook deadline of §7.1); a
+  non-number, a bool, zero, a negative or NaN uses `DEFAULT_ADMIT_TIMEOUT_SEC`
+  (10s). Past it the answer is `Admission(admitted=False, timed_out=True)` and the
+  lock is free; a check still running on its thread is not interrupted and its
+  result is dropped. An exception from `check` propagates after the lock is
+  released. Because the disable path holds the lock around the app's
+  `on_shutdown`, a call from that hook times out rather than deadlocking.
+
+Scope is identity, not a manifest grant: no member takes an app name, so the SDK
+reads only its own record and contends only on its own lock, and the lock itself
+is never handed out, so an app cannot keep its own disable, update or uninstall
+waiting past the clamp. It is cooperative, like `ctx.audit`: in-process hook code
+could still import the manager. No permission gates it, because it adds no reach;
+`build_app_context` populates it for every app, and a hand-built context leaves it
+`None` rather than invent a name. The wheel's built-ins keep their direct calls:
+their `register_routes(app)` handlers receive no context, so moving them is each
+app's own repository's change, made against `ctx.lifecycle`. No core row names a
+built-in for this, so no decoupling gate changes.
+
+Writers: `apps/lifecycle_sdk.py`, `apps/context.py`, `apps/app_sdk_level.py`,
+`website/src/app-sdk/sdkLevel.ts`. Tests: `test/test_app_lifecycle_sdk.py`,
+`test/test_app_sdk_level_mirror.py`. App authors: `docs/app-kit/api-reference.md`
+"App lifecycle".
 
 ## 33. Former built-in adoption
 
