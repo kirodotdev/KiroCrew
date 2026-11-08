@@ -14,7 +14,7 @@ Instance fields written: ``_entitlement_probe_attempt_at``, ``_entitlement_probe
 ``recording_allowed``.
 
 Instance fields read: ``_agent``, ``_agent_capabilities``, ``_crew_agent``, ``_dead``,
-``_entitlement_probe_lock``, ``_expect_mcp_reports``, ``_initialized``,
+``_entitlement_probe_lock``, ``_expect_mcp_reports``, ``_initialized``, ``_kas_telemetry_sent``,
 ``_mcp_gateway_overlay``, ``_member_context``, ``_pending_init_notifications``, ``_pid``,
 ``_pool_lookup``, ``_process``, ``_refuse_over_ceiling_start``, ``_remote_session_servers``,
 ``_remote_workspace_agents``, ``_session_label_elements``, ``_start_collect_timeout``,
@@ -30,7 +30,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from kiro_crew.acp import kas_env_launch, runtime_start
+from kiro_crew.acp import kas_cli_settings, kas_env_launch, runtime_start
 from kiro_crew.acp._dispatch import (
     attach_kas_custom_agents,
     build_session_new_params,
@@ -766,6 +766,10 @@ async def _finish_create_session(
     # The servers the payload sent without part of their env or headers, for the
     # session-start notice; "" on a host that sends no payload.
     handle.kas_withheld_credentials_notice = withheld_notice
+    if self._kas_telemetry_sent is not None:
+        handle.kas_telemetry_notice = await asyncio.to_thread(
+            kas_cli_settings.session_telemetry_notice, self._kas_telemetry_sent, session_work_dir
+        )
     if self._mirrored_spec_check_needed(mirrored_snapshot):
         await self._require_unchanged_mirrored_spec(session_id, mirrored_snapshot)
 

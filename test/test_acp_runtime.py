@@ -562,6 +562,41 @@ async def test_session_cwd_is_bound_through_real_create_and_load(
 
 
 @pytest.mark.asyncio
+async def test_create_session_records_the_telemetry_notice(kas_readiness_wire, monkeypatch):
+    """The real ``create_session`` puts the telemetry notice of a process that sent
+    the opt-out on the handle the provider reads for the new chat's notice row."""
+    from kiro_crew.acp import kas_cli_settings
+
+    wire = kas_readiness_wire
+    wire.runtime._kas_telemetry_sent = False
+    captured: list[AcpSessionHandle] = []
+    constructed = AcpSessionHandle.__init__
+
+    def capture_init(self, *args, **kwargs):
+        constructed(self, *args, **kwargs)
+        captured.append(self)
+
+    monkeypatch.setattr(AcpSessionHandle, "__init__", capture_init)
+    reader_task = await _start_reader(wire.runtime)
+    start = None
+    try:
+        start = await wire.handshake(False, pre_ready=True)
+        for _ in range(200):
+            if captured and captured[-1].kas_telemetry_notice:
+                break
+            await asyncio.sleep(0)
+        assert captured, "the real create path never constructed a handle"
+        assert captured[-1].kas_telemetry_notice == kas_cli_settings.TELEMETRY_UNCONFIRMED_NOTICE
+    finally:
+        if start is not None:
+            if not start.done():
+                start.cancel()
+            await asyncio.gather(start, return_exceptions=True)
+        reader_task.cancel()
+        await asyncio.gather(reader_task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_create_session_records_the_withheld_credentials_notice(
     kas_readiness_wire, monkeypatch
 ):

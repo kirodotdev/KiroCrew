@@ -11,6 +11,7 @@ Instance fields written: ``_load_replay_frames``, ``_session_cwds``, ``_session_
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_agent_capabilities``,
 ``_can_load_session``, ``_crew_agent``, ``_expect_mcp_reports``, ``_initialized``,
+``_kas_telemetry_sent``,
 ``_mcp_gateway_overlay``, ``_pid``, ``_pool_lookup``, ``_refuse_over_ceiling_start``,
 ``_remote_session_servers``, ``_remote_workspace_agents``, ``_session_label_elements``,
 ``_wire_mode_id``, ``_work_dir``,
@@ -25,7 +26,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.acp import kas_env_launch
+from kiro_crew.acp import kas_cli_settings, kas_env_launch
 from kiro_crew.acp._dispatch import attach_kas_custom_agents, parse_session_modes
 from kiro_crew.acp.kas_agents import hoist_servers_for_session
 from kiro_crew.acp.kas_settings_mcp import without_excluded_stubs
@@ -441,6 +442,10 @@ async def load_session(
     self._harness.record_session_projection(handle, kas_agents, active_agent)
     handle.kas_launch_snapshots.extend(launch_snapshots)
     handle.kas_withheld_credentials_notice = withheld_notice
+    if self._kas_telemetry_sent is not None:
+        handle.kas_telemetry_notice = await asyncio.to_thread(
+            kas_cli_settings.session_telemetry_notice, self._kas_telemetry_sent, session_work_dir
+        )
     if self._mirrored_spec_check_needed(mirrored_snapshot):
         await self._require_unchanged_mirrored_spec(resume_sid, mirrored_snapshot)
     handle.request_vault_identity = request_identity

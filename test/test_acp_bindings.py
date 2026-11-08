@@ -175,6 +175,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "take_batch_refusal": ("function", False, "85a6851f62f8", "acp"),
     "tested_version_notice": ("property", False, "bb418bb7ece8", "acp"),
     "tool_search_settings": ("property", False, "da838953900b", "acp"),
+    "telemetry_unconfirmed_notice": ("property", False, "bb418bb7ece8", "acp"),
     "touch_activity": ("function", False, "b60c5fea256e", "acp"),
     "uses_kiro_identity_store": ("property", False, "a6632a57e602", "acp"),
     "wait_for_compaction": ("function", True, "1d8ef804d52e", "acp_turns"),
