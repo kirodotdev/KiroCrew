@@ -1165,31 +1165,31 @@ class TestWorkerLooping:
         assert lw.worker_looping(_Broken(), "chat-1") is False
 
 
-def test_every_item_closed_is_terminal_but_an_empty_ledger_is_not():
+def test_every_item_closed_wakes_once_and_is_never_terminal():
+    """Closing every item does not end the goal, so it must not end the watch.
+
+    One WAKE says the board is closed; re-reading the same board says nothing; and
+    an empty ledger (a watch armed before the first item) says nothing at all.
+    """
     from kiro_crew import irq
     from kiro_crew.probes import work_ledger as probe_module
 
     _open_ledger()
-    empty = _observe(_probe(), _ctx())
-    assert [o for o in empty.observations if o.severity is irq.Severity.TERMINAL] == []
+    assert _observe(_probe(), _ctx()).observations == []
     item = _create()
     work_ledger.apply_conductor_action(
         CONDUCTOR, "close", item_id=item, state="accepted", decision="verified"
     )
     closed = _observe(_probe(), _ctx())
-    assert [o.severity for o in closed.observations] == [irq.Severity.TERMINAL]
-    # All accepted, so the key the driver records success from.
-    assert [o.key for o in closed.observations] == [probe_module.ACCEPTED_KEY]
+    assert [o.severity for o in closed.observations] == [irq.Severity.WAKE]
+    assert closed.observations[0].key.startswith(f"{probe_module.ACCEPTED_KEY}:")
+    assert "every item is closed and accepted (1 total)" in closed.observations[0].brief
+    assert _observe(_probe(), _ctx()).observations == [], "the same closed board is not news"
 
 
-def test_a_rejected_goal_is_terminal_but_is_not_recorded_as_a_success():
-    """A closed item ended accepted, rejected or abandoned; only the first met its bar.
-
-    The watch must still end -- a rejected goal leaves nothing to observe either --
-    so the distinction cannot live in whether the observation is TERMINAL. It lives
-    in the key, because the key is what the driver turns into the persisted outcome.
-    """
-    from kiro_crew import irq, probes
+def test_a_rejected_or_abandoned_board_says_it_did_not_finish_well():
+    """A closed item ended accepted, rejected or abandoned; only the first met its bar."""
+    from kiro_crew import irq
     from kiro_crew.probes import work_ledger as probe_module
 
     for state in ("rejected", "abandoned"):
@@ -1199,12 +1199,11 @@ def test_a_rejected_goal_is_terminal_but_is_not_recorded_as_a_success():
             CONDUCTOR, "close", item_id=item, state=state, decision="not met"
         )
         tick = _observe(_probe(), _ctx())
-        assert [o.severity for o in tick.observations] == [irq.Severity.TERMINAL], state
-        assert [o.key for o in tick.observations] == [probe_module.CLOSED_KEY], state
-        assert probes.terminal_succeeded(tuple(o.key for o in tick.observations)) is False
+        assert [o.severity for o in tick.observations] == [irq.Severity.WAKE], state
+        assert tick.observations[0].key.startswith(f"{probe_module.CLOSED_KEY}:"), state
 
 
-def test_one_unaccepted_item_decides_the_whole_ledger_is_not_a_success():
+def test_one_unaccepted_item_decides_the_whole_board_did_not_finish_well():
     from kiro_crew.probes import work_ledger as probe_module
 
     _open_ledger()
@@ -1216,7 +1215,7 @@ def test_one_unaccepted_item_decides_the_whole_ledger_is_not_a_success():
         CONDUCTOR, "close", item_id=bad, state="rejected", decision="not met"
     )
     tick = _observe(_probe(), _ctx())
-    assert [o.key for o in tick.observations] == [probe_module.CLOSED_KEY]
+    assert [o.key.split(":")[0] for o in tick.observations] == [probe_module.CLOSED_KEY]
     # The count is in the text, so a wake says which way it ended without a re-read.
     assert "1 accepted of 2" in tick.observations[0].brief
 
@@ -1324,18 +1323,14 @@ class TestWorkerRunning:
         assert lw.worker_running(self._Table({"chat-9": object()}), "chat-9") is False
 
 
-def test_a_finished_goal_is_success_not_a_blocked_pull_request():
-    # The driver records success or blocked from the probe's own terminal keys. Read
-    # through the pull-request vocabulary alone, a conductor whose every item is
-    # closed has no "merged" key and is persisted as BLOCKED -- a succeeded goal
-    # filed as a failure.
+def test_only_a_merged_pull_request_is_a_terminal_success():
+    # The driver records success or blocked from the probe's own terminal keys. The
+    # work-ledger probe raises none: every item closed is a wake, so its
+    # "all closed" key prefixes are not success keys either.
     from kiro_crew import probes
     from kiro_crew.probes import work_ledger as probe_module
 
-    assert probes.terminal_succeeded((probe_module.ACCEPTED_KEY,)) is True
-    # A ledger whose items are all closed with at least one rejected or abandoned is
-    # equally terminal and is NOT a success. Recording it as one would claim an
-    # outcome its conductor never reached.
+    assert probes.terminal_succeeded((probe_module.ACCEPTED_KEY,)) is False
     assert probes.terminal_succeeded((probe_module.CLOSED_KEY,)) is False
     assert probes.terminal_succeeded(("merged",)) is True
     assert probes.terminal_succeeded(("closed",)) is False

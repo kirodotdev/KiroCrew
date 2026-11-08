@@ -366,14 +366,15 @@ async def test_a_current_gated_monitor_can_be_resumed_by_the_user(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_a_settled_work_ledger_reaches_the_terminal_branch_and_deactivates(
+async def test_a_terminal_work_ledger_verdict_reaches_the_terminal_branch_and_deactivates(
     tmp_path, monkeypatch
 ):
-    """A finished work-ledger loop settles, though it exposes no ``probe.observation``.
+    """A work-ledger loop settles from the verdict, though it exposes no ``probe.observation``.
 
-    Its finish arrives only as ``verdict.outcome is TERMINAL`` with key
-    ``all-accepted``, and records as a SUCCESS from ``terminal_succeeded`` (``merged``
-    is set only for a pull request).
+    Every item closed is a wake, not a terminal. The kernel still answers
+    ``verdict.outcome is TERMINAL`` with no keys when the watch's subject cannot be
+    named (``irq.run`` turns that ``ValueError`` into ``Done``), and that records
+    as BLOCKED: no key at all is not a success.
     """
     import kiro_crew.autonudge as _an
 
@@ -382,9 +383,8 @@ async def test_a_settled_work_ledger_reaches_the_terminal_branch_and_deactivates
 
     def _ledger_settled(identity, message, probe):
         # Faithful to the real work-ledger probe: NO ``probe.observation`` is set,
-        # and the terminal verdict rides the kernel's own Outcome.TERMINAL with the
-        # ledger's ``all-accepted`` success key.
-        return _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "all items accepted", ("all-accepted",))
+        # and the terminal verdict rides the kernel's own Outcome.TERMINAL.
+        return _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "watch: no conductor", ())
 
     monkeypatch.setattr(_an.irq, "poll", _ledger_settled)
     service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
@@ -405,8 +405,8 @@ async def test_a_settled_work_ledger_reaches_the_terminal_branch_and_deactivates
         # A terminal tick delivers no turn, so the tick reports quiet.
         assert await service._monitor_tick_is_quiet(loop) is True
         assert loop.monitor is not None
-        assert loop.monitor.outcome is not None, "a settled ledger must reach the terminal branch"
-        assert loop.monitor.outcome.value == "success", "an all-accepted ledger finished well"
+        assert loop.monitor.outcome is not None, "a terminal verdict must reach the terminal branch"
+        assert loop.monitor.outcome.value == "blocked", "no key at all is not a success"
         assert loop.active is False, "and the watch deactivates rather than polling forever"
     finally:
         service.stop()
@@ -424,14 +424,14 @@ async def test_a_work_ledger_recheck_confirms_from_the_verdict_not_an_observatio
     import kiro_crew.autonudge as _an
 
     def _ledger_settled(identity, message, probe):
-        # The real work-ledger probe sets NO observation; the finish rides the kernel's
-        # Outcome.TERMINAL with the ledger's own success key.
-        return _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "all items accepted", ("all-accepted",))
+        # The real work-ledger probe sets NO observation; the end rides the kernel's
+        # Outcome.TERMINAL with no key (an unnameable subject).
+        return _an.irq.Verdict(_an.irq.Outcome.TERMINAL, "watch: no conductor", ())
 
     monkeypatch.setattr(_an.irq, "poll", _ledger_settled)
     service = AutoNudgeService(base_dir=tmp_path, on_fire=lambda loop: True)
     monitor = _structured_monitor(kind="work-ledger", target="slack:C123:1700000000.1")
-    monitor.terminal_delivered = "success"
+    monitor.terminal_delivered = "blocked"
     loop = NudgeLoop(
         id="monitor-wl-recheck",
         slot_key="slack:C123:1700000000.1",
@@ -444,7 +444,7 @@ async def test_a_work_ledger_recheck_confirms_from_the_verdict_not_an_observatio
     try:
         assert (
             await service._terminal_still_holds(loop, monitor) == "holds"
-        ), "an all-accepted work-ledger terminal confirms the owed success"
+        ), "a keyless work-ledger terminal confirms the owed blocked end"
     finally:
         service.stop()
 
