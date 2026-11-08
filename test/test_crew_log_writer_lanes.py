@@ -518,7 +518,12 @@ def test_a_rebuilt_writer_does_not_write_beside_a_retired_writers_stuck_lane(hom
         assert home.steps(unit) == []
     finally:
         release.set()
-    wait_until(lambda: home.steps(unit) == [1])
+    from kiro_crew.crew_log.writer_groups import PROCESS_HOLDS
+
+    # Step 1 lands in the file BEFORE the retired lane lets the unit go (it finishes the
+    # batch's bookkeeping first). A flush in that window spends its whole fake-clock
+    # budget against a held unit and returns False, so wait for the hold itself.
+    wait_until(lambda: home.steps(unit) == [1] and unit not in PROCESS_HOLDS.held())
     assert rebuilt.flush(timeout=default_timeout())
     assert home.steps(unit) == [1, 2]
     assert home.max_inside_one_unit == 1
