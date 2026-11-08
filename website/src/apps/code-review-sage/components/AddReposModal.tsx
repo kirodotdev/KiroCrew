@@ -28,6 +28,9 @@ import EmptyState from '../components/EmptyState'
 import ListSkeleton from '../components/ListSkeleton'
 import { useSage } from '../context'
 import { relativeAge } from '../lib/format'
+import {
+  enterpriseHostOf, isEnterpriseHost, repoHost, repoInputToUrl, repoSlug, type RepoRef,
+} from '../lib/repoRef'
 
 import { useDialogFocusTrap } from '../../../hooks/useDialogFocusTrap'
 import { i18nT } from '../../../i18n/t'
@@ -134,21 +137,26 @@ export default function AddReposModal({ onClose }: { onClose: () => void }) {
   // during the entrance animation) so every dialog behaves identically.
   useDialogFocusTrap(dialogRef, requestClose)
 
+  // Keyed by the host-qualified slug: `acme/api` on github.com and on an
+  // Enterprise host are different repos and must not mark each other pinned.
   const pinnedKeys = useMemo(
-    () => new Set(pinnedRepos.map((r) => `${r.owner}/${r.repo}`.toLowerCase())),
+    () => new Set(pinnedRepos.map((r) => repoSlug(r).toLowerCase())),
     [pinnedRepos],
   )
-  const isPinned = (fullName: string) => pinnedKeys.has(fullName.toLowerCase())
+  const isPinned = (r: RepoRef) => pinnedKeys.has(repoSlug(r).toLowerCase())
 
   const q = query.trim().toLowerCase()
-  const match = (fullName: string) => !q || fullName.toLowerCase().includes(q)
+  const match = (r: RepoRef) => !q || repoSlug(r).toLowerCase().includes(q)
 
-  const recentRows = (recent?.repos ?? []).filter((r) => match(r.full_name))
+  const recentRows = (recent?.repos ?? []).filter((r) => match(r))
   // Anything already in the recent list is omitted from the full list so the two
   // sections don't show the same repo twice.
-  const recentKeys = new Set((recent?.repos ?? []).map((r) => r.full_name.toLowerCase()))
+  const recentKeys = new Set((recent?.repos ?? []).map((r) => repoSlug(r).toLowerCase()))
   const mineRows = (mine?.repos ?? [])
-    .filter((r) => match(r.full_name) && !recentKeys.has(r.full_name.toLowerCase()))
+    .filter((r) => match(r) && !recentKeys.has(repoSlug(r).toLowerCase()))
+  // A host that is configured but not usable (not logged in, unreachable) is
+  // named instead of silently contributing nothing to the lists.
+  const hostErrors = { ...(recent?.host_errors ?? {}), ...(mine?.host_errors ?? {}) }
 
   const setupRequired = recent?.setup_required || mine?.setup_required
   const loading = recentLoading || mineLoading
@@ -159,7 +167,7 @@ export default function AddReposModal({ onClose }: { onClose: () => void }) {
     if (!v) return
     // Accept a full URL, a bare owner/repo, or a PULL REQUEST url — the backend
     // validates all three and, for a PR link, pins its repo and opens the PR.
-    pinRepoUrl(v.includes('://') ? v : `https://github.com/${v.replace(/^\/+|\/+$/g, '')}`)
+    pinRepoUrl(repoInputToUrl(v))
     setManual('')
   }
 
@@ -265,6 +273,16 @@ export default function AddReposModal({ onClose }: { onClose: () => void }) {
             {err && !setupRequired && (
               <ErrorNotice message={err.message} variant="inline" />
             )}
+            {!setupRequired && Object.keys(hostErrors).length > 0 && (
+              <div className="text-[12px] text-muted leading-[1.5] rounded-lg border border-border bg-bg-elevated px-3 py-2">
+                {Object.entries(hostErrors).map(([host, msg]) => (
+                  <div key={host} className="break-words">
+                    {i18nT('apps.codeReviewSage.components.addReposModal.host_unavailable',
+                      { host, message: msg })}
+                  </div>
+                ))}
+              </div>
+            )}
 
             {loading && !setupRequired && (
               <>
@@ -286,16 +304,19 @@ export default function AddReposModal({ onClose }: { onClose: () => void }) {
                 <ul className="flex flex-col gap-1.5 list-none p-0 m-0">
                   {pinnedRepos.map((r) => (
                     <li
-                      key={`${r.owner}/${r.repo}`}
+                      key={repoSlug(r)}
                       className="flex items-center gap-2 rounded-lg border border-border bg-card px-3 py-2"
                     >
                       <span className="flex-1 min-w-0 truncate text-[13px] text-text">
+                        {isEnterpriseHost(r.host) && (
+                          <span className="text-muted">{repoHost(r)}/</span>
+                        )}
                         {r.owner}/<span className="font-medium">{r.repo}</span>
                       </span>
                       <button
                         type="button"
-                        onClick={() => unpinRepo(r.owner, r.repo)}
-                        aria-label={i18nT('apps.codeReviewSage.components.addReposModal.remove_repo', { repo: `${r.owner}/${r.repo}` })}
+                        onClick={() => unpinRepo(r.owner, r.repo, enterpriseHostOf(r))}
+                        aria-label={i18nT('apps.codeReviewSage.components.addReposModal.remove_repo', { repo: repoSlug(r) })}
                         className="flex-shrink-0 inline-flex items-center gap-1 rounded-md px-1.5 py-1 bg-transparent text-[12px] text-muted hover:text-danger cursor-pointer"
                       >
                         <Trash2 size={12} aria-hidden="true" />
@@ -315,13 +336,13 @@ export default function AddReposModal({ onClose }: { onClose: () => void }) {
                     <ul className="flex flex-col gap-1.5 list-none p-0 m-0">
                       {recentRows.map((r) => (
                         <RepoRow
-                          key={r.full_name}
-                          fullName={r.full_name}
+                          key={repoSlug(r)}
+                          fullName={repoSlug(r)}
                           meta={i18nT('apps.codeReviewSage.components.addReposModal.contributed_events',
                             { age: relativeAge(r.last_contributed_at),
                               count: r.contribution_count })}
-                          pinned={isPinned(r.full_name)}
-                          onPin={() => pinRepo(r.owner, r.repo)}
+                          pinned={isPinned(r)}
+                          onPin={() => pinRepo(r.owner, r.repo, enterpriseHostOf(r))}
                         />
                       ))}
                     </ul>
@@ -339,14 +360,14 @@ export default function AddReposModal({ onClose }: { onClose: () => void }) {
                     <ul className="flex flex-col gap-1.5 list-none p-0 m-0">
                       {mineRows.map((r) => (
                         <RepoRow
-                          key={r.full_name}
-                          fullName={r.full_name}
+                          key={repoSlug(r)}
+                          fullName={repoSlug(r)}
                           meta={r.pushed_at
                             ? i18nT('apps.codeReviewSage.components.addReposModal.pushed_age',
                                     { age: relativeAge(r.pushed_at) })
                             : undefined}
-                          pinned={isPinned(r.full_name)}
-                          onPin={() => pinRepo(r.owner, r.repo)}
+                          pinned={isPinned(r)}
+                          onPin={() => pinRepo(r.owner, r.repo, enterpriseHostOf(r))}
                           badges={(
                             <span className="flex-shrink-0 inline-flex items-center gap-1.5">
                               {r.private && (

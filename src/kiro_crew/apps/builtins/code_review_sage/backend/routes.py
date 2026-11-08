@@ -167,6 +167,8 @@ from kiro_crew.apps.builtins.code_review_sage.backend.routes_parts.registry impo
     _write_runs,
 )
 from kiro_crew.apps.builtins.code_review_sage.backend.routes_parts.repos import (  # noqa: E402,F401
+    _across_hosts,
+    _mark_pinned,
     _handle_my_repos,
     _handle_recent_repos,
     _handle_repos,

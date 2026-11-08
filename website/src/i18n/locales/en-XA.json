@@ -638,7 +638,8 @@
           "contributed_events_one": "[{{age}} · {{count}} èṽèñţ ··············]",
           "contributed_events_other": "[{{age}} · {{count}} èṽèñţş ···············]",
           "pushed_age": "[þùşĥèð {{age}} ···········]",
-          "newest_100_by_push_date": "[ñèẁèşţ 100 ƀý þùşĥ ðàţè ················]"
+          "newest_100_by_push_date": "[ñèẁèşţ 100 ƀý þùşĥ ðàţè ················]",
+          "host_unavailable": "[{{host}} ìş ùñàṽàìĺàƀĺè: {{message}} ···············]"
         },
         "bandChips": {
           "all": "[Àĺĺ ·····]",

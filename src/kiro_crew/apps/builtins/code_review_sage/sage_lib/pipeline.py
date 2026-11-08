@@ -41,6 +41,27 @@ from sage_lib import adapters, blast_radius, discovery, results, store  # noqa: 
 # confirm a delivery it is about to record. One definition so those two readers and
 # the writers below cannot drift apart.
 DRAFT_MARKER = "[code-review-sage]"
+# The review body used when a post carries no ship-readiness summary (a
+# selection of findings only). The marker has to be on the REVIEW body, not just
+# on the inline comments: both the delivery read-back and the poster's
+# stale-draft cleanup identify a sage draft by it, so an empty body made a
+# delivered draft unconfirmable and undeletable (the next post then hit 422).
+# An HTML comment, so GitHub renders nothing: a visible "[code-review-sage]"
+# review comment carries no information for the author.
+MARKER_ONLY_BODY = f"<!-- {DRAFT_MARKER} -->"
+
+
+def _md_emphasis_escape(text: str) -> str:
+    """Escape `*` and `_` outside inline code spans, so text placed inside
+    `**...**` cannot close the emphasis early (`client:*` in a headline ended
+    the bold and left a stray asterisk). Code spans are left verbatim, because
+    a backslash inside backticks renders literally."""
+    parts = re.split(r"(`[^`]*`)", text)
+    return "".join(
+        p if p.startswith("`") and p.endswith("`") and len(p) >= 2
+        else re.sub(r"([*_])", r"\\\1", p)
+        for p in parts
+    )
 
 
 def _redact(text: str) -> str:
@@ -320,13 +341,16 @@ def _comment_body(finding: dict) -> str:
     snippet = finding.get("snippet", "")
     headline = str(finding.get("headline", "") or "").strip()
     observation = str(finding.get("observation", "") or "").strip()
-    lead = f"{sev} **{headline}**\n\n{observation}" if headline else f"{sev} {observation}"
+    lead = (
+        f"{sev} **{_md_emphasis_escape(headline)}**\n\n{observation}"
+        if headline else f"{sev} {observation}"
+    )
     body = (
         f"{lead}\n\n"
         f"```{lang}\n{snippet}\n```\n\n"
         f"**Why it matters:** {finding.get('consequence', '').strip()}\n\n"
         f"**Suggestion:** {finding.get('suggestion', '').strip()}\n\n"
-        f"_{DRAFT_MARKER}_"
+        f"<!-- {DRAFT_MARKER} -->"
     )
     # Redact LLM-generated content before it leaves for an external surface.
     return _redact(body)
@@ -391,7 +415,7 @@ def build_ship_comment(record: dict) -> str:
     if design_block:
         tally.append("design flagged")
     tally_line = ("\n" + " · ".join(tally)) if tally else ""
-    body = f"{header}: {reason}{tally_line}\n\n_{DRAFT_MARKER}_"
+    body = f"{header}: {reason}{tally_line}\n\n<!-- {DRAFT_MARKER} -->"
     return _redact(body)
 
 
@@ -446,7 +470,9 @@ def review_payload_units(payload: dict) -> int:
     This is the single place that number is derived, so the comparison in
     ``post_recorded`` and the durable ``posting_expected`` cannot drift apart.
     """
-    return len(payload.get("comments") or []) + (1 if payload.get("body") else 0)
+    body = str(payload.get("body") or "").strip()
+    # A marker-only body identifies the draft; it is not a deliverable unit.
+    return len(payload.get("comments") or []) + (1 if body and body != MARKER_ONLY_BODY else 0)
 
 
 def build_github_review_payload(record: dict) -> dict:
@@ -492,7 +518,10 @@ def build_github_review_payload(record: dict) -> dict:
             comments.append({"path": path, "line": line, "side": "RIGHT", "body": text})
         elif text:
             body_parts.append(text)          # unanchored finding -> folded into the body
-    payload: dict = {"body": "\n\n".join(p for p in body_parts if p), "comments": comments}
+    body = "\n\n".join(p for p in body_parts if p)
+    if not body and comments:
+        body = MARKER_ONLY_BODY
+    payload: dict = {"body": body, "comments": comments}
     if not commit_id:
         # Refuse rather than post unanchored. GitHub defaults a review with no
         # `commit_id` to the pull request's CURRENT head, which silently breaks the

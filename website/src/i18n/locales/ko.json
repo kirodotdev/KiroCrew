@@ -814,7 +814,8 @@
           "repository_or_pull_request_url_or_owner_repo": "저장소 또는 풀 리퀘스트 URL, 혹은 owner/repo",
           "setup_hint": "저장소 목록을 보려면 GitHub CLI를 설치하고 아래 명령으로 로그인하세요. 위에서 URL로 저장소를 추가할 수도 있습니다.",
           "these_lists_are_capped_so_a_repo_you_have_not_to": "이 목록에는 상한이 있어 최근에 다루지 않은 저장소는 빠져 있을 수\n 있습니다. 보이지 않으면 위에서 URL로 추가하세요.",
-          "your_repos": "내 저장소"
+          "your_repos": "내 저장소",
+          "host_unavailable": "{{host}}을(를) 사용할 수 없습니다: {{message}}"
         },
         "bandChips": {
           "all": "전체",

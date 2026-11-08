@@ -6,6 +6,7 @@
 // copy, so they are localized here rather than at each call site.
 import { i18nT } from '../../../i18n/t'
 import type { PullRequestLink } from '../../../utils/pullRequestLinks'
+import { slugFromUrl } from './repoRef'
 import type { RunStatus, PrRef, ChangePhase } from './types'
 
 /** Compact "just now / 5m ago / 3h ago / 2d ago" from an ISO timestamp. Returns
@@ -121,8 +122,12 @@ export function repoOfRun(run: { repo?: string; changes: string[] }): string | n
   if (run.repo && run.repo.includes('/')) return run.repo.toLowerCase()
   const first = run.changes?.[0]
   if (!first) return null
-  const m = /(?:github\.com|gitlab\.com)\/([^/\s]+)\/([^/\s]+)/i.exec(first)
-  return m ? `${m[1]}/${m[2]}`.toLowerCase() : null
+  // gitlab.com keeps its historical bare `owner/repo` form.
+  const gl = /gitlab\.com\/([^/\s]+)\/([^/\s]+)/i.exec(first)
+  if (gl) return `${gl[1]}/${gl[2]}`.toLowerCase()
+  // Any GitHub host: `owner/repo` on github.com, `host/owner/repo` on an
+  // Enterprise host, the same slug the picker and the repo-PR listing use.
+  return slugFromUrl(first)
 }
 
 /** The lossless identity of a change, for matching a PR against a run.
@@ -347,9 +352,13 @@ export function failureReason(run: {
  *  refused here instead of being rendered.
  */
 export function sageSourceLink(url: string): PullRequestLink | null {
-  const m = url.match(/^https:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)$/)
+  // Any GitHub host: Sage only holds PR URLs that passed the backend's
+  // `github_hosts` allowlist, and the source endpoint re-validates the host
+  // against `dashboard.github_hosts`, so a GHE pull request gets its own
+  // provider-backed pane instead of a "could not load" error.
+  const m = url.match(/^https:\/\/([a-z0-9.-]+(?::\d+)?)\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)$/i)
   if (!m) return null
   return {
-    url, provider: 'github', number: Number(m[3]), repo: `${m[1]}/${m[2]}`, kind: 'change',
+    url, provider: 'github', number: Number(m[4]), repo: `${m[2]}/${m[3]}`, kind: 'change',
   }
 }

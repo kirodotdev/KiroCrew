@@ -842,7 +842,8 @@
           "repository_or_pull_request_url_or_owner_repo": "रिपॉज़िटरी या pull request का URL, या owner/repo",
           "setup_hint": "GitHub CLI इंस्टॉल करो और नीचे दिए कमांड से साइन इन करो, तब तुम्हारे रेपो की सूची मिलेगी। ऊपर URL से कोई भी रेपो अब भी जोड़ सकते हो।",
           "these_lists_are_capped_so_a_repo_you_have_not_to": "इन सूचियों की सीमा है, तो जिस रेपो को तुमने हाल में नहीं छुआ वह छूट सकता है। न दिखे तो ऊपर URL से जोड़ लो।",
-          "your_repos": "तुम्हारे रेपो"
+          "your_repos": "तुम्हारे रेपो",
+          "host_unavailable": "{{host}} उपलब्ध नहीं है: {{message}}"
         },
         "bandChips": {
           "all": "सभी",

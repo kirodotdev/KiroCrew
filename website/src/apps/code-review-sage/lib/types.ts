@@ -196,6 +196,10 @@ export interface RunReport {
 export interface PinnedRepo {
   owner: string
   repo: string
+  /** Canonical host; absent on legacy rows, which mean github.com. */
+  host?: string
+  /** `owner/repo` on github.com, `host/owner/repo` on an Enterprise host. */
+  slug?: string
   full_name?: string
   added_at?: string
 }
@@ -203,6 +207,8 @@ export interface PinnedRepo {
 export interface RecentRepo {
   owner: string
   repo: string
+  host?: string
+  slug?: string
   full_name: string
   last_contributed_at: string
   contribution_count: number
@@ -218,12 +224,18 @@ export interface RecentReposResponse {
   /** Set when `gh` is absent or unauthenticated — a first-run state, not an error. */
   setup_required?: boolean
   error?: string
+  /** Per-host logins when several GitHub hosts are configured. */
+  logins?: Record<string, string>
+  /** Configured hosts that could not be listed (not signed in, unreachable). */
+  host_errors?: Record<string, string>
 }
 
 /** A repo the `gh` user can reach at all (owned / collaborator / org member). */
 export interface UserRepo {
   owner: string
   repo: string
+  host?: string
+  slug?: string
   full_name: string
   pushed_at: string
   private: boolean
@@ -240,6 +252,8 @@ export interface UserReposResponse {
   /** Set when `gh` is absent or unauthenticated — a first-run state, not an error. */
   setup_required?: boolean
   error?: string
+  /** Configured hosts that could not be listed (not signed in, unreachable). */
+  host_errors?: Record<string, string>
 }
 
 export interface RepoPr {
@@ -329,7 +343,7 @@ export interface NamespacesResponse {
 export interface AddRepoResponse {
   ok: boolean
   repos: PinnedRepo[]
-  added?: { owner: string; repo: string }
+  added?: { owner: string; repo: string; host?: string; slug?: string }
   /** Set when a PULL REQUEST url was pasted: its repo was pinned and this is the
    *  pull request itself, so the caller can open it. */
   pull_request?: {
