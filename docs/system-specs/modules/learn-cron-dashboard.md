@@ -428,9 +428,13 @@ Nothing is guessed: the identity written is the one `legacy_member_cron_executio
 attributed, and a record naming anyone else, a restricted mode or an app is left as
 it is and logged, since dispatch refuses it with its own reason. Only the stable
 single-agent key `cron:<id>` is reconciled: a `persistent_session: false` job mints
-a fresh key per fire (only transcripts tagged `cron_run="ephemeral"` at per-run
-creation are removed after 7 days without writes by the reaper's hourly
-`cron_service.run_residue.prune_stale_run_transcripts`, unless a run still holds
+a fresh key per fire (only transcripts tagged `cron_run="ephemeral"` are removed,
+after 7 days without writes or once the job has 20 newer run transcripts; the tag
+is recorded when the run starts, in `_cron_run_single` after the fire-time gate and
+admission and once the key is active, so a refused fire leaves no transcript), by
+the reaper's hourly
+`cron_service.run_residue.prune_stale_run_transcripts` (first pass 5 minutes after
+start, and 5 minutes after a pass that filled its cap), unless a run still holds
 the key or it is pinned; untagged legacy transcripts are retained), and a dispatching
 `agent_sequence` reads and replaces its own
 per-agent record. A schedule the old build never fired has no record, and the first
