@@ -6743,6 +6743,8 @@
       "paused_approval_hold": "In pausa · un'approvazione in questa chat è scaduta. Premi Play o invia un messaggio per riprendere.",
       "waiting_on_person_hold": "In attesa di te · ogni attività aperta aspetta la tua risposta in questa chat. I solleciti riprendono quando un worker invia un aggiornamento.",
       "paused_last_cycle_failed": "In pausa · l’ultimo ciclo non è riuscito a partire",
+      "paused_interrupted_cycle": "In pausa · un riavvio ha interrotto l’ultimo ciclo. Riprendere fa ripartire il loop.",
+      "paused_claim_unsaved": "In pausa · non è stato possibile salvare l’avanzamento. Riprendere fa ripartire il loop.",
       "clear_goal_for_good": "Cancella",
       "cancel": "Annulla",
       "clear_goal_question": "Eliminare definitivamente questo obiettivo?",
