@@ -6584,6 +6584,8 @@
       "paused_last_cycle_failed": "Pausiert · der letzte Zyklus konnte nicht laufen",
       "paused_interrupted_cycle": "Pausiert · ein Neustart hat den letzten Zyklus unterbrochen. Fortsetzen startet die Schleife wieder.",
       "paused_claim_unsaved": "Pausiert · der Fortschritt konnte nicht gespeichert werden. Fortsetzen startet die Schleife wieder.",
+      "paused_consecutive_failures": "Pausiert · mehrere Zyklen hintereinander sind fehlgeschlagen. Sieh dir den Fehler in diesem Chat an und drück dann Play.",
+      "paused_model_refused": "Pausiert · das Modell hat den letzten Zyklus abgelehnt. Ändere das Ziel oder das Modell und drück dann Play.",
       "clear_goal_for_good": "Leeren",
       "cancel": "Abbrechen",
       "clear_goal_question": "Dieses Ziel endgültig löschen?",
