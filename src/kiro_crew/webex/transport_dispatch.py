@@ -72,7 +72,11 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from kiro_crew import _facade_mirror
-from kiro_crew.agent_switch_command import ChannelAgentPicks, handle_channel_agent_command
+from kiro_crew.agent_switch_command import (
+    ChannelAgentPicks,
+    LiveDefaultAgent,
+    handle_channel_agent_command,
+)
 from kiro_crew.config import live
 from kiro_crew.config.sections import _normalize_threshold_pair
 from kiro_crew.history import mint_row_mid, transcript_stem
@@ -173,12 +177,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Canonical kiro-cli agent fallback so Webex sessions load kirocrew-core
-# (spawn_run etc.) instead of kiro-cli's bare built-in default when neither an
-# explicit override nor agent.default_agent is configured. Mirrors the Slack /
-# Telegram / WeCom paths' _DEFAULT_KIROCREW_AGENT.
-_DEFAULT_KIROCREW_AGENT = "kirocrew"
-
 # How many queued messages collapse into one drained turn. A burst answered as
 # one turn keeps the conversation coherent; past this the surplus is deferred in
 # order rather than dropped, so the combined prompt stays bounded. Same value as
@@ -252,7 +250,8 @@ class WebexDispatcher:
         # reason as ``client``); the config applier pushes reloaded authorization
         # fields at it.
         self.transport: "WebexTransport | None" = None
-        self._conv = ConversationState(seed_fn=self._seed_gen)
+        self._default_agent = LiveDefaultAgent()
+        self._conv = ConversationState(seed_fn=self._seed_gen, bucket_fn=self._resolve_agent)
         # Held on self: the watcher holds the owner WEAKLY, so a subscription
         # dropped here would be collected and the applier would silently stop
         # firing.
@@ -475,7 +474,8 @@ class WebexDispatcher:
                         route,
                         parse_command_argument(text),
                         conv=self._conv,
-                        configured=self._resolve_agent(),
+                        configured=self._configured_agent(),
+                        running_default=self._configured_agent(route),
                         sessions=self.sessions,
                         session_key=lambda: self._session_key(route),
                     ),
@@ -1233,9 +1233,15 @@ class WebexDispatcher:
 
     # ── Helpers ────────────────────────────────────────────────────────────
 
+    def _configured_agent(self, route: str | None = None) -> str:
+        """The agent *route*'s current conversation runs with no ``/agent`` pick."""
+        return self.agent or self._default_agent.for_route(
+            self._conv, route, self.cfg, self._live_cfg
+        )
+
     def _resolve_agent(self, route: str | None = None) -> str:
         """The agent *route* runs: its ``/agent`` pick, else the configured one."""
-        configured = self.agent or self.cfg.agent.default_agent or _DEFAULT_KIROCREW_AGENT
+        configured = self._configured_agent(route)
         return self._agent_picks.resolve(route, configured)
 
     def current_session_key(self, email: str) -> str:
