@@ -341,6 +341,36 @@ class TestRunChatSegmentFlush:
         assert "tool_call" in ws_types
 
     @pytest.mark.asyncio
+    async def test_reply_quoting_a_directive_result_is_saved_without_the_marker(
+        self, tmp_path, monkeypatch
+    ):
+        """A reply that repeats a directive tool's result is saved without its marker line.
+
+        The directive was applied from its tool row; the saved reply row is what
+        the finished bubble and every reload show, so the marker must not be in it.
+        """
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        events = [
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="Tagged.\n[[KIROCREW_SESSION_DIRECTIVE]]"),
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text='{"kind":"chat_tag","args":{"add":["x"]}}'),
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="\nDONE"),
+            LLMEvent(kind=EVENT_COMPLETE),
+        ]
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "tag this chat, then repeat the tool result")
+
+        assert [m["content"] for m in slot.messages if m.get("role") == "assistant"] == [
+            "Tagged.\nDONE"
+        ]
+
+    @pytest.mark.asyncio
     async def test_tool_turn_progress_claim_surfaces_idle_notice(self, tmp_path, monkeypatch):
         """A mixed turn must not replay tools, but it must not claim it keeps running."""
         from kiro_crew.acp.types import STOP_REASON_END_TURN

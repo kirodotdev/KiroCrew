@@ -5256,7 +5256,10 @@ decodes the marker, applies the effect against **its own** `slot.key`, then
 strips the marker from the stored transcript. Sub-agent isolation is therefore
 structural rather than cryptographic: a sub-agent's tool result flows through the
 sub-agent's own runner, so it can only bind to the sub-agent's session. There is
-no walk to get wrong.
+no walk to get wrong. The model still reads the marker, so a reply that repeats the
+result carries the marker line too; the dashboard's segment flush drops each line
+that is only such a marker from the saved reply
+(`session_directive.strip_quoted_markers`) and keeps the reply's other lines.
 
 A second, provider-neutral channel covers a backend that emits no
 `_meta.kiro` identity. After encoding, the tool reports the CALL (tool name and
