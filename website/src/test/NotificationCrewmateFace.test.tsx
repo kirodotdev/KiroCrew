@@ -129,6 +129,21 @@ describe('a failed roster read', () => {
     await waitFor(() => expect(screen.queryByTestId('notification-crewmate-roster-error')).toBeNull())
   })
 
+  it('keeps Retry focusable while the retry runs', async () => {
+    // The error and its Retry stay up while the retry runs, and Retry stays
+    // focusable: unmounting it or a native `disabled` would drop keyboard focus.
+    members.mockRejectedValueOnce(new Error('503')).mockReturnValueOnce(new Promise(() => {}) as never)
+    renderWithProviders(<NotificationDetailPanel n={fromAda} onClose={() => {}} />)
+    const retry = await screen.findByTestId('notification-crewmate-roster-retry')
+    retry.focus()
+    fireEvent.click(retry)
+    await waitFor(() => expect(retry).toHaveAttribute('aria-disabled', 'true'))
+    expect(retry).not.toBeDisabled()
+    expect(document.activeElement).toBe(retry)
+    fireEvent.click(retry)
+    expect(members).toHaveBeenCalledTimes(2)
+  })
+
   it('is not read at all by a feed with no mate notes', async () => {
     renderWithProviders(<NotificationFeed selectedTs={null} onSelect={() => {}} />, { store: feedState([base]) })
     await act(async () => {})
