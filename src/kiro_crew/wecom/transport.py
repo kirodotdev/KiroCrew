@@ -527,12 +527,18 @@ class WeComTransport(MessagingTransport):
             for user_id in sorted(identities)
         ]
         # Under the allow-everyone policy there is no configured list to draw on,
-        # so the warm peers ARE the list: they are the only addressable ones.
+        # so the warm peers ARE the list: they are the only addressable ones. They
+        # are marked learned, because messaging the bot once makes nobody the
+        # owner: an owner-DM path must never infer one from them.
         if self._allow_all:
             for chat_id in sorted(self._warm_chats):
                 if any(x.target_id == f"user:{chat_id}" for x in targets):
                     continue
-                targets.append(ConfiguredChannelTarget(f"user:{chat_id}", f"WeCom DM · {chat_id}"))
+                targets.append(
+                    ConfiguredChannelTarget(
+                        f"user:{chat_id}", f"WeCom DM · {chat_id}", learned=True
+                    )
+                )
         if self._warm_dropped:
             # Say the overflow out loud in EVERY snapshot while it holds: the
             # warm-peer bound has shed learned peers, so this list is a truncated
