@@ -365,11 +365,16 @@ def test_only_the_subset_both_engines_read_alike_is_kept() -> None:
         "touch (\\>|x)",
         "touch [^\\\u2603]+",
         "touch (\\\u201c|x)",
+        # A literal-plus-``.*`` entry with a non-ASCII escape: kiro-cli grants nothing.
+        "echo \\\u201chi\\\u201d",
+        "git commit -m \\\u201c.*",
         "rm scratch\u00a0",
         "git\tstatus",
         "ls\x00",
     ):
         assert allowed_command_pattern(bad) is None, bad
+    # The same character unescaped is a literal in both engines.
+    assert allowed_command_pattern("echo \u201chi\u201d") == "echo \u201chi\u201d"
 
 
 def test_a_pattern_outside_the_subset_grants_nothing() -> None:
