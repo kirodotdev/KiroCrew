@@ -81,6 +81,18 @@ def session_mcp_server_is_disabled(name: str, agent: str | None) -> bool:
     return session_mcp.session_mcp_server_is_disabled(name, agent)
 
 
+def switched_off_tools(spec: dict[str, Any] | None) -> frozenset[tuple[str, str]]:
+    """The ``(server, tool)`` pairs switched off in *spec* or the global MCP settings.
+
+    ``acp.session_mcp.session_mcp_disabled_tools`` for a caller that has already
+    parsed its spec, so it reads switched-off tools as a chat session does.
+    Blocking, and never raises.
+    """
+    from kiro_crew.acp import session_mcp
+
+    return session_mcp.session_mcp_disabled_tools(None, spec=spec)
+
+
 def authored_spec_is_toolless(agent: str, work_dir: Any = None) -> bool:
     """Whether the spec *agent* resolves to in *work_dir* mounts nothing. Blocking.
 

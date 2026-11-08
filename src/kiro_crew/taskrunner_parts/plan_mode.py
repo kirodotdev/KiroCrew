@@ -18,7 +18,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from kiro_crew.execution_context import ExecutionContext
+from kiro_crew.execution_context import ExecutionContext, read_session_execution
 from kiro_crew.start_priority import StartPriority
 from kiro_crew.task_models import Project, Task, TaskStatus
 from kiro_crew.task_planner import (
@@ -39,7 +39,7 @@ from kiro_crew.taskrunner_parts.run_inputs import (
     _resolve_workspace_dir,
 )
 from kiro_crew.taskrunner_parts.run_scope import _SESSION_PREFIX
-from kiro_crew.workflow_memory import capture_admission_execution
+from kiro_crew.workflow_memory import capture_admission_execution, inherited_step_agent
 
 if TYPE_CHECKING:
     from kiro_crew.taskrunner import TaskRunner
@@ -386,7 +386,19 @@ async def _decompose(
     start_priority: StartPriority = StartPriority.BACKGROUND,
     agent: str = "",
 ) -> list[Task]:
-    """Decompose *spec* on a session of *agent*, the run's own (``""`` = the default)."""
+    """Decompose *spec* on a session of *agent*, the run's own (``""`` = the default).
+
+    A run with no agent of its own decomposes as the agent its caller's carrier
+    names (``inherited_step_agent``), like its steps and reviews.
+    """
+    if not agent and task_id:
+        # The decompose session opens on the run's runtime key, and every caller
+        # binds the run's carrier there first (``plan`` before it registers the
+        # run), so the agent the run inherits is read from that run's own carrier.
+        execution = await asyncio.to_thread(
+            read_session_execution, f"{_SESSION_PREFIX}:{task_id}:runtime"
+        )
+        agent = await asyncio.to_thread(inherited_step_agent, execution)
     return await decompose(
         spec,
         self._sessions,

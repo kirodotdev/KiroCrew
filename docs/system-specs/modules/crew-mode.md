@@ -139,9 +139,14 @@ the owned file, so a project checkout's own same-named spec stays an ordinary
 choice) are withheld from standalone choices. The primary `kirocrew` spec is
 offered and leads the template rows: a chat session is a template choice, and the
 main managed agent is the default one. This is deliberately narrower than the sync
-route's `source != "kirocrew"` exclusion, which decides enrolment as a crew member,
-a different question. The other shipped specs (conductor, worker, knowledge,
-research, heartbeat, ...) are ordinary template rows.
+route's exclusion, which decides enrolment as a crew member, a different question:
+the sync enrols no `source == "kirocrew"` spec, no other managed spec
+(`kirocrew_owned`: conductor, worker, knowledge, research, heartbeat, ...) and no
+generated internal spec (`is_internal_agent_spec`: a derived `<agent>--readonly`
+side-turn spec, a skill-view alias), because each is a template the runtime spawns,
+not a Bot: a row written for one would sit on the shared `default` memory store as a
+Bot nobody created, and the startup prune never removes a `kirocrew_owned` row. In
+the catalog those shipped specs are ordinary template rows.
 Lineage is read strictly in addition to discovery's optional display enrichment:
 an unreadable lineage file cannot make a private copy appear shared. Discovery,
 config or lineage failure returns `503 agent_catalog_unavailable`, not a partial
@@ -4360,7 +4365,13 @@ things here and leaves every other git step to the worker's prompt
    by hand is pruned and made again. A name segment the cleaning changed (or
    one over 40 characters) keeps a digest of the whole and is a legal git ref
    component. A repository that contains the Bot's own workspace is not
-   one it was handed and gets none. The repository is read from git's common
+   one it was handed and gets none. Neither does one the edition works in place
+   (`AgentRuntime.works_in_place(repo)` answers exactly `True` for its checkout
+   root; platform-context.md): its build needs the checkout where it is, so no
+   branch is cut, no folder is made, and the worker's project is left as it is.
+   The public Default answers `False`, so every repository gets a worktree, and
+   an edition runtime without the method, or one that raises, answers `False`
+   too. The repository is read from git's common
    directory, so a path inside another Bot's worktree maps to the same
    repository.
 2. **The worker runs there.** At the start of a worker's turn (a `template`
