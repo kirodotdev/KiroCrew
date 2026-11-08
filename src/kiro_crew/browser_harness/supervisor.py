@@ -138,6 +138,12 @@ _STOP_GRACE_SECS = 5.0
 #: (``helper_worker.REPLY_CAP_BYTES``), so a legitimate reply never reaches it.
 WORKER_LINE_LIMIT = 8 * 1024 * 1024
 
+#: How much of Kiro's Chromium's stderr is kept, newest bytes only, and how many of
+#: its lines a start failure quotes: room for the dynamic loader's report of a
+#: missing shared library (one line from ld.so, three from dyld).
+_CHROMIUM_STDERR_TAIL_BYTES = 4096
+_CHROMIUM_STDERR_TAIL_LINES = 3
+
 #: How long the re-pull before a navigation waits for a start in flight before it
 #: skips (a start can hold the lock without deadline on the person's Allow sheet),
 #: and the most the re-pull itself may take. With the ``fingerprint()`` bound they
@@ -275,6 +281,8 @@ class HarnessSupervisor:
         self._ensure_lock = LoopBoundLock()
         self._call_lock = LoopBoundLock()
         self._ensure_task: asyncio.Task[HarnessHandle] | None = None
+        #: The newest stderr bytes of the Kiro's Chromium launched last (POSIX).
+        self._chromium_stderr = bytearray()
         #: The stop a ``capabilities.browse`` deny started (:meth:`stop_soon`).
         self._stop_task: asyncio.Task[None] | None = None
         #: Set while a Redownload replaces Kiro's Chromium (:meth:`stop_for_chromium_replace`):
@@ -639,7 +647,7 @@ class HarnessSupervisor:
                 raise browse_governance.BrowsingDenied()
             # Before the daemon: no agent op can reach the browser until this returns.
             await self._apply_credentials(relay, choice, "start")
-            daemon = await self._start_daemon(state.python, relay_url)
+            daemon = await self._start_daemon(state.python, relay_url, browser_proc)
             handle = HarnessHandle(choice, relay, daemon, None, browser_proc)
             handle.worker = await self._start_worker(handle)
         except asyncio.CancelledError:
@@ -804,9 +812,16 @@ class HarnessSupervisor:
     async def _launch_chromium_pipe(
         self, argv: list[str]
     ) -> tuple[asyncio.subprocess.Process, PipeUpstream]:
-        """POSIX: ``--remote-debugging-pipe`` over two pipes; no port is ever opened."""
+        """POSIX: ``--remote-debugging-pipe`` over two pipes; no port is ever opened.
+
+        Its stderr goes to a third pipe the gateway drains for the browser's whole
+        life (:func:`_keep_stderr_tail`). The pipe is the gateway's own, not
+        asyncio's: an asyncio pipe would make reaping the browser wait for every
+        descendant that inherited it.
+        """
         to_browser_r, to_browser_w = os.pipe()
         from_browser_r, from_browser_w = os.pipe()
+        stderr_r, stderr_w = os.pipe()
         try:
             to_browser_r = _fd_at_or_above(to_browser_r, _FIRST_SAFE_FD)
             from_browser_w = _fd_at_or_above(from_browser_w, _FIRST_SAFE_FD)
@@ -825,22 +840,25 @@ class HarnessSupervisor:
                 env=dict(self._env()),
                 pipes=False,
                 pass_fds=(to_browser_r, from_browser_w),
+                stderr=stderr_w,
             )
         except BaseException:
-            for fd in (to_browser_w, from_browser_r):
+            for fd in (to_browser_w, from_browser_r, stderr_r):
                 os.close(fd)
             raise
         finally:
-            # The browser holds its two ends now (or never started); the gateway
+            # The browser holds its ends now (or never started); the gateway
             # keeps only its own.
-            for fd in (to_browser_r, from_browser_w):
+            for fd in (to_browser_r, from_browser_w, stderr_w):
                 os.close(fd)
         try:
             upstream = await pipe_upstream_from_fds(from_browser_r, to_browser_w)
         except BaseException:
             # pipe_upstream_from_fds has closed the gateway's two ends already.
+            os.close(stderr_r)
             await _stop_unowned(proc)
             raise
+        self._chromium_stderr = _keep_stderr_tail(stderr_r)
         return proc, upstream
 
     async def _launch_chromium_port(
@@ -886,7 +904,18 @@ class HarnessSupervisor:
         )
         return env
 
-    async def _start_daemon(self, python: Path, relay_url: str) -> asyncio.subprocess.Process:
+    async def _start_daemon(
+        self,
+        python: Path,
+        relay_url: str,
+        browser: asyncio.subprocess.Process | None = None,
+    ) -> asyncio.subprocess.Process:
+        """Start the daemon and wait for its ping.
+
+        *browser* is the Kiro's Chromium this start launched, if any: a browser that
+        exits meanwhile fails the start at once, with what it wrote to stderr, since
+        a daemon whose browser is gone never answers.
+        """
         await self._shutdown_stray_daemon()
         env = await asyncio.to_thread(self._daemon_env, relay_url)
         # ``-I`` as for the worker: isolated mode keeps the working directory and
@@ -901,6 +930,8 @@ class HarnessSupervisor:
             while time.monotonic() < deadline:
                 if await self._ipc_ping():
                     return proc
+                if browser is not None and browser.returncode is not None:
+                    raise BrowserUnavailable(self._chromium_exit_detail(browser.returncode))
                 if proc.returncode is not None:
                     raise BrowserUnavailable(
                         f"the Harness daemon exited with code {proc.returncode}"
@@ -910,6 +941,27 @@ class HarnessSupervisor:
         except BaseException:
             await _stop_unowned(proc)
             raise
+
+    def _chromium_exit_detail(self, code: int) -> str:
+        """Kiro's Chromium's exit code and its last stderr lines.
+
+        Every kept line is judged first (:func:`agent_sdk.published_stderr_tail`),
+        so a credential anywhere in them, wrapped across lines or not, withholds
+        the whole tail instead of being published in pieces.
+        """
+        from kiro_crew.agent_sdk import published_stderr_tail
+        from kiro_crew.platform.context import redact_via_context
+
+        text = self._chromium_stderr.decode("utf-8", "replace")
+        if len(self._chromium_stderr) >= _CHROMIUM_STDERR_TAIL_BYTES:
+            # The byte cap cut the oldest line, maybe mid-secret: drop that piece.
+            text = text.partition("\n")[2]
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        tail = published_stderr_tail(
+            lines, " | ", _CHROMIUM_STDERR_TAIL_LINES, redact=redact_via_context
+        )
+        detail = f"Kiro's Chromium exited with code {code}"
+        return f"{detail}: {tail}" if tail else detail
 
     async def _start_worker(self, handle: HarnessHandle) -> asyncio.subprocess.Process:
         state = await asyncio.to_thread(install.install_state, self.home)
@@ -936,13 +988,14 @@ class HarnessSupervisor:
         env: dict[str, str],
         pipes: bool,
         pass_fds: tuple[int, ...] = (),
+        stderr: int = subprocess.DEVNULL,
     ) -> asyncio.subprocess.Process:
         """The supervisor's one spawn: the venv's interpreter or Kiro's Chromium.
 
         Every argv token is a module constant, a path under the data home or the
         read-only harness prefix, or a pipe fd number the gateway chose; nothing an
         agent says reaches it. Each child gets its own process group so
-        :func:`_stop_process` can take the tree.
+        :func:`_stop_process` can take the tree. *stderr* applies without *pipes*.
         """
         kwargs: dict[str, Any] = {"env": env, "stdin": subprocess.DEVNULL}
         if pass_fds:
@@ -954,7 +1007,7 @@ class HarnessSupervisor:
             kwargs["limit"] = WORKER_LINE_LIMIT
         else:
             kwargs["stdout"] = subprocess.DEVNULL
-            kwargs["stderr"] = subprocess.DEVNULL
+            kwargs["stderr"] = stderr
         if platform_compat.IS_WINDOWS:
             kwargs["creationflags"] = (
                 platform_compat.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW  # type: ignore[attr-defined,unused-ignore]
@@ -1113,6 +1166,35 @@ def _fd_at_or_above(fd: int, floor: int) -> int:
     os.close(fd)
     os.set_inheritable(higher, True)
     return higher
+
+
+def _keep_stderr_tail(fd: int) -> bytearray:
+    """Drain *fd* on the running loop until EOF; return the buffer of its newest bytes.
+
+    Read for as long as anything holds the write end, so a chatty browser never
+    blocks on a full pipe, and bounded to :data:`_CHROMIUM_STDERR_TAIL_BYTES`. One
+    read takes a whole pipe buffer, so what the browser wrote before it exited is
+    in the buffer by the time its exit is seen. *fd* is closed at EOF. POSIX only;
+    the pipe launcher is its one caller.
+    """
+    loop = asyncio.get_running_loop()
+    tail = bytearray()
+    os.set_blocking(fd, False)
+
+    def _read() -> None:
+        try:
+            chunk = os.read(fd, 65536)
+        except BlockingIOError:
+            return
+        if not chunk:
+            loop.remove_reader(fd)
+            os.close(fd)
+            return
+        tail.extend(chunk)
+        del tail[:-_CHROMIUM_STDERR_TAIL_BYTES]
+
+    loop.add_reader(fd, _read)
+    return tail
 
 
 def _clear_restored_session(profile: Path) -> None:

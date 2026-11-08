@@ -387,7 +387,7 @@ def _supervisor_with_fakes(
     async def user_ws(_choice: Any) -> str:
         return "ws://127.0.0.1:1/devtools/browser/x"
 
-    async def start_daemon(python: Any, relay_url: str) -> Any:
+    async def start_daemon(python: Any, relay_url: str, browser: Any) -> Any:
         events.append("daemon")
         return _Proc()
 
