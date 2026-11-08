@@ -25,6 +25,7 @@ import {
   type VisibilityState,
 } from '@tanstack/react-table'
 import { ChevronDown, ChevronRight, ChevronUp, MemoryStick, Columns3, TriangleAlert } from 'lucide-react'
+import ErrorNotice from '../../components/ErrorNotice'
 import { api } from '../../api/client'
 import { Btn, Card, ContentSkeleton, EmptyState, IconButton, SearchInput } from '../../components/ui'
 import { Popover, PopoverContent, PopoverTrigger } from '../../components/ui/popover'
@@ -362,15 +363,24 @@ export default function SessionsTab({ planeStateRef }: Props) {
       {isError && data && (
         <div
           data-testid="sessions-stale"
-          className="flex items-center gap-2 px-3.5 py-2 border-b border-border bg-warn-subtle text-[11.5px] text-warn-text"
+          className="flex items-center gap-2 px-3.5 py-2 border-b border-border"
         >
-          <TriangleAlert size={13} aria-hidden="true" className="lucide-inline shrink-0" />
-          <span>{i18nT('pages.sessionsTab.could_not_refresh')}</span>
+          {/* A failed read with nothing to lose: the rows are server data and
+              the filter is a view setting, so the hand-off is on. */}
+          <ErrorNotice
+            variant="inline"
+            askAgent
+            className="flex-1 min-w-0"
+            message={i18nT('pages.sessionsTab.could_not_refresh')}
+          />
+          {/* The banner stays up while its retry runs (the old rows keep
+              `isError`), so `aria-disabled` plus the guard, NOT `disabled`,
+              which leaves the tab order and drops a keyboard user's focus. */}
           <Btn
             type="button"
-            onClick={() => refetch()}
-            disabled={isFetching}
-            className="ml-auto text-[11px]"
+            onClick={() => { if (!isFetching) void refetch() }}
+            aria-disabled={isFetching || undefined}
+            className="ml-auto text-[11px] aria-disabled:opacity-30 aria-disabled:cursor-default"
           >
             {isFetching ? i18nT('pages.sessionsTab.retrying') : i18nT('pages.sessionsTab.retry')}
           </Btn>
