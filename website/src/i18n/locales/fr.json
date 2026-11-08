@@ -8497,6 +8497,7 @@
         "view_project": "Voir le projet"
       },
       "notificationFeed": {
+        "first_notification_prompt": "Première notification de <name/>. Continuer à les recevoir ?",
         "all": "Tout",
         "approve": "Approuver",
         "clear": "Effacer",
@@ -8507,10 +8508,8 @@
         "clear_this_group": "Effacer ce groupe",
         "dismiss_notification": "Ignorer la notification",
         "expand_grouped_notifications": "Développer {{count}} notifications groupées : {{title}}",
-        "first_notification_from": "Première notification de",
         "hide_muted_count": "Masquer en sourdine ({{count}})",
         "keep": "Conserver",
-        "keep_receiving_these": ". Continuer à les recevoir ?",
         "mark_all_as_read": "Tout marquer comme lu",
         "mute_channel": "Mettre le canal en sourdine",
         "mute_failed": "Impossible de mettre ce canal en sourdine. Réessaie.",

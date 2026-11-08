@@ -8293,6 +8293,7 @@
         "view_project": "Projekt anzeigen"
       },
       "notificationFeed": {
+        "first_notification_prompt": "Erste Benachrichtigung von <name/>. Diese weiterhin erhalten?",
         "all": "Alle",
         "approve": "Genehmigen",
         "clear": "Leeren",
@@ -8303,10 +8304,8 @@
         "clear_this_group": "Diese Gruppe löschen",
         "dismiss_notification": "Benachrichtigung schließen",
         "expand_grouped_notifications": "{{count}} gruppierte Benachrichtigungen aufklappen: {{title}}",
-        "first_notification_from": "Erste Benachrichtigung von",
         "hide_muted_count": "Stummgeschaltete ausblenden ({{count}})",
         "keep": "Behalten",
-        "keep_receiving_these": ". Diese weiterhin erhalten?",
         "mark_all_as_read": "Alle als gelesen markieren",
         "mute_channel": "Kanal stummschalten",
         "mute_failed": "Dieser Kanal konnte nicht stummgeschaltet werden. Versuch es erneut.",

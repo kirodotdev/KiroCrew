@@ -8089,6 +8089,7 @@
         "view_project": "プロジェクトを表示"
       },
       "notificationFeed": {
+        "first_notification_prompt": "<name/>からの最初の通知です。これらを受け続けますか？",
         "all": "すべて",
         "approve": "承認",
         "clear": "クリア",
@@ -8099,10 +8100,8 @@
         "clear_this_group": "このグループをクリア",
         "dismiss_notification": "通知を閉じる",
         "expand_grouped_notifications": "グループ化された通知 {{count}} 件を展開：{{title}}",
-        "first_notification_from": "最初の通知",
         "hide_muted_count": "ミュート済みを非表示（{{count}}）",
         "keep": "保持",
-        "keep_receiving_these": "。これらを受け続けますか？",
         "mark_all_as_read": "すべてを既読にする",
         "mute_channel": "チャネルをミュート",
         "mute_failed": "このチャネルをミュートできませんでした。もう一度お試しください。",

@@ -8293,6 +8293,7 @@
         "view_project": "प्रोजेक्ट देखें"
       },
       "notificationFeed": {
+        "first_notification_prompt": "<name/> से पहली सूचना। इन्हें प्राप्त करते रहें?",
         "all": "सभी",
         "approve": "स्वीकृत करें",
         "clear": "साफ़ करें",
@@ -8303,10 +8304,8 @@
         "clear_this_group": "यह समूह साफ़ करो",
         "dismiss_notification": "सूचना हटाएँ",
         "expand_grouped_notifications": "{{count}} समूहबद्ध सूचनाएँ विस्तृत करो: {{title}}",
-        "first_notification_from": "पहली सूचना, प्रेषक",
         "hide_muted_count": "म्यूट छिपाओ ({{count}})",
         "keep": "जारी रखें",
-        "keep_receiving_these": "। इन्हें प्राप्त करते रहें?",
         "mark_all_as_read": "सभी को पढ़ा हुआ चिह्नित करें",
         "mute_channel": "चैनल म्यूट करें",
         "mute_failed": "यह चैनल म्यूट नहीं हो सका। फिर से कोशिश करो।",

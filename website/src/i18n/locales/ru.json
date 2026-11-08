@@ -8701,6 +8701,7 @@
         "view_project": "Открыть проект"
       },
       "notificationFeed": {
+        "first_notification_prompt": "Первое уведомление от <name/>. Продолжать получать такие уведомления?",
         "all": "Все",
         "approve": "Подтвердить",
         "clear": "Очистить",
@@ -8711,10 +8712,8 @@
         "clear_this_group": "Очистить эту группу",
         "dismiss_notification": "Скрыть уведомление",
         "expand_grouped_notifications": "Развернуть сгруппированные уведомления ({{count}}): {{title}}",
-        "first_notification_from": "Первое уведомление от",
         "hide_muted_count": "Скрыть без звука ({{count}})",
         "keep": "Оставить",
-        "keep_receiving_these": ". Продолжать получать такие уведомления?",
         "mark_all_as_read": "Отметить все как прочитанные",
         "mute_channel": "Отключить звук канала",
         "mute_failed": "Не удалось отключить звук канала. Попробуй ещё раз.",

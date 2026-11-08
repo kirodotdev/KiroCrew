@@ -8089,6 +8089,7 @@
         "view_project": "查看项目"
       },
       "notificationFeed": {
+        "first_notification_prompt": "首条通知来自<name/>。要继续接收这类通知吗？",
         "all": "全部",
         "approve": "批准",
         "clear": "清除",
@@ -8099,10 +8100,8 @@
         "clear_this_group": "清除这一组",
         "dismiss_notification": "忽略通知",
         "expand_grouped_notifications": "展开 {{count}} 条分组通知：{{title}}",
-        "first_notification_from": "首条通知来自",
         "hide_muted_count": "隐藏已静音（{{count}}）",
         "keep": "保留",
-        "keep_receiving_these": "。要继续接收这类通知吗？",
         "mark_all_as_read": "全部标为已读",
         "mute_channel": "静音频道",
         "mute_failed": "未能静音此频道，请重试。",
