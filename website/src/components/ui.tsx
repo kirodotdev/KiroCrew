@@ -441,7 +441,10 @@ export function PageHeader({ title, subtitle, actions }: { title: React.ReactNod
   )
 }
 
-export function Toggle({ checked, onChange, disabled, label, describedBy, tone = 'accent', 'data-ui-auto': uiAuto }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean; label?: string; describedBy?: string; tone?: 'accent' | 'muted'; /** The build's auto-tier marker (scripts/lib/ui-auto-stamp.mjs), put on the switch a guide points at. */ 'data-ui-auto'?: string }) {
+export function Toggle({ checked, onChange, disabled, busy, label, describedBy, tone = 'accent', 'data-ui-auto': uiAuto }: { checked: boolean; onChange: (v: boolean) => void; disabled?: boolean; /** Opt-in: the switch is writing its own change right now. It stays in the tab order (not `tabIndex={-1}`, which drops a keyboard user to the page) and ignores presses while the write runs, announced as `aria-disabled` + `aria-busy`. Default unset keeps today's behaviour. `busy` wins when both are set. */ busy?: boolean; label?: string; describedBy?: string; tone?: 'accent' | 'muted'; /** The build's auto-tier marker (scripts/lib/ui-auto-stamp.mjs), put on the switch a guide points at. */ 'data-ui-auto'?: string }) {
+  // While busy the switch refuses presses but stays focusable, so it keeps a
+  // tab stop; a non-busy `disabled` leaves the tab order as before.
+  const inert = disabled || busy
   return (
     <div
       role="switch"
@@ -451,22 +454,25 @@ export function Toggle({ checked, onChange, disabled, label, describedBy, tone =
       // Without this a screen reader announces a disabled switch as actionable:
       // the disabled state was carried only by `tabIndex={-1}` and an opacity
       // class, neither of which reaches the accessibility tree.
-      aria-disabled={disabled || undefined}
+      aria-disabled={inert || undefined}
+      aria-busy={busy || undefined}
       aria-label={label}
       // Ties a consequence the caller renders NEXT to the switch (rather than as
       // its description) into the switch's own accessible description, so an AT
       // user hears it before acting rather than discovering it by exploring.
       aria-describedby={describedBy}
-      tabIndex={disabled ? -1 : 0}
+      // Busy keeps the tab stop so focus does not fall to the page while the
+      // write runs; a plain disabled switch is taken out of the order as before.
+      tabIndex={disabled && !busy ? -1 : 0}
       // A switch is the one control whose physical twin clicks under the thumb, so
       // it gets a tap where the device can give one (phones); elsewhere no-op.
-      onClick={() => { if (!disabled) { haptic(); onChange(!checked) } }}
-      onKeyDown={e => { if (!disabled && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); haptic(); onChange(!checked) } }}
+      onClick={() => { if (!inert) { haptic(); onChange(!checked) } }}
+      onKeyDown={e => { if (!inert && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); haptic(); onChange(!checked) } }}
       // `muted` is for a LIST of switches, where an accent fill on every row
       // shouts and duplicates a state the row's own grouping already carries.
       // The knob position still reads the state, so nothing is lost by dropping
       // the hue. Accent stays the default so a lone switch keeps its emphasis.
-      className={`w-9 h-5 rounded-full relative transition-colors shrink-0 cursor-pointer ${disabled ? 'opacity-40 cursor-not-allowed' : ''} ${checked ? (tone === 'muted' ? 'bg-border-strong' : 'bg-accent') : 'bg-border'}`}
+      className={`w-9 h-5 rounded-full relative transition-colors shrink-0 cursor-pointer ${inert ? 'opacity-40 cursor-not-allowed' : ''} ${checked ? (tone === 'muted' ? 'bg-border-strong' : 'bg-accent') : 'bg-border'}`}
     >
       <div className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${checked ? 'translate-x-[18px]' : 'translate-x-0.5'}`} />
     </div>

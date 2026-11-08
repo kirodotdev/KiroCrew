@@ -122,6 +122,14 @@ export function KasBundleCard() {
   return (
     <div className="space-y-2" data-testid="kas-bundle-card">
       <div className="flex flex-wrap items-center gap-2">
+        {/* busy while its OWN save runs, so the switch keeps keyboard focus
+            instead of a native disabled dropping it to the page. The
+            can't-turn-on case stays native disabled: the switch is off and the
+            engine is not installed yet, which is not the save running. (This
+            note sits outside the element on purpose: the settings extractor
+            scans the tag's own text to a 4000-char ceiling, and a backtick in
+            an inline comment would open a template-string state that hides the
+            closing tag and drops the setting from the registry.) */}
         <div className="min-w-0 flex-1">
           <SettingsToggle
             configKey={KAS_BUNDLE_CONFIG_KEY}
@@ -129,7 +137,8 @@ export function KasBundleCard() {
             description={i18nT('pages.developer.kasBundleCard.toggle_description')}
             checked={status.enabled}
             onChange={value => toggleMut.mutate(value)}
-            disabled={toggleMut.isPending || (!status.enabled && !canTurnOn)}
+            busy={toggleMut.isPending}
+            disabled={!status.enabled && !canTurnOn}
           />
         </div>
         {/* Its own notice below says what is pending once a save lands, so the
