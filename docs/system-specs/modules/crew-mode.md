@@ -4148,13 +4148,9 @@ runs the agent it recorded. A `template` record (a worker included) stays exact
   through `skill_scope.mate_conductor_scope`, which `agent_skill_globs` returns
   through on every caller (the session scope, the injection plan, the per-turn
   triggered-skill filter) and KAS's `deny skill` rule
-  (`acp/kas_skill_scope._spec_globs`) calls too. On each new session whose
-  conductor loads such a skill, the crewmate's next reply names it and points to
-  the crewmate's Abilities or to asking the crewmate: the guidance is queued as
-  that turn's pending context, because the crewmate chat draws messages only; a
-  `notice` row with the same text shows on the Sessions page
-  (`chat_turn/turn_spec_hooks._notice_inherited_conductor_skills`). The next
-  release turns the flag off and removes it. Without the
+  (`acp/kas_skill_scope._spec_globs`) calls too. No session-start notice or
+  reply names these skills; a skill to keep is added in the crewmate's
+  Abilities. The next release turns the flag off and removes it. Without the
   ledger the spec maps no skill and keeps the skills it inherits
   (`test_crewmate_prompts.py`, `test_mate_conductor_agent.py`). Who gets which
   MCP servers and skills is summed up in
