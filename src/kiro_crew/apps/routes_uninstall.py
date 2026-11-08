@@ -808,6 +808,16 @@ async def _run_uninstall(
     # leftover tabs UNDISMISSABLE -- `notify_slot_closed` returns False when the
     # hook raises and `api_chat_slot_delete` refuses the close on that.
     forget_app_hooks(name)
+    # The deregistration removed an enabled, gateway-managed app's MCP servers from the
+    # agent spec: end as an MCP page write does, so a chat already open drops them too
+    # (app-kit-platform §1).
+    if resources == "gateway" and info.get("enabled") and manifest.get("mcpServers"):
+        from kiro_crew.dashboard.handlers.template_server_request import _reach_sessions
+
+        try:
+            await _reach_sessions(request)
+        except Exception:  # noqa: BLE001 - bookkeeping must not fail an uninstall
+            logger.warning("Open chats did not get %s's MCP change", name, exc_info=True)
 
     if dropped:
         if pointer_flush_failed:
