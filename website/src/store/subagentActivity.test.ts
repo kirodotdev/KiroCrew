@@ -453,6 +453,20 @@ describe('a nested run approved under its parent key', () => {
     expect(count(store)).toBe(0)
   })
 
+  it('draws a rejected run in its root chat when a reconnect replays it', () => {
+    const store = makeStore()
+    store.dispatch(setActiveSlot('chat1'))
+    store.dispatch(sseSubagentPending({ slot: 'subagent:b', id: 'c', task: 't', approval_id: 'spawn:c' }))
+    // The rejection ends the approval card on the key it was raised on.
+    store.dispatch(sseSubagentDone({ slot: 'subagent:b', id: 'c', elapsed: 0, error: 'Spawn rejected' }))
+    store.dispatch(clearSubagentsForSnapshot())
+    store.dispatch(sseSubagentDone({ slot: 'chat1', id: 'c', elapsed: 0, error: 'spawn rejected', outcome: 'failed', task: 't' }))
+    store.dispatch(subagentReplayDone())
+
+    expect(store.getState().chat.subagents.c?.status).toBe('error')
+    expect(count(store)).toBe(0)
+  })
+
   it('keeps a workflow step spawn approved in its origin chat on that tab', () => {
     // A workflow step's spawn is approved in the chat that started the run,
     // while the run's own frames carry the step's `wf:` key, which no tab shows.
