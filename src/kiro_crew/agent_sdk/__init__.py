@@ -156,6 +156,18 @@ def shell_command_from_tool_params(params: dict) -> str | None:
     return _command(params)
 
 
+def published_stderr_tail(
+    lines: list[str], sep: str, last: int, redact: Callable[[str], str] | None = None
+) -> str:
+    """The *last* of a child's stderr *lines* joined with *sep*, or ``""``, or the
+    withheld marker when ``acp/stderr_tail.py:safe_stderr_tail`` flags ANY of the
+    lines: all of them are judged, so a secret straddling the cut is seen whole."""
+    from kiro_crew.acp.stderr_tail import STDERR_WITHHELD, safe_stderr_tail
+
+    judged = safe_stderr_tail(lines, "\n", redact=redact)
+    return judged if judged in ("", STDERR_WITHHELD) else sep.join(lines[-last:])
+
+
 def session_start_concurrency() -> int:
     """The configured ``agent.session_start_concurrency`` snapshot (off-loop caller)."""
     from kiro_crew.acp.runtime_start import _resolve_session_start_concurrency as _resolve
@@ -209,6 +221,7 @@ class AgentTurnUsage(Protocol):
 
 
 __all__ = [
+    "published_stderr_tail",
     "session_start_concurrency",
     "take_batch_guard_refusal",
     "batch_guard_refusal_outcome",
