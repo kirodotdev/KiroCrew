@@ -1629,10 +1629,12 @@ no longer destroy older turns.
   `_disk_meta_created_at`: the two hydrate sites
   (`channel_slots.py`, `metadata_codec.py`) and the committed save
   (`save_transaction.py`). The write target can later DRIFT to a different key —
-  a cron-born slot whose `linked_session_key` lapses falls back to the
-  `dashboard:<slot>` spelling, a legitimately-existing file B with its own
-  `created_at`. Comparing B's identity against the observation from file A would
-  read "different file" as "deleted and recreated" and skip every save of a live
+  a slot linked only after it observed its file (a reused slot a cron or workflow
+  injection binds, a hooked revive) resolves another file B with its own
+  `created_at`. (A History resume of a cron transcript binds its own `cron:` key
+  in `metadata_codec.slot_args`, so it does not drift.) Comparing B's identity
+  against the observation from file A would read "different file" as "deleted and
+  recreated" and skip every save of a live
   session. So when the keys differ the witnesses do NOT compare the target: they
   stat the OBSERVED file A instead (`_observed_file_deleted`, shared by
   `delete_won` and `session_was_deleted`). A still present with the same identity

@@ -789,6 +789,25 @@ async def resume_slot_from_history(
     answered ``resume_session_deleted`` when gone (the dedup arm's slot predates
     this resume and may live under another key); nothing is retracted for it.
     """
+    if not request_app and state.conversation_log:
+        # A cron transcript reopens as its job's own tab, which ``slot_args`` binds
+        # to the line's ``cron:`` link, so the cron paths that look that tab up by
+        # name reach it. Named here, before the bookkeeping below keys on it.
+        from kiro_crew.dashboard.slot_ownership import app_holds_gateway_key
+        from kiro_crew.dashboard.slot_persistence.metadata_codec import own_cron_link
+
+        key = _normalize_slot_key(name) if history_key is None else history_key
+        meta = await asyncio.to_thread(state.conversation_log.get_metadata, key)
+        if link := own_cron_link(meta, key):
+            # Every ``cron:<id>[:<run>]`` key shows in the job's one tab, as
+            # ``dashboard_slot_key`` maps it.
+            tab = "cron-" + link.removeprefix("cron:").split(":", 1)[0]
+            if app_holds_gateway_key(state, tab, "cron.resume", caller_label):
+                unavailable = "this job's chat tab is unavailable"
+                return ResumeOutcome(
+                    refusal=ResumeRefusal(unavailable, "cron_slot_unavailable", 409)
+                )
+            name, history_key = tab, key
     noted_key = _normalize_slot_key(name)
     noted: dict[str, TakeoverNote | None] = {"note": None}
 
@@ -1638,13 +1657,14 @@ async def _resume_slot_from_history_noted(
             # real read rather than a constant. From the fresh re-read, as below.
             slot._app = str(post_read_meta["app"])
         if containment is not None:
-            # Same for the channel link: the resume core does not hydrate
-            # ``linked_session_key`` (the restart path and the History surfacing do),
-            # so the hook's link check would read an empty field whatever the line
-            # says. Restored from the FRESH re-read (``post_read_meta``), not the
-            # pre-transcript snapshot, so a link written to the line inside the read
-            # window is what the hook sees; a channel-born key marks the origin the
-            # way the surfacing path does.
+            # Same for the channel link: the resume core binds only a cron
+            # transcript's own ``linked_session_key`` (the restart path and the
+            # History surfacing hydrate the rest), so the hook's link check would
+            # read an empty field whatever the line says. Restored from the FRESH
+            # re-read (``post_read_meta``), not the pre-transcript snapshot, so a
+            # link written to the line inside the read window is what the hook
+            # sees; a channel-born key marks the origin the way the surfacing path
+            # does.
             fresh_link = str(post_read_meta.get("linked_session_key") or "")
             if fresh_link and not getattr(slot, "linked_session_key", ""):
                 slot.linked_session_key = fresh_link
