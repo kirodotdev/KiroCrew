@@ -45,6 +45,7 @@ const SYNC_STATUS_LABEL_KEYS: Record<string, string> = {
   synced: 'pages.knowledge.sourcesList.status.synced',
   error: 'pages.knowledge.sourcesList.status.error',
   paused: 'pages.knowledge.sourcesList.status.paused',
+  syncing: 'pages.knowledge.sourcesList.status.syncing',
 }
 
 /** The status a source row shows and polls on. A folder scan stamps 'synced'
