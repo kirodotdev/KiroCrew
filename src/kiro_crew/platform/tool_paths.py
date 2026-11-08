@@ -541,7 +541,8 @@ def is_document_writing_tool(tool_name: str | None, mcp_server_name: str | None)
 #: * ``monitor_start`` / ``monitor_update`` ``message`` is re-injected into the
 #:   same session as its next turn.
 #: * ``learn_add`` ``rule`` / ``negative`` are stored lesson text that later
-#:   turns read as prompt context.
+#:   turns read as prompt context; ``learn_update`` ``rule`` is that same text,
+#:   naming the lesson whose tier changes.
 #: * ``artifact_post_comment`` / ``artifact_reply_comment`` ``text`` is a
 #:   stored comment. Artifact ``content`` is NOT listed: a webapp artifact's
 #:   content is deployable code.
@@ -571,6 +572,7 @@ MCP_DOCUMENT_BODY_FIELDS: Mapping[tuple[str, str], frozenset[str]] = MappingProx
         ("kirocrew-core", "monitor_start"): frozenset({"message"}),
         ("kirocrew-core", "monitor_update"): frozenset({"message"}),
         ("kirocrew-core", "learn_add"): frozenset({"rule", "negative"}),
+        ("kirocrew-core", "learn_update"): frozenset({"rule"}),
         ("kirocrew-core", "artifact_post_comment"): frozenset({"text"}),
         ("kirocrew-core", "artifact_reply_comment"): frozenset({"text"}),
     }

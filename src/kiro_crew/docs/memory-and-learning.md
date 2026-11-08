@@ -178,6 +178,10 @@ Just tell it naturally:
 Kiro Crew saves these via the `learn_add` MCP tool. View them with `learn_list`
 or on the dashboard Overview → Lessons tab.
 
+To change whether a saved lesson applies in every session (`always`) or only
+when the task is about it (`on_topic`), ask Kiro Crew: the `learn_update` tool
+changes that one setting in place and keeps the lesson's wording and history.
+
 ## Workspaces
 
 Markdown memory is workspace-scoped: each workspace stores `memory/preferences.md`, `memory/projects.md`, and `memory/history/{date}.md` beneath its workspace directory. Legacy JSONL lessons are also workspace-local; vector memory defaults to `memory.db` under the Kiro Crew data directory. Lessons are global unless their optional `repo_scope` restricts them to a project tree.
