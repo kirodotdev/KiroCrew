@@ -574,6 +574,7 @@ def _isolate_advertised_model_cache(_floor_monkeypatch):
 
     _floor_monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS", {})
     _floor_monkeypatch.setattr(model_registry, "_ADVERTISED_META", {})
+    _floor_monkeypatch.setattr(model_registry, "_PENDING_ADVERTISED_SHRINK", {}, raising=False)
 
 
 @pytest.fixture(autouse=True)

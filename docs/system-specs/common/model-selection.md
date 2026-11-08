@@ -296,7 +296,12 @@ freshness.
 
 The cache is warm for every backend, but from two different sources. For a
 backend in `ACP_BACKENDS_ADVERTISED_MODEL_SELECTION` the client captures the
-`session/new` list. For `kiro` and `kas` the `acp` bucket is filled by
+`session/new` list. That list is entitlement-filtered, and a session born in an
+entitlement race can advertise a degraded subset, so a list that drops a cached id
+is held rather than applied (`refresh_advertised_models(confirm_shrink=True)`):
+the cache keeps its ids and takes only the list's additions until the same list is
+read again, which replaces it. A real downgrade narrows the cache one session later.
+For `kiro` and `kas` the `acp` bucket is filled by
 `GET /api/models` from the `chat --list-models` catalog — the UNFILTERED rows,
 before the deprecation and entitlement narrowing, because a deprecated or
 unentitled id is still a kiro id and dropping it would make a native pin read as
