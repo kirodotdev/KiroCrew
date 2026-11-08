@@ -34,6 +34,7 @@ import InfoTip from '../../components/InfoTip'
 import { SettingRef } from '../../components/settingRef/SettingRef'
 import SegmentedControl, { type Segment } from '../../components/SegmentedControl'
 import { fmtNumber, fmtPercent } from '../../i18n/format'
+import { MemoryBreakdownButton } from './MemoryBreakdown'
 import {
   buildTree,
   columnMaxima,
@@ -351,6 +352,8 @@ export default function SessionsTab({ planeStateRef }: Props) {
   })
 
   const usedMb = totals?.rss_mb ?? 0
+  const breakdown = totals?.breakdown ?? null
+  const sharePct = breakdown ? breakdown.host_pct : (totals?.host_pct ?? null)
   const topLevelSessions = rows.filter(r => r.kind === 'session').length
   const largestMb = sessions.reduce<number | null>(
     (m, s) => (s.rss_mb != null && (m == null || s.rss_mb > m) ? s.rss_mb : m),
@@ -815,8 +818,16 @@ export default function SessionsTab({ planeStateRef }: Props) {
           "0" beside either of those makes the card tell two different stories. */}
       {!isPending && data && (
       <div className="flex items-center flex-wrap px-3.5 py-2 border-t border-border bg-bg-elevated">
-        <FooterStat label={i18nT('pages.sessionsTab.footer_kirocrew_gb')} value={fmtGb(usedMb)} />
-        <FooterStat label={i18nT('pages.sessionsTab.footer_share_of_machine')} value={totals?.host_pct != null ? fmtPercent(totals.host_pct / 100, { maximumFractionDigits: 2 }) : '—'} />
+        {/* The total is everything the product runs on this host, so it can be
+            held against the OS's own figure for the app, and it opens the
+            breakdown that says where it went. An older gateway sends no
+            breakdown: the stat then shows the sessions' own total, as before. */}
+        <FooterStat
+          label={i18nT('pages.sessionsTab.footer_kirocrew_gb')}
+          value={breakdown ? <MemoryBreakdownButton breakdown={breakdown} /> : fmtGb(usedMb)}
+          {...(breakdown ? { hint: i18nT('pages.sessionsTab.footer_kirocrew_gb_hint') } : {})}
+        />
+        <FooterStat label={i18nT('pages.sessionsTab.footer_share_of_machine')} value={sharePct != null ? fmtPercent(sharePct / 100, { maximumFractionDigits: 2 }) : '—'} />
         <FooterStat label={i18nT('pages.sessionsTab.footer_largest_session_gb')} value={fmtGb(largestMb)} />
         {/* Nesting broke the old 1:1 between this count and the top-level rows a
             reader can see, so when any session sits under another the value
@@ -885,7 +896,8 @@ function FooterStat({
   action,
 }: {
   label: string
-  value: string
+  /** A plain figure, or a control that IS the figure (the memory total opens its breakdown). */
+  value: ReactNode
   warn?: boolean
   /** The page's "?" hint (the column-header pattern), for a stat a reader cannot act on from its label alone. */
   hint?: string
