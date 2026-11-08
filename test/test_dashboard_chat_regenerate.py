@@ -87,6 +87,30 @@ class TestRegenerateAndVariants:
             assert slot.messages[-1]["variant_idx"] == 0
 
     @pytest.mark.asyncio
+    async def test_switch_variant_stamps_no_row_its_turn_did_not_stamp(self, tmp_path, monkeypatch):
+        """A reply that ran tools keeps its variants on its first row and its stats
+        on its last; showing an older variant must not stamp the first row, which
+        the page would then read as the end of the turn."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        slot.append("user", "hi")
+        slot.append("assistant", "v2 before the tool")
+        slot.messages[-1]["variants"] = [
+            {"content": "v1", "ts": "t1", "turn_stats": {"elapsed_ms": 1200}},
+            {"content": "v2 before the tool", "ts": "t2"},
+        ]
+        slot.messages[-1]["variant_idx"] = 1
+        slot.append("assistant", "v2 after the tool")
+        slot.messages[-1]["meta"] = {"turn_stats": {"elapsed_ms": 4000}}
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/s1/switch-variant", json={"index": 0})
+            assert resp.status == 200
+        assert slot.messages[-2]["content"] == "v1"
+        assert "turn_stats" not in (slot.messages[-2].get("meta") or {})
+        assert slot.messages[-1]["meta"]["turn_stats"] == {"elapsed_ms": 4000}
+
+    @pytest.mark.asyncio
     async def test_switch_variant_index_out_of_range(self, tmp_path, monkeypatch):
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         state = _make_state(tmp_path)
