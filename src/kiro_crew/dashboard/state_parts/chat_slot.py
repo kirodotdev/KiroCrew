@@ -1077,6 +1077,7 @@ class _ChatSlot:
         *,
         extra_meta: dict[str, Any] | None = None,
         relay_meta: dict[str, Any] | None = None,
+        workflow_followup: bool = False,
     ) -> bool:
         """Queue *prompt* if busy, otherwise start an agent turn.
 
@@ -1097,6 +1098,12 @@ class _ChatSlot:
         containment keys win a collision, since the drain's own authorization
         decision must not be overwritable by a caller's extra fields.
 
+        *workflow_followup* marks *prompt* as the gateway's own prompt after a
+        workflow result: queued under ``WORKFLOW_FOLLOWUP_KIND``, or appended
+        directly as the ``inject`` row (``injectKind: workflow``) that kind
+        drains to, so neither arm draws it as the person's bubble. The caller
+        hands a *run_chat_coro* that runs it as a synthetic payload.
+
         Concurrency: the check (``self.running``) and mutation (``self.task = ...``)
         run synchronously on the asyncio event loop with no ``await`` between them,
         so two concurrent callers targeting the same slot cannot both observe
@@ -1108,6 +1115,7 @@ class _ChatSlot:
         if self.running or crew_pause.holds_slot(self):
             # circular import: session_control imports this module at module level.
             from kiro_crew.dashboard.chat_delivery import start_queue_persist
+            from kiro_crew.dashboard.chat_utils_injected_rows import WORKFLOW_FOLLOWUP_KIND
             from kiro_crew.dashboard.session_control import containment_meta
 
             # Stamp the containment constraints holding at ADMISSION, so the
@@ -1126,7 +1134,9 @@ class _ChatSlot:
             if relay_meta:
                 _meta["relay"] = dict(relay_meta)
             _meta.update(containment_meta(state, self))
-            self.queue_append(prompt, meta=_meta)
+            self.queue_append(
+                prompt, kind=WORKFLOW_FOLLOWUP_KIND if workflow_followup else "", meta=_meta
+            )
             # Returning False IS the receipt that the prompt was accepted onto the
             # queue, and until the drain writes its transcript row the queue is the
             # prompt's only record -- so a restart inside the periodic flush
@@ -1141,11 +1151,17 @@ class _ChatSlot:
             # transcript rewrites.
             start_queue_persist(state, self)
             return False
-        # The run arm has no queue entry, so a cross-session sender stamp is
-        # applied directly to the user row it appends (``extra_meta`` is queue-only).
-        self.append(
-            "user", prompt, "msg msg-u", meta={"relay": dict(relay_meta)} if relay_meta else None
-        )
+        if workflow_followup:
+            self.append("inject", prompt, "msg msg-inject", meta={"injectKind": "workflow"})
+        else:
+            # The run arm has no queue entry, so a cross-session sender stamp is
+            # applied directly to the user row it appends (``extra_meta`` is queue-only).
+            self.append(
+                "user",
+                prompt,
+                "msg msg-u",
+                meta={"relay": dict(relay_meta)} if relay_meta else None,
+            )
         task = asyncio.create_task(run_chat_coro(state, self, prompt))
         self.task = task
         state._background_tasks.add(task)
