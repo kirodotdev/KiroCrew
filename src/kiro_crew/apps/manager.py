@@ -145,6 +145,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.apps.manager_records import (  # noqa: F401
         _ALWAYS_STORED_FAMILIES,
+        _GRANT_AND_SCOPE_WIDENING,
+        _GRANT_WIDENING,
+        _SCOPE_WIDENING,
         _TREE_SWAP_LAST_CAP,
         _VALID_LIFECYCLE,
         _VALID_ORIGIN,
@@ -152,10 +155,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         APP_MANIFEST_FILENAME,
         APPROVED_GRANTS_FILENAME,
         INSTALLED_META_FILENAME,
+        MEMBER_THREADS_CONSENT_KEY,
         SESSION_APPROVAL_PENDING_KEY,
         STAGED_GRANT_FAMILIES,
         AppResult,
         InstalledApp,
+        SessionControlWidening,
         _approved_grants_after_manifest_change,
         _approved_grants_path,
         _approved_grants_row,
@@ -177,6 +182,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _scan_installed_app_config_keys,
         _session_approval_consent_unrecorded,
         _session_approval_save_rule,
+        _session_control_widening,
         _SwapState,
         _tree_swap,
         _tree_swap_guard,
@@ -269,6 +275,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         Any,
         Callable,
         Iterator,
+        NamedTuple,
         Sequence,
     )
     from urllib.parse import (  # noqa: F401
@@ -307,6 +314,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.apps.manifest import (  # noqa: F401
         RESERVED_APP_NAME_CODE,
         AppManifest,
+        Permissions,
         app_name_error,
         contain_command_agents,
         cron_permission_error,

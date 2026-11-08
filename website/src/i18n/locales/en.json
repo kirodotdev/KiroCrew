@@ -6649,6 +6649,8 @@
       "origin_resources_lifecycle": "Origin: {{origin}} | Resources: {{resources}} | Lifecycle: {{lifecycle}}",
       "permissions": "Permissions",
       "session_approval_desc": "Can send messages and choose response options in your chats, approve or deny tool prompts, and switch a chat's approval mode.",
+      "session_approval_member_threads": "This includes your own chats with your Bots.",
+      "session_approval_member_threads_refused": "This app now also asks to reach your chats with your Bots. Review it and enable again.",
       "session_approval_modes": "Chat approval modes it can set",
       "session_approval_manifest_key": "Manifest key",
       "platform_list": "Platform: {{os}}",

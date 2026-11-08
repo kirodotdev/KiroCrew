@@ -94,7 +94,13 @@ export function createAppsEndpoints({ get, post, put, del, j, jApps, jfetch: fet
     getAppManifest: (name: string) => fetch('/api/apps/' + encodeURIComponent(name) + '/manifest').then(j),
     installApp: (source: string) => post('/api/apps/install', { source }).then(j),
     // grantsConsent names the staged entries the owner was shown; only those are approved.
-    enableApp: (name: string, sessionApprovalConsent = false, grantsConsent?: { api: string[]; events: string[]; linkPreviewHosts?: string[]; linkPreviewTextPatterns?: string[]; linkPreviewFullUrl?: string[]; messageActions?: string[]; linkOpenHosts?: string[]; linkOpenFullUrl?: string[]; composerActions?: string[]; selectionActions?: string[] }) => post('/api/apps/' + encodeURIComponent(name) + '/enable', grantsConsent ? { sessionApprovalConsent, grantsConsent } : { sessionApprovalConsent }).then(j),
+    enableApp: (name: string, sessionApprovalConsent = false, grantsConsent?: { api: string[]; events: string[]; linkPreviewHosts?: string[]; linkPreviewTextPatterns?: string[]; linkPreviewFullUrl?: string[]; messageActions?: string[]; linkOpenHosts?: string[]; linkOpenFullUrl?: string[]; composerActions?: string[]; selectionActions?: string[] }, memberThreadsConsent = false) => post('/api/apps/' + encodeURIComponent(name) + '/enable', {
+      sessionApprovalConsent,
+      // Only a consent whose disclosure named member threads says so; the
+      // server refuses a consent that omits a scope the live manifest declares.
+      ...(sessionApprovalConsent && memberThreadsConsent ? { memberThreadsConsent: true } : {}),
+      ...(grantsConsent ? { grantsConsent } : {}),
+    }).then(j),
     disableApp: (name: string) => post('/api/apps/' + encodeURIComponent(name) + '/disable').then(j),
     openApp: (name: string) => post('/api/apps/' + encodeURIComponent(name) + '/open').then(j),
     uninstallApp: (name: string, keepData = true, keepDependencies?: boolean, keepSpecific?: string[]) =>

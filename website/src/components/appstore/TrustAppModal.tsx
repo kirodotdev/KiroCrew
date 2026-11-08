@@ -56,6 +56,12 @@ export type TrustAppTarget = Pick<RegistryApp, 'name' | '_registry' | 'origin'> 
   trustRepository?: string
   sessionApproval?: boolean
   /**
+   * True when the manifest widens `sessionApproval` to the owner's member
+   * threads (`permissions.memberThreads`). Shown only inside the session
+   * approval box: the scope grants nothing on its own.
+   */
+  memberThreads?: boolean
+  /**
    * True when confirming re-runs the registry INSTALL rather than the enable.
    * An install lands the app switched off (enabling is its own step), so the
    * confirm button must not promise "and enable" on that path, and the outcome,
@@ -694,6 +700,11 @@ export default function TrustAppModal({
               <p className="text-text leading-relaxed">
                 {i18nT('components.appstore.trustAppModal.session_approval_desc')}
               </p>
+              {app.memberThreads && (
+                <p className="text-text leading-relaxed">
+                  {i18nT('components.appstore.trustAppModal.session_approval_member_threads')}
+                </p>
+              )}
               <SessionApprovalModes label={i18nT('components.appstore.trustAppModal.session_approval_modes')} />
             </div>
           )}

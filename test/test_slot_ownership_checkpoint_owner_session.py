@@ -250,7 +250,7 @@ class TestModeRereadsTheGrantAfterTheBody:
             state._slots.pop("shared")
             replacement.append(state.get_or_create_slot("shared", app="other-app"))
 
-        def grant(_app: str) -> bool:
+        def grant(_app: str, **_kw: object) -> bool:
             calls.append(None)
             if len(calls) == 2:
                 hop.run(replace(), "the slot replacement")
