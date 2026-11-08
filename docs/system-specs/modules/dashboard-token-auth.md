@@ -180,7 +180,7 @@ goes to the owner of its responsibility:
 |---|---|
 | `token_auth_paths.py` | Requests that skip token auth (static assets, self-authenticating webhooks, CSRF exemptions, the SPA shell and app-window paths), and the refusal and auth-log helpers |
 | `token_auth_tokens.py` | Minting, validating, pinning and revoking session tokens; app secrets; the per-process token state |
-| `token_auth_app_scope.py` | What an app token may reach: its namespace and its manifest `permissions.api` prefixes |
+| `token_auth_app_scope.py` | What an app token may reach: its namespace and its manifest `permissions.api` prefixes; the refusal body when it reaches past them, worded by `app_scope_refusal.py` (not a facade owner) |
 | `token_auth_callers.py` | Unix-socket peer verification, and attributing a request to its app, cron job, sub-agent or member |
 
 #### Token Format
@@ -622,6 +622,7 @@ re-enable unexpired sessions previously revoked by `kirocrew logout`.
 An **app token** (payload carries a non-empty `app` claim, minted by the `X-App-Secret` exchange at `POST /api/apps/<name>/token`) must not have the same reach as a dashboard-user token. `_enforce_app_scope(request, app_name, path)` applies least privilege, **deny-by-default**:
 
 - An app token may access **only** (1) its **own namespace** — `/apps/<name>/...` and `/api/apps/<name>/...`, matched on a path boundary so app `foo` cannot reach app `foo-bar` — and (2) the API path prefixes the app declared in its manifest `permissions.api` allowlist (`_app_api_allowlist`, cached ~30s; any load failure returns an empty tuple → confined to its own namespace only; entries an update added stay out until the owner approves them, see `approved-grants.json` in app-kit-platform §13). Everything else is a 403 with an `app_scope_check` SEL audit event.
+- On an `/api/` path the 403 body says why and what clears it (`app_scope_refusal.py`): `code` is `app_permission_not_approved` when a declared entry the owner has not approved covers the path, `app_permission_not_declared` when no declared entry covers it, and `app_permission_unavailable` when the grant could not be read or an update is swapping the app's files. `error` holds the cause and the steps in text the app can log; for the first two codes that includes the app's page (`/apps/detail/<name>`) where the owner clicks "Approve new permissions", and `pending_approval` lists the held-back entries that cover the path. The wording reads only what the allowlist read stored beside its entry under the same timestamp (`_app_grant_facts`, filled by `_read_grant_facts` through `apps.manager.held_back_app_grants`), so the refusal path reads no disk, and a failure there never changes the allowlist. Any other path keeps `_deny`'s sign-in page with its fixed reason, because that page quotes the reason unescaped.
 - It is enforced in **every** middleware branch that admits a token (the normal cookie/query-param flow and the cross-app `/apps/<other>/api` reverse-proxy re-check) — otherwise an app token could reach a mixed internal path (e.g. `/api/chat`, `/api/spawn`) with no app identity set and be mistaken for the dashboard user (privilege escalation).
 - It is a **no-op for dashboard-user tokens** (empty `app` claim), which bypass the gate entirely.
 
