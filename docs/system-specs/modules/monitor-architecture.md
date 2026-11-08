@@ -964,6 +964,18 @@ duration, which callers must size for. An ungated loop naming one pull request
 can run sooner: a head that newly needs a re-sync ends its sleep early (see
 *A monitor is a field, not a system*).
 
+When the gateway starts, every loop whose deadline passed while the gateway was
+down is held `_BOOT_WAKE_STAGGER_SECS` (30 s) longer than the one before it, so
+the sessions they wake cold-start one at a time instead of together. The hold is
+a plain nap ahead of the loop's own countdown (`AutoNudgeService._boot_holds`,
+read once by `_timer`), because the countdown can end early on a subject read.
+Each loop still ticks once; only its start moves. A work-ledger loop's boot
+replay is not held: a user turn cancels a held timer and the re-arm goes to the
+hours-long deadline, which would lose the replay, while an overdue loop re-armed
+that way is overdue again and fires on the overdue beat. A host short of memory
+otherwise starts every woken session and its MCP servers in the same few seconds
+and crash-loops (#33355).
+
 ### 7. Delivery and turn injection
 
 A verdict becomes at most one agent turn, through a fixed sequence:

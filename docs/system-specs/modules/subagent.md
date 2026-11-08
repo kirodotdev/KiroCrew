@@ -522,6 +522,15 @@ so every later admission charges a row at the price it was admitted at:
   horizon keeps its whole window. A stamp that is not a finite number or lies in
   the future never shows a bucket recent. A non-finite learned figure is
   ignored. These are internal admission prices with no config key of their own.
+  The session's MCP roster (`subagent_mcp_roster.session_mcp_roster_gb`:
+  0.35 GiB plus 0.13 GiB for each stdio server the default agent spec starts and
+  the MCP gateway does not route, read at most once a minute) raises both the
+  unlearned price and the cap to that projection when it is larger, because
+  kiro-cli starts every such server in each session (#33355). It is read from the
+  spec, not measured, so bad readings cannot raise it, and a learned figure under
+  it still wins. The default roster projects under 1.0 GiB, so a default install
+  is priced as before; a start it defers is one whose servers would not fit in
+  the memory left.
 - **Shared.** A start that will take a session on its parent's runtime launches
   no kiro-cli process, but it does launch the agent's MCP servers: kiro-cli
   starts a fresh copy of every declared server for each session, shared or not.
