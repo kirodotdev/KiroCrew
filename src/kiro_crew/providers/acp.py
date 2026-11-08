@@ -84,7 +84,7 @@ from kiro_crew.acp.types import (  # noqa: F401
     effort_config_option_id,
     effort_config_option_value,
 )
-from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND  # noqa: F401
+from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
 from kiro_crew.agent_sdk.backends import model_registry_namespace  # noqa: F401
@@ -1079,16 +1079,26 @@ class AcpProvider(LLMProvider):
     async def new_conversation(self) -> None:
         """Clean-slate reset on the SAME warm process (no cold start).
 
-        Delegates to the backing client — ``AcpSessionProvider.new_conversation``
-        on the kiro path (``self._client`` is swapped to the session provider by
-        ``start()``), which issues a fresh ``session/new`` on the already-running
+        Delegates to the backing client. Only ``AcpSessionProvider`` has one: a
+        member of ``ACP_BACKENDS_ACP_RUNTIME`` gets it as ``self._client`` from
+        ``start()``, and it issues a fresh ``session/new`` on the already-running
         process, skipping subprocess spawn + the ``initialize`` handshake. This is
         the primitive a warm session pool uses to reuse one worker across
-        independent tasks without leaking context between them. The claude backend
-        would delegate to its own client-side reset the same way (its ``AcpClient``
-        does not ship one — hence the type ignore).
+        independent tasks without leaking context between them.
+
+        A backend on its own ``AcpClient`` (claude and every other per-session
+        adapter) has no such reset, so this raises ``NotImplementedError`` naming
+        the backend, and the caller falls back to killing and respawning the
+        process (``WorkerPool.reset``, ``_start_fresh_conversation``).
         """
-        await self._client.new_conversation()  # type: ignore[attr-defined]
+        new_conversation = getattr(self._client, "new_conversation", None)
+        if new_conversation is None:
+            backend = POLICY_ID_BY_BACKEND.get(self._client.backend, self._client.backend)
+            raise NotImplementedError(
+                f"the {backend!r} backend has no fresh-conversation reset on its live "
+                "process; it is reset by kill and respawn"
+            )
+        await new_conversation()
 
     def set_delete_delay(self, seconds: float) -> None:
         """Keep the session's record for ``seconds`` after it ends, then delete it.
