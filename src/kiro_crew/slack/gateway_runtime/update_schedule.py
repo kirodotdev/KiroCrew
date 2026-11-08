@@ -482,6 +482,17 @@ async def _restart_gate_when_idle(self: GatewayOrchestrator) -> tuple[bool, int,
     # installer as a tracked task the census does not count; the restart's
     # shutdown would cancel it mid-install, so it is work a restart interrupts.
     background += len(self._dashboard_policy_applies())
+    # So does its git update (the ``dashboard-update`` task): cut off between
+    # its fast-forward and its reinstall, it leaves a tree whose dependencies
+    # were never installed.
+    state = getattr(self, "dashboard_state", None)
+    background += sum(
+        1
+        for task in list(getattr(state, "_background_tasks", None) or ())
+        if callable(getattr(task, "get_name", None))
+        and task.get_name() == "dashboard-update"
+        and not task.done()
+    )
     if turns + background > 0:
         await self._finish_auto_update_apply()
         logger.info(
