@@ -897,7 +897,9 @@ async def api_update_apply(request: web.Request) -> web.Response:
         finally:
             owned.close()
 
-    task = asyncio.create_task(_apply())
+    # Named so the restart gate (``_restart_gate_when_idle``) counts it as work
+    # a restart would cut off.
+    task = asyncio.create_task(_apply(), name="dashboard-update")
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
     return web.json_response({"ok": True, "status": "updating"})
