@@ -216,6 +216,15 @@ EMPTY_TURN_NOTICE_KIND = "empty_turn"
 #: notice of any kind (the "crewmate chat draws messages only" decision record).
 SPEC_HOOKS_NOTICE_KIND = "spec_hooks"
 
+#: ``meta.spec_hooks_notice`` of the one :data:`SPEC_HOOKS_NOTICE_KIND` row that
+#: says nothing runs the agent spec's hooks on this backend. The dashboard offers
+#: a Dismiss link on this row alone and hides it by this value, so dismissing it
+#: hides no other notice of the kind (``website/src/pages/chat/SpecHooksNotice.tsx``).
+#: A row that names a ``preToolUse`` hook does not carry it, because such a hook
+#: is there to refuse calls. It changes only what the dashboard draws: which
+#: hooks run is decided elsewhere.
+SPEC_HOOKS_RUN_NOWHERE_NOTICE = "run_nowhere"
+
 #: ``meta.kind`` of the session-start notice that says Crew's tools are off in
 #: this session because a settings file Crew does not govern holds its path.
 #: Sessions draws it; crewmate chat drops it (``crewmateBubbles.isCrewmateChatRow``)
