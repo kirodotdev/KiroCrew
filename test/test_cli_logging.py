@@ -37,9 +37,11 @@ from kiro_crew.cli import (
     drain_log_queue_before_hard_exit,
 )
 from kiro_crew.cli_log_files import boot_log_dir, boot_log_paths, older_boot_logs
+from kiro_crew.cli_logging import _chat_console_filter
 from kiro_crew.cli_logging import _fd_is_regular_file as _real_fd_is_regular_file
 from kiro_crew.cli_logging import _rotate_boot_logs, _start_gateway_log_after_lock
-from kiro_crew.config import config_dir
+from kiro_crew.config import config_dir, loader_credentials, loader_pipeline
+from kiro_crew.dashboard import token_secret
 
 
 @pytest.fixture(autouse=True)
@@ -1066,6 +1068,46 @@ class TestChatConsoleShowsErrorsOnly:
         _setup_cli_logging("chat", 0)
         logging.getLogger("kiro_crew.test_chat").warning("kc-warn-record")
         assert "kc-warn-record" in self.console.getvalue()
+
+
+def _overlay_world_writable() -> None:
+    path = MagicMock()
+    path.is_file.return_value = True
+    path.stat.return_value.st_mode = 0o100666
+    reader = loader_pipeline._recording_config_reader([], overlay=True)
+    reader(path)
+
+
+def _env_file_cannot_be_locked_down() -> None:
+    path = MagicMock()
+    path.stat.return_value.st_mode = 0o100644
+    path.chmod.side_effect = OSError("read-only filesystem")
+    loader_credentials.enforce_env_permissions(path)
+
+
+def _signing_key_cannot_be_locked_down() -> None:
+    token_secret._enforce_owner_only(Path("token-signing.key"))
+
+
+@pytest.mark.parametrize(
+    "emit",
+    [_overlay_world_writable, _env_file_cannot_be_locked_down, _signing_key_cannot_be_locked_down],
+)
+def test_permission_warnings_stay_on_the_chat_terminal(emit, _floor_monkeypatch, caplog):
+    """A file other users can read or write is the user's to fix, so chat still shows it."""
+    # Through the facade: more than one loader owner binds this name.
+    _floor_monkeypatch.setattr("kiro_crew.config.loader.read_config_text", lambda _p: "{}")
+    _floor_monkeypatch.setattr(loader_credentials.platform_compat, "IS_POSIX", True)
+
+    def _refuse(_path):
+        raise OSError("not supported")
+
+    _floor_monkeypatch.setattr(token_secret.platform_compat, "restrict_to_owner", _refuse)
+    with caplog.at_level(logging.WARNING, logger="kiro_crew"):
+        emit()
+    owners = {loader_pipeline.logger.name, token_secret.logger.name}
+    [record] = [r for r in caplog.records if r.name in owners and r.levelno == logging.WARNING]
+    assert _chat_console_filter(record), record.getMessage()
 
 
 class TestSetupCliLoggingForeground:
