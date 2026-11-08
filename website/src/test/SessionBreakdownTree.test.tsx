@@ -117,6 +117,13 @@ describe('SessionBreakdownTree', () => {
     expect(screen.getByText(/opus-review/i)).toBeTruthy()
   })
 
+  it('speaks the occupancy figure, not only a pointer tooltip', async () => {
+    // peak_context_used 12000 of a 200000 window is 6%. The gauge itself is
+    // decorative; its figure must still reach a keyboard or screen reader user.
+    renderTree({ a: sub() })
+    expect(await screen.findByRole('button', { name: /gpt-review.*6% of window/i })).toBeTruthy()
+  })
+
   it('toggles a node closed again on a second activation', async () => {
     renderTree({
       m: sub({ id: 'm', agent: 'opus-review', childSession: 'subagent:multi', startedAt: 1 }),

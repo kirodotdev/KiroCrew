@@ -112,14 +112,21 @@ function Trace({ segs }: { segs: MiniSeg[] }) {
 }
 
 function Gauge({ frac }: { frac: number }) {
+  const label = i18nT('pages.sessionBreakdown.occupancy', { pct: fmtNumber(Math.round(frac * 100)) })
+  // The `title` reaches a pointer and nothing else, so the figure is also
+  // spoken text: a keyboard, touch or screen reader user otherwise never
+  // learns how full this node's window got.
   return (
-    <span
-      className="relative inline-block w-[38px] h-3.5 rounded-[2px] overflow-hidden border border-[var(--border-strong)] bg-bg shrink-0"
-      title={i18nT('pages.sessionBreakdown.occupancy', { pct: fmtNumber(Math.round(frac * 100)) })}
-      aria-hidden="true"
-    >
-      <i className="absolute left-0 top-0 bottom-0 bg-accent/25 border-r border-accent" style={{ width: `${Math.max(2, frac * 100)}%` }} />
-    </span>
+    <>
+      <span
+        className="relative inline-block w-[38px] h-3.5 rounded-[2px] overflow-hidden border border-[var(--border-strong)] bg-bg shrink-0"
+        title={label}
+        aria-hidden="true"
+      >
+        <i className="absolute left-0 top-0 bottom-0 bg-accent/25 border-r border-accent" style={{ width: `${Math.max(2, frac * 100)}%` }} />
+      </span>
+      <span className="sr-only">{` ${label} `}</span>
+    </>
   )
 }
 
