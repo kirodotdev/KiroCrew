@@ -195,6 +195,8 @@ async def test_action_button_happy_path(orch_fixture: MagicMock) -> None:
         assert call_kwargs.kwargs["action_context"] is not None
         assert "Action button clicked" in call_kwargs.kwargs["action_context"]
         assert payload_json in call_kwargs.kwargs["action_context"]
+        # The label is model-authored: it goes to the agent and never runs as a command.
+        assert call_kwargs.kwargs["interpret_commands"] is False
 
 
 @pytest.mark.asyncio
