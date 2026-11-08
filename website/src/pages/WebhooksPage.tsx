@@ -26,6 +26,7 @@
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Trans } from 'react-i18next'
 import {
   AlertTriangle, Check, ChevronDown, ChevronRight, Circle, Clock, Copy, KeyRound,
   Minus, Play, Power, ShieldAlert, ShieldCheck, Trash2, Webhook, X, PanelLeftOpen,
@@ -1097,7 +1098,7 @@ export default function WebhooksPage() {
           )
           : <div className="text-[13px] text-muted">{i18nT('pages.webhooksPage.no_summary_stored_for_this_hook')}</div>}
         <Hint>
-          {i18nT('pages.webhooksPage.written_by_the')} <code className="font-mono">{i18nT('pages.webhooksPage.register_hook')}</code> {i18nT('pages.webhooksPage.tool_the_agent_reads_it_before_the_inbound_messa')}
+          <Trans i18nKey="pages.webhooksPage.context_written_by_tool" components={{ tool: <code className="font-mono">{i18nT('pages.webhooksPage.register_hook')}</code> }} />
         </Hint>
       </Section>
 
@@ -1438,7 +1439,7 @@ export default function WebhooksPage() {
                   title={i18nT('pages.webhooksPage.test_request_accepted_http', { status: testResult.status })}
                   right={<Btn onClick={() => setTestResult(null)}><X size={13} /> {i18nT('pages.webhooksPage.dismiss')}</Btn>}
                 >
-                  {i18nT('pages.webhooksPage.session')} <code className="font-mono">{testResult.session_key}</code> {i18nT('pages.webhooksPage.started_the_agent_s_answer_arrives_in_notificati')}
+                  <Trans i18nKey="pages.webhooksPage.test_session_started" components={{ session: <code className="font-mono">{testResult.session_key}</code> }} />
                 </Banner>
               )
               : (
