@@ -1063,6 +1063,7 @@ class ChannelTurns:
                     context_provider=provider,
                     user_display_name=asker.display_name,
                     skill_trigger_text=skill_trigger_text,
+                    tab_notices=bracket.tab_notices,
                 )
                 # A monitor wake runs with nobody watching: a governance check
                 # that cannot be evaluated refuses the call.

@@ -180,6 +180,8 @@ async def _run_turn(
     # turn consumed the one-shot flag, and whether it landed (recorded success).
     _needs_reinjection = False
     _turn_landed = False
+    # The settle call for the tab notices THIS turn's build read, settled in the finally.
+    _tab_notices: list[Any] = []
     # The turn's driver, for the finally: it records whether the backend
     # compacted the session, on every exit path.
     driver: facade.TurnDriver | None = None
@@ -354,6 +356,7 @@ async def _run_turn(
             # grammar by ``prompt_safe_handle``, and empty for an account with
             # no @handle, which ``build_message`` treats as "omit the line".
             user_display_name=getattr(msg, "username", "") or None,
+            tab_notices=_tab_notices,
         )
 
         # PreToolUse security gate (channel-neutral, off ctx_builder.hooks):
@@ -717,7 +720,9 @@ async def _run_turn(
             landed=_turn_landed,
             compacted=getattr(driver, "compaction_completed", False) is True,
         )
-        rollback_skill_bodies(self.ctx_builder, session_key, landed=_turn_landed)
+        rollback_skill_bodies(
+            self.ctx_builder, session_key, landed=_turn_landed, tab_notices=_tab_notices
+        )
         # Always finalize the placeholder (no perma-"🤔 …"), even if
         # get_or_create raised before the semaphore was held. Only release
         # the semaphore if we actually acquired it.

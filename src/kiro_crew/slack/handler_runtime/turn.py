@@ -532,6 +532,8 @@ async def _run_turn(turn: _SlackTurn) -> bool:
     _needs_reinjection = False
     _turn_landed = False
     _turn_compacted = False
+    # The settle call for the tab notices THIS turn's build read, settled in the finally.
+    _tab_notices: list[Any] = []
     # This turn's thread-replies read; its watermark moves in the finally.
     _thread_replies: ThreadReplies | None = None
 
@@ -862,6 +864,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                 runtime_source="slack",
                 user_text_range=_user_text_range,
                 context_provider=client,
+                tab_notices=_tab_notices,
             )
         else:
             full_message = text
@@ -1318,7 +1321,9 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         # read; a cancelled or failed turn discarded the prompt that carried them.
         if _turn_landed and _thread_replies is not None and _thread_replies.read_ok:
             note_turn(session_key, thread_ts or msg_ts, msg_ts)
-        rollback_skill_bodies(context_builder, session_key, landed=_turn_landed)
+        rollback_skill_bodies(
+            context_builder, session_key, landed=_turn_landed, tab_notices=_tab_notices
+        )
         # The permit is held past this ``finally`` when the turn reached a clean
         # model completion, because success/failure accounting is booked only
         # after ``_deliver_answer``'s answer-carrying delivery and mutates per-session breaker
