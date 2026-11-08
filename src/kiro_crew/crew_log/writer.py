@@ -695,7 +695,7 @@ class CrewLogWriter:
             # shutdown, instead of landing out of order, which is neither.
         return self._buffer(unit, pending)
 
-    def flush(self, timeout: float = 5.0) -> bool:
+    def flush(self, timeout: "float | None" = 5.0) -> bool:
         """Wait until nothing is owed. True when the writer is quiet within *timeout*.
 
         For a caller that must read the file it just wrote -- a test, a shutdown path --
@@ -713,7 +713,7 @@ class CrewLogWriter:
         advances it drives the whole retry schedule without waiting on a real one.
         """
         if self._executor is None:
-            return self._run_passes_here(self._clock() + timeout)
+            return self._run_passes_here(self._clock() + (86400.0 if timeout is None else timeout))
         if self._quiet():
             # Nothing to hurry, and a wake set now would cut the NEXT burst's pause.
             return True
