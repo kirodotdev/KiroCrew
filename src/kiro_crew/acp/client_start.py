@@ -19,7 +19,8 @@ Instance fields written: ``_activated_model``, ``_agent_accepts_image``,
 Instance fields read: ``_agent``, ``_available_mode_ids``, ``_channel_id``,
 ``_extra_env``, ``_modes_advertised``, ``_sandbox_mode``, ``_scratch_dir``,
 ``_session_key``, ``_session_mcp_snapshot``, ``_shared_scratch``, ``_side_read_only``,
-``_stdin_stalled``, ``_windows_tree_cleanup_failed``, ``_work_dir``, ``last_prompt_stats``.
+``_spec_zero_tools``, ``_stdin_stalled``, ``_windows_tree_cleanup_failed``, ``_work_dir``,
+``last_prompt_stats``.
 """
 
 from __future__ import annotations
@@ -42,6 +43,7 @@ from kiro_crew.acp._dispatch import agent_version_from_init
 from kiro_crew.acp.client_claude_session import (
     CLAUDE_ACP_FORK_POINT_MIN_VERSION,
     _adapter_version_at_least,
+    refuse_claude_zero_tool_mounts,
 )
 from kiro_crew.acp.client_native_children import client_capabilities_for
 from kiro_crew.acp.client_spawn_env import (
@@ -654,6 +656,9 @@ async def _new_session_following_substitution(self: AcpClient) -> dict:
     if self.backend in ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP:
         new_params["mcpServers"] = await self._prune_unstartable_mcp(new_params["mcpServers"])
     if self._is_claude:
+        refuse_claude_zero_tool_mounts(
+            getattr(self, "_spec_zero_tools", False), new_params["mcpServers"]
+        )
         new_params["_meta"] = self._claude_session_meta()
 
     # The roster this session put ON THE WIRE. Distinct from the agent spec
@@ -736,6 +741,9 @@ async def _new_session_following_substitution(self: AcpClient) -> dict:
         # Rebuilt AFTER the array, from the same re-seed: the envelope carries
         # the setting sources the array was authorized under and the inline
         # settings naming the substitute model.
+        refuse_claude_zero_tool_mounts(
+            getattr(self, "_spec_zero_tools", False), new_params["mcpServers"]
+        )
         new_params["_meta"] = self._claude_session_meta()
         self._begin_session_report(_roster_of(self, new_params.get("mcpServers")))
         self._guard_unresolved_mcp_refs(_roster_of(self, new_params.get("mcpServers")))
@@ -968,6 +976,9 @@ async def _initialize_session(self: AcpClient) -> None:
                         load_params["mcpServers"]
                     )
                 if self._is_claude:
+                    refuse_claude_zero_tool_mounts(
+                        getattr(self, "_spec_zero_tools", False), load_params["mcpServers"]
+                    )
                     load_params["_meta"] = self._claude_session_meta()
                 elif self.backend not in ACP_BACKENDS_HARNESS_OWNED_SESSIONS:
                     # The kiro family reads its transcript path from _meta. A
