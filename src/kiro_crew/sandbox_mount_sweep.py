@@ -358,7 +358,47 @@ def _mount_pinned_source_names(
     add no pin, and a view resolves only while the task is one whose read would
     succeed, which is the outcome every branch below is keyed on. Every task
     whose view is unknown is read exactly as before.
+
+    On Linux the scan of the host's own ``/proc`` runs in a child process
+    (:mod:`kiro_crew.sandbox_pin_scan_child`), because in the gateway each of its
+    syscalls re-takes the GIL every other gateway thread needs. A child that
+    fails answers as an incomplete scan with coverage unproven. Any other
+    ``proc_root``, a custom ``matcher`` and every other platform scan here.
     """
+    if matcher is None and _scan_runs_in_child(proc_root):
+        return _scan_via_child("keyed", coverage)
+    return _mount_pinned_source_names_in_process(proc_root, matcher=matcher, coverage=coverage)
+
+
+def _scan_runs_in_child(proc_root: str) -> bool:
+    """Whether a scan of *proc_root* goes to the pin scan child: the host's own
+    ``/proc`` on Linux. Other platforms have no ``/proc`` to scan and keep the
+    in-process call they always made."""
+    return proc_root == "/proc" and platform_compat.IS_LINUX
+
+
+def _scan_via_child(kind: str, coverage: _PinScanCoverage | None) -> tuple[set[str], bool]:
+    """Run the *kind* scan in the child; a failed child is an unproven scan."""
+    from kiro_crew.sandbox_pin_scan_child import scan_in_child
+
+    reply = scan_in_child(kind)
+    if reply is None:
+        if coverage is not None:
+            coverage.covered = False
+        return set(), False
+    pinned, complete, covered = reply
+    if coverage is not None and not covered:
+        coverage.covered = False
+    return pinned, complete
+
+
+def _mount_pinned_source_names_in_process(
+    proc_root: str = "/proc",
+    *,
+    matcher: Callable[[str], bool] | None = None,
+    coverage: _PinScanCoverage | None = None,
+) -> tuple[set[str], bool]:
+    """:func:`_mount_pinned_source_names` in this interpreter; the child runs this."""
     views = _MountViews()
     try:
         return _scan_mount_pins(proc_root, matcher, coverage, views)
@@ -931,12 +971,18 @@ def _bound_source_basenames(
 
     Keyed by basename only, which is why no root is taken: a same-named entry
     on another filesystem shares the pin, which errs toward retention.
+
+    Like the keyed scan, a scan of the host's own ``/proc`` on Linux runs in the
+    pin scan child, and a failed child answers as an unproven scan.
     """
-    return _mount_pinned_source_names(
-        proc_root,
-        matcher=lambda name: bool(_LEGACY_MOUNT_SOURCE_RE.match(name)),
-        coverage=coverage,
-    )
+    if _scan_runs_in_child(proc_root):
+        return _scan_via_child("legacy", coverage)
+    return _mount_pinned_source_names(proc_root, matcher=_is_legacy_source_name, coverage=coverage)
+
+
+def _is_legacy_source_name(name: str) -> bool:
+    """Whether *name* has the legacy ``tempfile`` shape (:data:`_LEGACY_MOUNT_SOURCE_RE`)."""
+    return bool(_LEGACY_MOUNT_SOURCE_RE.match(name))
 
 
 def _cleanup_legacy_mount_source_residue(data_home: Path) -> int:
