@@ -8,6 +8,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
+import { useRenderedLocationIsCurrent } from '../hooks/useRenderedLocationIsCurrent'
 import {
   ArrowLeft, Download, Check, Loader2, Power, PowerOff,
   Trash2, RefreshCw, Bot, Zap, ArrowUp,
@@ -40,11 +41,11 @@ import { useTheme } from '../hooks/useTheme'
 import { useActionsInFlight } from '../hooks/useActionsInFlight'
 import { useMenuOpensDialog } from '../hooks/useMenuOpensDialog'
 import ErrorNotice from '../components/ErrorNotice'
+import StatusNotice from '../components/StatusNotice'
 import { useConfirm } from '../components/ConfirmDialog'
 import { findReport, recordError } from '../utils/errorReport'
 import { copyCode } from '../utils/clipboard'
 import AppStoreDialog from '../components/appstore/AppStoreDialog'
-import { safeHttpUrl } from '../lib/safeUrl'
 
 import { i18nT } from '../i18n/t'
 import LinkOpenChoices from '../linkOpen/LinkOpenChoices'
@@ -58,7 +59,7 @@ import { fmtDateNumeric, fmtCompact, fmtNumber, fmtList } from '../i18n/format'
 import { HeroBanner, ScreenshotGallery } from './AppDetailPageArt'
 import { messageActionGrantLabel } from '../messageActions/messageActionRegistry'
 import AppDetailAdoptionNotice from './AppDetailAdoptionNotice'
-import AppDetailLinks from './AppDetailLinks'
+import AppDetailLinks, { appRepoLinks } from './AppDetailLinks'
 import AppDetailPageLocalOnlyNotice from './AppDetailPageLocalOnlyNotice'
 import AppDetailPageMcpServers from './AppDetailPageMcpServers'
 import { openLocalSourceSwitch } from './appDetailPageLocalSwitch'
@@ -101,6 +102,9 @@ export default function AppDetailPage() {
   const [successMsg, setSuccessMsg] = useState('')
   /** The action landed but the host refused the app's backend (`backend_refused`). */
   const [backendRefusedMsg, setBackendRefusedMsg] = useState('')
+  /** A sidebar request skipped while an action ran here. Nothing failed, and the
+   *  running action keeps the error slot for its own result. */
+  const [railBusyMsg, setRailBusyMsg] = useState('')
   const botStop = useBotChatStop(setError, null, name => (app?.name === name ? botStopAppState(app) : undefined))
   // A fresh install and a widening update set this same flag, so the copy must hold for both.
   const reconsentMsg = app?.sessionApprovalConsentPending
@@ -529,15 +533,21 @@ export default function AppDetailPage() {
   // an absent app) would run third-party setup code with gateway privileges
   // without user intent. Router state can only be produced by an in-app
   // navigate() call, so it cannot be forged from outside the app.
-  const autoActionTriggered = useRef(false)
+  // One run per history entry, so a sidebar Update reaches a page already open
+  // for its app. While an action runs here, the request runs nothing and says why.
+  // Only the newest history entry runs it: a replace built from an older render's
+  // location would overwrite a navigation that has not rendered yet.
+  const renderedLocationIsCurrent = useRenderedLocationIsCurrent()
+  const autoActionTakenFor = useRef<string | null>(null)
   useEffect(() => {
-    if (!app || autoActionTriggered.current) return
+    if (!app || autoActionTakenFor.current === location.key || !renderedLocationIsCurrent()) return
     const stateAction = (location.state as { autoAction?: string } | null)?.autoAction
     if (stateAction !== 'install' && stateAction !== 'update') return
     if (stateAction === 'install' && app.installed) return
-    autoActionTriggered.current = true
+    autoActionTakenFor.current = location.key
     // Clear the state so a refresh or Back/Forward doesn't re-fire it.
     navigate(`${location.pathname}${location.search}`, { replace: true, state: null })
+    if (actionBusy) { setRailBusyMsg(i18nT('pages.libraryPage.rail_busy_notice', { name: appDisplayName(app) })); return }
     // A directory install with no registry update pending is this page's Sync (a
     // re-copy). Everything else runs the streaming registry install, as Update does.
     if (stateAction === 'update' && isMarketSourced(app)) return
@@ -546,7 +556,7 @@ export default function AppDetailPage() {
       return
     }
     handleInstall()
-  }, [app, location]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [app, location, renderedLocationIsCurrent]) // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
    * The registry install itself. Resolves `'trust-required'` when the gateway
@@ -564,6 +574,7 @@ export default function AppDetailPage() {
   const runInstall = async (): Promise<'done' | 'trust-required' | 'failed' | 'aborted'> => {
     if (!app) return 'done'
     startAction('install')
+    setRailBusyMsg('')
     setInstallLog('')
     setInstallDone(false)
     setShowInstallLog(true)
@@ -769,6 +780,7 @@ export default function AppDetailPage() {
 
   const handleAction = async (action: 'enable' | 'disable' | 'uninstall' | 'update') => {
     if (!app) return
+    setRailBusyMsg('')
     // Intercept uninstall to show confirmation modal
     if (action === 'uninstall') {
       setShowUninstallConfirm(true)
@@ -945,34 +957,9 @@ export default function AppDetailPage() {
   const agents = app.manifest?.agents || []
   const skills = app.manifest?.skills || []
   const crons = app.manifest?.crons || []
-  // Source-repo and issue-tracker links for the Details card (#9912). The repo
-  // Source-repo and issue-tracker links for the Details card (#9912). The repo
-  // string is third-party manifest/registry input, so it becomes a link ONLY
-  // when it parses as an http(s) URL with no userinfo (safeHttpUrl rejects
-  // javascript:/data: and credential-smuggling forms); anything else falls back
-  // to plain text. `app.repo` is the value the card already DISPLAYS, so the
-  // link's text and its href are built from the SAME string — otherwise the
-  // text could name one repo while the click opened another (`repoUrl` may be
-  // resolved from manifest.repo/trustRepository/source, not app.repo).
-  // `typeof` guard first: `app.repo` is third-party registry data typed as a
-  // string, but an entry can ship `"repo": ["…"]`; safeHttpUrl would URL-coerce
-  // the array to validate yet return the array itself, and `.replace` on it
-  // would throw and blank the whole detail page. A non-string repo stays plain
-  // text, exactly as it rendered before this change.
-  const sourceRepoUrl = typeof app.repo === 'string' && app.repo ? safeHttpUrl(app.repo) : null
-  const sourceRepoHost = (() => {
-    try { return sourceRepoUrl ? new URL(sourceRepoUrl).hostname : '' } catch { return '' }
-  })()
-  // Issue tracker: a GitHub repo's /issues page, built from the same displayed
-  // repo so the link cannot point somewhere the row does not name. Scoped to
-  // GitHub (the only host whose tracker path this knows) and deliberately a
-  // plain outbound LINK, never an in-app flow that files on the user's behalf —
-  // that needs new manifest metadata and a credential/product decision the
-  // maintainer owns (#9912).
-  const issuesUrl =
-    sourceRepoUrl && sourceRepoHost === 'github.com'
-      ? `${sourceRepoUrl.replace(/\/+$/, '').replace(/\.git$/, '')}/issues`
-      : ''
+  // Source-repo and issue-tracker links for the Details card, built from the
+  // repo string the card shows. appRepoLinks says which values become links.
+  const { repoUrl: sourceRepoUrl, issuesUrl } = appRepoLinks(app.repo)
   // Theme-aware hero banner source (mirrors the Browse card resolution).
   // Prefer the wide detail-ratio banner (heroImageDetail*); fall back to the
   // Browse hero, then the opposite theme.
@@ -1082,6 +1069,12 @@ export default function AppDetailPage() {
         )}
 
         {botStop.notice}
+        <StatusNotice
+          message={railBusyMsg}
+          onDismiss={() => setRailBusyMsg('')}
+          className="mb-4 animate-rise"
+          testId="app-detail-rail-busy"
+        />
         {/* The action landed but the host refused the app's backend: a failure
             the server named, so it gets the error surface, not a success. */}
         {backendRefusedMsg && (
