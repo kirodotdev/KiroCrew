@@ -1041,14 +1041,25 @@ prevent.
   claude, opencode, pi, goose and deepseek).
 
 Two conditions displace the cached `_bg_runtime`: a **backend switch** and
-**staleness** (`AcpRuntime._is_stale()` → `"age"` past 6h, or `"rss"` past
-500 MiB across the descendant tree; on macOS each pid of that tree is measured
-by its `phys_footprint`, falling back to its `ps` RSS, because `ps` RSS omits the
-compressed and swapped pages an idle grown runtime mostly consists of). The displacement policy has ONE
-implementation, `_detach_bg_runtime_locked(runtime, cause, *, park_only=False)`:
+**staleness** (`AcpRuntime._is_stale()` → `"age"` past 6h, `"handles"` when the
+root holds more than `_MAX_HANDLES` (50,000) kernel handles, Windows only, or
+`"rss"` past 500 MiB across the descendant tree; on macOS each pid of that tree is
+measured by its `phys_footprint`, falling back to its `ps` RSS, because `ps` RSS
+omits the compressed and swapped pages an idle grown runtime mostly consists of).
+The handle ceiling exists because the per-directory handle leak in #25770 grows a
+runtime to multi-GB private bytes with a working set small enough for the RSS
+probe to miss. The displacement policy has ONE implementation,
+`_detach_bg_runtime_locked(runtime, cause, *, park_only=False, kill_now=False)`:
 the runtime is
 killed if idle, and **parked on `_draining_bg_runtimes` if it has live or
-initializing handles** — parked runtimes never receive a new session (only
+initializing handles**, except that `get_bg_session()` passes `kill_now` for the
+`_BG_KILL_NOW_STALE_REASONS` (`"handles"` only), which kills it busy or idle:
+past the handle ceiling the process is the danger, and a park would keep it
+growing while it drains. `"rss"` is deliberately not a kill-now reason: a healthy
+kiro-cli runs at 0.6-0.8 GB, above the 500 MiB threshold, so killing on it would
+end live titles, summaries and history consolidations every few minutes on every
+platform; a runtime stale by RSS parks, bounded by the park limit and cap below.
+Parked runtimes never receive a new session (only
 `_bg_runtime` is offered to callers), their in-flight work finishes untouched
 (killing mid-turn would abort an in-flight title generation), and
 `_reap_drained_bg_runtimes_locked()` kills each once its last handle drains.
@@ -1071,10 +1082,26 @@ The cost of probing the busy path too is that `_bg_runtime_lock` is now held
 across `_is_stale()`'s offloaded RSS read for busy runtimes as well; that is
 bounded by `_RSS_PROBE_MIN_AGE_SECS` (5 min), below which the probe returns
 without any executor round-trip, and a runtime that answers "stale" is displaced
-rather than re-probed. `_draining_bg_runtimes` has **no cap** — a retiree whose
-handles never drain stays parked and sweep-shielded — so the
-`%d _bg runtimes are parked draining` warning is the signal that displacement is
+rather than re-probed. A park is **bounded twice** by
+`_reap_drained_bg_runtimes_locked()`: a runtime parked longer than
+`BG_PARK_MAX_SECS` (15 min, stamped at park time) is killed even while it still
+reports a session, and past `BG_PARKED_MAX` (2) parked the oldest are killed,
+busy or not. The cap skips a runtime still inside its identity park grace
+(`identity_park_grace_remaining`), which a later pass caps, and a failed cap kill
+moves on to the next oldest. Both kills end any turn still running on the
+runtime (a history consolidation, which has no timeout, past 15 minutes; or the
+oldest of three quick displacements), and each is logged with the session count
+read before the kill; bounding the process is worth that trade. Without them a retiree whose busy probe kept answering true (or
+raising) stayed parked and sweep-shielded until the gateway restarted, while each
+replacement grew and was parked in turn (#30716). The
+`%d _bg runtimes are parked draining` warning still marks displacement
 outpacing the drain.
+
+A runtime built with no work directory (the shared `_bg` runtime, and every other
+keyless `AcpRuntime` or `AcpClient`) starts in `config_dir() / KEYLESS_WORK_DIR_NAME`
+(`bg-runtime`), an empty folder of its own, never in the data home's `workspace`:
+kiro-cli holds handles per directory under its cwd (#25770), so a large
+`workspace` tree there is what makes the leak above expensive.
 
 Parked runtimes stay shielded from the orphan-PID sweep
 (`_companion_runtime_pids`), block the account-identity sweep's completeness
