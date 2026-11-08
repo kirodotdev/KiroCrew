@@ -1,7 +1,11 @@
 import { describe, it, expect } from 'vitest'
 import { parseOptions } from '../app-sdk/protocol'
 // The pattern is in-tree only — the barrel deliberately withholds it from the app surface.
-import { labelsHaveUnmatchedOpener, stripOptionMarkers } from '../app-sdk/protocol/optionMarker'
+import {
+  labelsHaveUnmatchedOpener,
+  OPTION_MARKER_PATTERN_SOURCE,
+  stripOptionMarkers,
+} from '../app-sdk/protocol/optionMarker'
 
 // #9284: a label may legitimately carry a closer (`[OPTIONS: Alpha ] | Bravo ]]` is
 // a supported, tested shape), so the body has to admit one — but admitting it
@@ -291,22 +295,64 @@ describe('the #9284 temper stays linear', () => {
     expect(Date.now() - start).toBeLessThan(2000)
   })
 
-  it('costs a run of any opener about what a run of ASCII `[` costs', () => {
-    // A repeated-token degeneration after a head: 20,000 copies of one opener
-    // with no partner. Every negated class in the body excludes EVERY bracket,
-    // so each pair attempt fails on the next character and the bare-opener
-    // alternative takes it — one step per character for every opener kind. An
-    // interior that admitted the lookalikes would rescan the remaining run at
-    // each position instead, and the ratio would be in the hundreds.
-    const cost = (opener: string) => {
-      const text = `[OPTIONS: A | B ${opener.repeat(20_000)}`
-      const start = performance.now()
-      parseOptions(text)
-      return performance.now() - start
+  it('every negated class that excludes ASCII brackets also excludes all lookalike brackets', () => {
+    // Every negated character class in the body that excludes the ASCII opener
+    // `[` or closer `]` must also exclude every lookalike opener
+    // (\u3010 \uFF3B \u3014) and every lookalike closer (\u3011 \uFF3D \u3015).
+    // A class that admits any bracket as an ordinary character allows a run of
+    // that bracket to be consumed without a pair attempt, which can cause the
+    // engine to rescan the same run at each position — the quadratic regime this
+    // describe block guards against.
+    //
+    // The property is stated over the enumerated classes rather than pinned to
+    // a count or an exact string, so it survives pattern refactors (merged
+    // spans, a future fifth bracket pair) without breaking this test.
+    const src = OPTION_MARKER_PATTERN_SOURCE
+    // In the .source string, backslash sequences are kept as-is (e.g. the
+    // lookalike opener \u3010 appears as the six characters \u3010).
+    const ASCII_OPENER = '['
+    const ASCII_CLOSER = '\\]'
+    const LOOKALIKE_OPENERS = ['\\u3010', '\\uFF3B', '\\u3014']
+    const LOOKALIKE_CLOSERS = ['\\u3011', '\\uFF3D', '\\u3015']
+
+    // Walk the pattern source and collect every [^...] span.
+    // The .source escapes `]` as `\]` inside a class, so `]` cannot terminate
+    // one prematurely; we stop at an unescaped `]` (i.e. one not preceded by
+    // an odd run of backslashes).
+    const negatedClasses: string[] = []
+    for (let i = 0; i < src.length - 1; i++) {
+      if (src[i] !== '[' || src[i + 1] !== '^') continue
+      let j = i + 2
+      // A `]` immediately after `[^` is a literal `]` member, not the closer.
+      if (src[j] === ']') j++
+      while (j < src.length) {
+        if (src[j] === ']') {
+          // Count preceding backslashes to decide whether this `]` is escaped.
+          let bs = 0
+          while (j - 1 - bs >= 0 && src[j - 1 - bs] === '\\') bs++
+          if (bs % 2 === 0) break // unescaped: this is the closing `]`
+        }
+        j++
+      }
+      negatedClasses.push(src.slice(i, j + 1))
+      i = j
     }
-    const ascii = Math.max(cost('['), 1)
-    for (const opener of ['\u3010', '\uFF3B', '\u3014']) {
-      expect(cost(opener), opener).toBeLessThan(8 * ascii)
+
+    // At least one class must exist or the guard is vacuous.
+    expect(negatedClasses.length, 'no negated classes found in pattern').toBeGreaterThan(0)
+
+    for (const cls of negatedClasses) {
+      // Check the CLASS BODY (after the opening `[^`) for ASCII brackets.
+      // ASCII `[` appears literally in the body; ASCII `]` is escaped as `\]`.
+      const body = cls.slice(2, -1) // strip leading `[^` and trailing `]`
+      const excludesAscii = body.includes(ASCII_OPENER) || body.includes(ASCII_CLOSER)
+      if (!excludesAscii) continue
+      for (const esc of [...LOOKALIKE_OPENERS, ...LOOKALIKE_CLOSERS]) {
+        expect(
+          cls,
+          `class ${cls} excludes ASCII bracket but not lookalike ${esc}`,
+        ).toContain(esc)
+      }
     }
   })
 
