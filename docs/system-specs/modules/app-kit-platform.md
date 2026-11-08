@@ -1869,7 +1869,14 @@ is gone, since a reinstall would open the same key and resume a transcript from 
 previous installation.
 
 Ownership is read from each conversation's own metadata line, which every save —
-including the save that closes a tab — stamps with `app`. Read through
+including the save that closes a tab — stamps with `app`. A conversation an app page's
+`ChatEmbed` begins is a person's send, so its `app` is empty; the send names the
+embed's app (`embed_app`) and the line written for the conversation it begins records
+it, which every later save carries forward and the scan matches beside `app`. Only a
+line that send writes takes it, so an embed naming an existing conversation's key does
+not make it the app's, and the field authorizes nothing. A send that cannot write that
+line is refused (503), and its retry, while the conversation still holds no row, begins
+it and records the app. Read through
 `get_metadata_status`, not `get_metadata`: the latter answers `{}` for both "no `app`"
 and "could not read the record", and those are different answers. An unreadable record
 is neither claimed (that would sweep up a conversation this app may not own, worse than

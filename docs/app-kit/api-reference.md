@@ -141,6 +141,11 @@ first read arrives, "New session" for a session with no history, and "Untitled
 session" for one that has messages. The slot key is never
 shown as text, only as the header's hover tooltip.
 
+A conversation the embed's own send begins (no `onSend`) is recorded as begun on your
+app's page, so uninstalling the app gives it a fresh start: the agent does not resume
+it. Its transcript stays, as for every conversation an app leaves behind, and the
+session stays the person's: the record grants your app nothing.
+
 | Prop | Type | Default | What it does |
 |---|---|---|---|
 | `slotKey` | `string` | required | The chat slot (session) the embed reads and sends to. |
