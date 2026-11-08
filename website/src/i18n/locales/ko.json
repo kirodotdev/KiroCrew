@@ -6113,6 +6113,7 @@
       "trusted_channel_all": "신뢰함 — 이 채널의 모든 도구를 자동 승인, 재시작 후에도 유지",
       "trusted_channel_base": "신뢰함 — {{base}} 명령을 @{{role}}에 대해 {{productName}} 재시작 전까지 자동 승인",
       "trusted_channel_command": "신뢰함 — <mono/> 명령을 @{{role}}에 대해 {{productName}} 재시작 전까지 자동 승인",
+      "trusted_channel_still_asks": "이번에는 승인됨 — 이 호스트의 셸 설정 때문에 @{{role}}이(가) 매번 다시 확인을 요청합니다",
       "title_wants_to_run": "<title/> 실행을 요청합니다"
     },
     "approvalModePicker": {

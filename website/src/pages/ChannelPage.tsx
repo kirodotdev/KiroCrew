@@ -61,6 +61,7 @@ export interface ApprovalMeta {
   command_grantable?: string
   base_derivable?: string
   base_command?: string
+  name_grants_refused?: string
 }
 
 interface Channel {
@@ -200,6 +201,15 @@ const CHANNEL_TRUSTED_LABEL_KEYS = {
   trust_base: 'components.approvalCard.trusted_channel_base',
 } as const
 
+/** The same tiers when the server says this host refuses every name grant
+ *  (`meta.name_grants_refused`): the grant is recorded, but no later run is
+ *  auto-approved, so the confirmation says the agent will ask again. */
+const CHANNEL_REFUSED_LABEL_KEYS = {
+  ...CHANNEL_TRUSTED_LABEL_KEYS,
+  trust_command: 'components.approvalCard.trusted_channel_still_asks',
+  trust_base: 'components.approvalCard.trusted_channel_still_asks',
+} as const
+
 /** Exported for the capture entries only, alongside `approvalToolTitle`: an
  *  approval's posted TEXT is rendered here, above the card, so a frame that
  *  mounts the card alone cannot show what a channel reader actually reads. */
@@ -249,7 +259,7 @@ export function MessageBubble({ msg, agents, onReply, onOpenThread, onApprove }:
               trustAllLabelKey="components.trustDropdown.trust_all_tools_channel"
               trustCommandLabelKey="components.trustDropdown.trust_this_command_channel"
               trustBaseLabelKey="components.trustDropdown.trust_all_base_channel"
-              trustedLabelKeys={CHANNEL_TRUSTED_LABEL_KEYS}
+              trustedLabelKeys={msg.meta?.name_grants_refused === '1' ? CHANNEL_REFUSED_LABEL_KEYS : CHANNEL_TRUSTED_LABEL_KEYS}
               labelValues={{ role: msg.fromRole }}
               onApprove={onApprove} />
           </div>
