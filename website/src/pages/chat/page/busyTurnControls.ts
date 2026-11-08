@@ -11,7 +11,7 @@ import { useQueuedMessageActions } from '../../../hooks/useQueuedMessageActions'
 import { useSteerRetract } from '../../../hooks/useSteerRetract'
 import { drainPendingChunks } from '../../../lib/pendingChunkDrain'
 import { store, type AppDispatch } from '../../../store'
-import { appendMessage, appendSlotMessage, capturePendingAskId, clearPendingPermissions, requestStop, selectComposerBusy, type pendingQuestionFor } from '../../../store/chatSlice'
+import { appendMessage, appendSlotMessage, capturePendingAskId, requestStop, selectComposerBusy, type pendingQuestionFor } from '../../../store/chatSlice'
 import type { ChatMessage, ChatSlot } from '../../../types'
 import { mergeIntoDraft, mergeRecoveredDraft, setDraft } from '../../../utils/chatDrafts'
 import { setFileDraft } from '../../../utils/chatFileDrafts'
@@ -381,15 +381,15 @@ export function useBusyTurnControls({
       get current() { return map.get(slot) ?? 0 },
       set current(v: number) { map.set(slot, v) },
     }
-    const action = handleStopPress(
+    // The turn's cards are rejected by the stop itself, once it has landed
+    // (`rejectPending`). An 'ignore' (rapid double-tap) sends nothing.
+    handleStopPress(
       isEscalation,
       Date.now(),
       slotRef,
-      () => dispatch(requestStop({ slotId: slot, force: false })),
-      () => dispatch(requestStop({ slotId: slot, force: true })),
+      () => dispatch(requestStop({ slotId: slot, force: false, rejectPending: true })),
+      () => dispatch(requestStop({ slotId: slot, force: true, rejectPending: true })),
     )
-    // 'ignore' = accidental rapid double-tap during the arming window
-    if (action !== 'ignore') dispatch(clearPendingPermissions())
   }
   /** A question card's answer that could not be delivered (a 404): kept for an explicit retry. */
   const keepQuestionAnswer = (text: string, questions?: { question: string }[]) => {

@@ -15,6 +15,7 @@ import { isOutOfBandRow, isTurnBoundaryUser, mergePreservedThinking, reinsertThi
 import { retainServerTotal, setPagingCursor, writeSlotPage } from './slotCache'
 import { evictMcpApps } from './mcpApps'
 import { persistedSendIds, pruneDeliveredAttempts } from './sendAttempts'
+import { isPendingCoordinatorApproval } from './coordinatorApprovals'
 
 export const messageReducers = {
   appendMessage(state: ChatState, action: PayloadAction<ChatMessage>) {
@@ -386,10 +387,16 @@ export const messageReducers = {
       }
     }
   },
-  /** Mark all unresolved permission messages as resolved (e.g. when stop is pressed). */
-  clearPendingPermissions(state: ChatState) {
+  /** Mark the turn's unresolved permission messages rejected, once a Stop has
+   *  landed. A coordinator card is not the turn's (it waits on the registry),
+   *  and a reply for a slot no longer on screen, or for a turn that has since
+   *  ended (`epoch` is the slot's `runEpoch` at the press), must not touch the
+   *  cards on screen now. */
+  clearPendingPermissions(state: ChatState, action: PayloadAction<{ slot: string; epoch: number } | undefined>) {
+    const p = action.payload
+    if (p && (p.slot !== state.activeSlot || (state.runEpoch?.[safeKey(p.slot)] ?? 0) !== p.epoch)) return
     for (const m of state.messages) {
-      if (m.role === 'permission' && !m.meta?.resolved) {
+      if (m.role === 'permission' && !m.meta?.resolved && !isPendingCoordinatorApproval(m)) {
         if (m.meta) m.meta.resolved = 'rejected'
         else m.meta = { resolved: 'rejected' }
       }
