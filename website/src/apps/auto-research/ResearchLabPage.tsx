@@ -8,6 +8,7 @@ import { Btn } from '../../components/ui'
 import SimpleSelect from '../../components/SimpleSelect'
 import MarkdownRenderer from '../../components/MarkdownRenderer'
 import ErrorNotice from '../../components/ErrorNotice'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 import { useAvailableModels } from '../../hooks/useAvailableModels'
 import GrillTree from './GrillTree'
 import { grillReducer, promotedResearch, answeredClarifiers, suggestedMaxCycles, GrillNode } from './grillTreeModel'
@@ -171,6 +172,7 @@ function SetupWizard({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
   const [autoApprove, setAutoApprove] = useState(false)
   const [parallelWorkers, setParallelWorkers] = useState(1)
   const [executionMode, setExecutionMode] = useState<'agent' | 'workflow'>('agent')
+  const executionModeLabelId = useId()
   // Explicit model pick for the campaign's worker. '' = inherit the research
   // agent's / backend's default (never a concrete id). Options come from the
   // shared advertised-models list (GET /api/models), same as every picker.
@@ -252,17 +254,20 @@ function SetupWizard({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
 
       {step === 0 && <div className="space-y-4">
         <div className="p-3 rounded-md bg-bg border border-border">
-          <div className="text-xs text-muted mb-2">{i18nT('apps.autoResearch.researchLabPage.how_sub_agent_execution_is_orchestrated_both_han')}</div>
-          <div className="grid grid-cols-2 gap-2">
-            <button type="button" onClick={() => setExecutionMode('agent')} className={`text-left p-2 rounded border ${executionMode === 'agent' ? 'border-accent bg-accent/10' : 'border-border'}`}>
+          <div id={executionModeLabelId} className="text-xs text-muted mb-2">{i18nT('apps.autoResearch.researchLabPage.how_sub_agent_execution_is_orchestrated_both_han')}</div>
+          {/* One-of-two setting for the campaign: a radio group named by the
+              line above, so the chosen mode is announced, not shown by the
+              accent border alone (#32040). */}
+          <RadioChipGroup ariaLabelledBy={executionModeLabelId} className="grid grid-cols-2 gap-2">
+            <button type="button" {...radioChip(executionMode === 'agent')} onClick={() => setExecutionMode('agent')} className={`text-left p-2 rounded border ${executionMode === 'agent' ? 'border-accent bg-accent/10' : 'border-border'}`}>
               <div className="font-medium text-sm">{i18nT('apps.autoResearch.researchLabPage.agent')} <span className="text-muted font-normal">{i18nT('apps.autoResearch.researchLabPage.adaptive')}</span></div>
               <div className="text-xs text-muted mt-0.5">{i18nT('apps.autoResearch.researchLabPage.the_ai_drives_every_round_itself_deciding_what_t')}</div>
             </button>
-            <button type="button" onClick={() => { setExecutionMode('workflow'); setModel('') }} className={`text-left p-2 rounded border ${executionMode === 'workflow' ? 'border-accent bg-accent/10' : 'border-border'}`}>
+            <button type="button" {...radioChip(executionMode === 'workflow')} onClick={() => { setExecutionMode('workflow'); setModel('') }} className={`text-left p-2 rounded border ${executionMode === 'workflow' ? 'border-accent bg-accent/10' : 'border-border'}`}>
               <div className="font-medium text-sm">{i18nT('apps.autoResearch.researchLabPage.dynamic_workflow')} <span className="text-muted font-normal">{i18nT('apps.autoResearch.researchLabPage.scripted')}</span></div>
               <div className="text-xs text-muted mt-0.5">{i18nT('apps.autoResearch.researchLabPage.the_ai_writes_an_orchestration_script_up_front_a')}</div>
             </button>
-          </div>
+          </RadioChipGroup>
           {executionMode === 'workflow' && (
             <div className="text-xs text-warn mt-2 flex items-start gap-1">
               <AlertTriangle size={12} className="mt-0.5 shrink-0" />

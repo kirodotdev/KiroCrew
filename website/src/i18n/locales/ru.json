@@ -2055,6 +2055,7 @@
       },
       "modes": {
         "edit": "Правка",
+        "label": "Режим",
         "preview": "Предпросмотр"
       },
       "page": {
@@ -17952,7 +17953,8 @@
       "task_is_waiting_for_your_decision": "Задача {{index}} «{{title}}» ожидает вашего решения",
       "tasks": "Задачи",
       "the_dag_view_will_appear_once_the_plan_is_ready": "Представление DAG появится, когда план будет готов",
-      "failed_to_update_task": "Не удалось обновить задачу"
+      "failed_to_update_task": "Не удалось обновить задачу",
+      "view_label": "Вид проекта"
     },
     "projectsPage": {
       "agent": "Агент:",

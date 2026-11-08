@@ -14,6 +14,7 @@ import { AlertTriangle, Download, Hourglass, Zap } from 'lucide-react';
 import { Badge } from '../components/ui';
 import ErrorNotice from '../components/ErrorNotice';
 import { RadioChipGroup, radioChip } from '../components/RadioChipGroup';
+import Tablist from '../components/Tablist';
 
 import { i18nT } from '../i18n/t'
 type Tab = 'idea' | 'tasks';
@@ -190,8 +191,19 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
       <div className={`flex-1 min-w-0 flex flex-col min-h-0 ${isMobile && selected ? 'hidden' : ''}`}>
         {/* Tab bar */}
         <div className="px-4 py-2 border-b border-border flex gap-1 items-center shrink-0">
-          <button onClick={() => setTab('idea')} className={tabCls(tab === 'idea')}>{i18nT('pages.projectDetailPage.idea')}</button>
-          <button onClick={() => setTab('tasks')} className={tabCls(tab === 'tasks')}>{i18nT('pages.projectDetailPage.tasks')}</button>
+          {/* Idea / Tasks switches the content below, so it is a tablist with
+              the open tab marked selected (#32055). One shared subtree, not a
+              panel per tab, which is the case Tablist is for. */}
+          <Tablist<Tab>
+            tabs={[
+              { key: 'idea', label: i18nT('pages.projectDetailPage.idea') },
+              { key: 'tasks', label: i18nT('pages.projectDetailPage.tasks') },
+            ]}
+            value={tab}
+            onChange={setTab}
+            ariaLabel={i18nT('pages.projectDetailPage.view_label')}
+            layoutId="project-detail-tab-indicator"
+          />
           {tab === 'tasks' && !isPlanning && (
             <>
               <span className="mx-1 text-muted">·</span>
