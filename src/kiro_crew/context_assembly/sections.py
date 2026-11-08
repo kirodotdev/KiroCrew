@@ -115,7 +115,7 @@ def _runtime_display_name(session_key: str, runtime_source: str | None = None) -
 
 # Slug → prompt-ready description maps for the [USER PROFILE] block. Slugs are
 # the values enforced by the dashboard.user_role / dashboard.user_technical_level
-# enums in handlers/core.py _EDITABLE_CONFIG; keep the three places in sync.
+# enums in handlers/core_config_schema.py _EDITABLE_CONFIG; keep the three places in sync.
 # "" role and "" level contribute nothing — the block only names what the user
 # actually told us. "other" has no entry here on purpose: it routes to the
 # free-text dashboard.user_role_other instead (see _role_description).
@@ -134,7 +134,7 @@ _TECHNICAL_LEVEL_DESCRIPTIONS: dict[str, str] = {
 }
 
 #: Longest free-text role rendered into the prompt. Mirrors the ``max_len`` on
-#: ``dashboard.user_role_other`` in handlers/core.py, re-applied here because the
+#: ``dashboard.user_role_other`` in handlers/core_config_schema.py, re-applied here because the
 #: writer's validation is not the only way a value reaches this field — a
 #: hand-edited config.json bypasses the PATCH allowlist entirely.
 _ROLE_OTHER_MAX_LEN = 60

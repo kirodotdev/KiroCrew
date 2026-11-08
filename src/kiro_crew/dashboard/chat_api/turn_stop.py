@@ -252,7 +252,7 @@ def _make_stop_resolver(
     and clears it once it has settled the card, so a state gate buys nothing
     there. What the state gate did buy was a bug. A turn tearing down
     concurrently drives `_stop_state` back to "idle" (`_finish_queue_cycle` in
-    chat_runner.py, through the `_stopping` setter in state_parts/chat_slot.py), and that
+    chat_turn/queue_cycle.py, through the `_stopping` setter in state_parts/chat_slot.py), and that
     teardown races the escalation. When teardown won, the hard callback bailed,
     `_resolve_stop_event` never ran, and the card pulsed at "stopping" for the
     rest of the session instead of settling.
@@ -575,7 +575,8 @@ async def stop_slot_turn(
             [str(entry.get("content", "")) for entry in discarded],
         )
         # Hard kill = "discard everything": drop unconsumed steers too, so the
-        # end-of-turn requeue (chat_runner finally) has nothing to resurrect.
+        # end-of-turn requeue (`_hand_off_queue` in chat_turn/queue_cycle.py) has
+        # nothing to resurrect.
         # Mirrors the queue clear above; a soft stop preserves both.
         #
         # Their delivery ids go with them, and that is load-bearing rather than

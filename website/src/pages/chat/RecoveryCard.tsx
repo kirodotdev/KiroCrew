@@ -388,7 +388,8 @@ export type InjectKind = 'cron' | 'mcp_app' | 'recovery' | 'synthesis' | 'user_r
  * continues the one above it.
  *
  * Every kind is a queued prompt the runner drains into a dispatch (the
- * `_inject_meta` stamp in chat_runner.py's drain, `_run_pending_synthesis`), so
+ * `_inject_meta` stamp in chat_turn/queue_drain.py's drain,
+ * `_run_pending_synthesis` in chat_turn/queue_cycle.py), so
  * "a new dispatch" is not the question -- WHOSE request the dispatch carries is.
  * A cron notification is an unrelated prompt with its own reply, and a synthesis
  * row leads the turn that folds a fan-out into one answer (the boundary
@@ -413,7 +414,7 @@ export const INJECT_KIND_OPENS_TURN: Readonly<Record<InjectKind, boolean>> = {
   // mis-attributes an app turn's error to that older message.
   mcp_app: true,
   // A re-routed automation refusal is drained ALONE and dispatches a turn of
-  // its own (chat_runner `_start_next_queued_turn`), carrying the originating
+  // its own (chat_turn/queue_drain.py `_start_next_queued_turn`), carrying the originating
   // wake's provenance; so it OPENS a turn, and the interrupt-recovery and
   // session-start-failure scans must land on it, not walk past to an earlier
   // reply.

@@ -1095,7 +1095,7 @@ _AGENT_DENIED_ENV_KEYS: list[str] = [
     # list has consumers with two different matching rules: the spawn scrubs here use
     # ``startswith``, but ``cron_script._CRON_ENV_DENY`` tests exact membership and
     # ``mcp_cron`` builds ``\b``-anchored regexes from it, and a prefix entry silently
-    # matches nothing in either. ``test_governance_distribution`` pins these against
+    # matches nothing in either. ``test_governance_distribution_redaction`` pins these against
     # ``POLICY_DISTRIBUTION_ENV_VARS``, which owns the set, so a variable added there
     # cannot quietly stay agent-readable.
     "KIROCREW_POLICY_URL",
