@@ -5777,6 +5777,7 @@
         "add_accounts_search_placeholder": "প্রোফাইল খুঁজুন",
         "add_accounts_search_keeps_selected": "তুমি যে প্রোফাইলগুলো বেছে নিয়েছ, সেগুলো মিল না থাকলেও তালিকায় থেকে যায়।",
         "add_accounts_none": "সব লোকাল প্রোফাইল ইতিমধ্যেই নিবন্ধিত।",
+        "add_accounts_no_profiles": "এই মেশিনে এখনও কোনো AWS প্রোফাইল নেই। আগে একটি তৈরি করো (যেমন, টার্মিনালে aws configure চালাও), তারপর এখানে নিবন্ধন করো।",
         "add_accounts_unsupported": "Windows-এ AWS Control এই মেশিনের AWS প্রোফাইলে পৌঁছাতে পারে না: AWS অ্যাকসেসের জন্য Linux বা macOS শেল দরকার। WSL (Windows Subsystem for Linux)-এ {{productName}} গেটওয়ে চালান, তারপর সেখানে সেট করা প্রোফাইলগুলো রেজিস্টার করুন।",
         "add_accounts_count_one": "{{max}}টির মধ্যে {{count}}টি নিবন্ধিত",
         "add_accounts_count_other": "{{max}}টির মধ্যে {{count}}টি নিবন্ধিত",

@@ -1384,6 +1384,37 @@ describe('add accounts', () => {
     expect(screen.queryByTestId('add-accounts-checkbox')).toBeNull()
   })
 
+  it('with no local profile at all, says to create one rather than "all registered"', async () => {
+    let answer!: (v: AvailableProfilesResponse) => void
+    vi.mocked(awsControlApi.availableProfiles).mockReturnValue(
+      new Promise((resolve) => { answer = resolve }),
+    )
+    await openAccountsPane()
+    fireEvent.click(await screen.findByTestId('add-accounts-toggle'))
+    await screen.findByTestId('add-accounts-body')
+    // The scan is in flight; before it answers, nothing claims every profile is registered.
+    expect(awsControlApi.availableProfiles).toHaveBeenCalled()
+    expect(screen.queryByTestId('add-accounts-none')).toBeNull()
+
+    await act(async () => { answer(availablePayload({ profiles: [], registeredCount: 0 })) })
+    expect(await screen.findByTestId('add-accounts-no-profiles')).toHaveTextContent(
+      i18nT('apps.awsControl.page.add_accounts_no_profiles'),
+    )
+    expect(screen.queryByTestId('add-accounts-none')).toBeNull()
+  })
+
+  it('with every local profile registered, says none are left', async () => {
+    vi.mocked(awsControlApi.availableProfiles).mockResolvedValue(
+      availablePayload({ profiles: [{ name: 'personal', registered: true }] }),
+    )
+    await openAccountsPane()
+    fireEvent.click(await screen.findByTestId('add-accounts-toggle'))
+    expect(await screen.findByTestId('add-accounts-none')).toHaveTextContent(
+      i18nT('apps.awsControl.page.add_accounts_none'),
+    )
+    expect(screen.queryByTestId('add-accounts-no-profiles')).toBeNull()
+  })
+
   it('surfaces a message when register fails, never silently', async () => {
     vi.mocked(awsControlApi.registerProfiles).mockRejectedValue(
       new AwsControlError('unknown_profile', 400),
