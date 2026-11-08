@@ -8877,7 +8877,7 @@
       "notes_updated": "Updated {{when}}",
       "notes_redacted_notice": "Something that looks like a secret was hidden here. The file itself is untouched.",
       "notes_truncated_notice": "These notes are longer than the panel shows; the rest is only in the file.",
-      "webview_rendering": "Rendering the published view…",
+      "dashboard_loading": "Loading the dashboard",
       "webview_retry": "Try again",
       "activity_chat_count_one": "{{count}} run",
       "activity_chat_count_other": "{{count}} runs",

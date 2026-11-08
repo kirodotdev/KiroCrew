@@ -20658,7 +20658,7 @@
       "filter_source_mine_description": "クルーマネージャーで自分が作成したクルー",
       "filter_source_builtin_description": "{{productName}} に同梱されているクルー",
       "filter_source_package_description": "ケイパビリティパッケージによってインストールされたクルー",
-      "webview_rendering": "公開済みビューを表示中…",
+      "dashboard_loading": "ダッシュボードを読み込み中",
       "webview_retry": "再試行",
       "deploy_title": "クラウド上のクルー",
       "deploy_loading": "デプロイを読み込んでいます…",

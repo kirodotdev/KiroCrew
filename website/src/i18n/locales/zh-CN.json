@@ -20658,7 +20658,7 @@
       "filter_source_mine_description": "你在 Crew 管理器里创建的成员",
       "filter_source_builtin_description": "{{productName}} 自带的成员",
       "filter_source_package_description": "由能力安装包安装的成员",
-      "webview_rendering": "正在显示已发布视图…",
+      "dashboard_loading": "正在加载仪表板",
       "webview_retry": "重试",
       "deploy_title": "你的团队在云端",
       "deploy_loading": "正在读取你的部署…",

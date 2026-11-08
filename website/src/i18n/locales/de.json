@@ -21176,7 +21176,7 @@
       "filter_source_mine_description": "Crews, die du im Crew-Manager erstellt hast",
       "filter_source_builtin_description": "Crews, die mit {{productName}} ausgeliefert werden",
       "filter_source_package_description": "Crews, die von Capability-Paketen installiert wurden",
-      "webview_rendering": "Veröffentlichte Ansicht wird angezeigt…",
+      "dashboard_loading": "Dashboard wird geladen",
       "webview_retry": "Erneut versuchen",
       "deploy_title": "Deine Crew in der Cloud",
       "deploy_loading": "Deine Bereitstellungen werden gelesen…",

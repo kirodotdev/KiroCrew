@@ -22212,7 +22212,7 @@
       "filter_source_mine_description": "Команды, созданные вами в менеджере команд",
       "filter_source_builtin_description": "Команды, входящие в {{productName}}",
       "filter_source_package_description": "Команды, установленные пакетами возможностей",
-      "webview_rendering": "Отображение опубликованного представления...",
+      "dashboard_loading": "Загрузка панели",
       "webview_retry": "Повторить",
       "deploy_title": "Твоя команда в облаке",
       "deploy_loading": "Чтение ваших развёртываний…",

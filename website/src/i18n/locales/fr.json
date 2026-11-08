@@ -21694,7 +21694,7 @@
       "filter_source_mine_description": "Crews que vous avez créés dans le gestionnaire de crews",
       "filter_source_builtin_description": "Crews fournis avec {{productName}}",
       "filter_source_package_description": "Crews installés par des packages de capacités",
-      "webview_rendering": "Affichage de la vue publiée…",
+      "dashboard_loading": "Chargement du tableau de bord",
       "webview_retry": "Réessayer",
       "deploy_title": "Ton équipe dans le cloud",
       "deploy_loading": "Lecture de vos déploiements…",
