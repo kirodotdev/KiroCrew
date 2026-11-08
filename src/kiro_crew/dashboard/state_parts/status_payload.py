@@ -117,6 +117,7 @@ def status_snapshot(
     update_min_version: str = "",
     update_can_arm: bool = False,
     update_auto_effect: str = "unknown",
+    update_auto_manual_only: bool = False,
     update_bundled_by_app: bool = False,
     version_display: str = "",
     bundle_id: str = "",
@@ -215,6 +216,9 @@ def status_snapshot(
         # What an available update leads to on this install; see
         # ``update_capability.auto_update_effect``.
         "update_auto_effect": update_auto_effect,
+        # ``notify`` that a person's Update can still install; see
+        # ``update_capability.AutoUpdateEffect.manual_only``.
+        "update_auto_manual_only": update_auto_manual_only,
         # Whether the desktop app bundles this gateway; see
         # ``update_capability.bundled_by_desktop_app``.
         "update_bundled_by_app": update_bundled_by_app,

@@ -507,6 +507,15 @@ class AutoUpdateEffect:
         """The policy source pin is the reason: no path, manual ones included, may install."""
         return self.reason == _SOURCE_PIN_REASON
 
+    @property
+    def manual_only(self) -> bool:
+        """The loop only notifies, but a person's Update still installs by :attr:`route`.
+
+        The one ``notify`` that keeps its route: ``updates.unattended_apply``
+        turned the unattended install off, not the install shape.
+        """
+        return self.effect == AUTO_EFFECT_NOTIFY and self.route is not None
+
 
 #: Default for :func:`auto_update_effect`'s ``provider``: resolve it from policy.
 _RESOLVE_PROVIDER: Any = object()
