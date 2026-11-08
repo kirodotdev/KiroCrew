@@ -345,14 +345,42 @@ def test_a_crewmate_on_the_conductor_reads_the_installed_conductor_spec(tmp_path
     assert member_mate_tools.binding_has_ledger_tools(binding) is False
 
 
-# -- the mapping ADDS to the user's skills, for every caller of the scope -------- #
+# -- this release: the mapping ADDS the user's skills; the flag flips to scoped ---- #
+
+
+@pytest.fixture
+def scoped(monkeypatch):
+    """The behavior the next release ships: the mapping is the whole scope."""
+    from kiro_crew.agent_discovery_parts import skill_scope
+
+    monkeypatch.setattr(skill_scope, "MATE_CONDUCTOR_INHERITS_USER_SKILLS", False)
+
+
+def test_by_default_the_mapped_conductor_still_inherits_the_users_skills(user_skills):
+    """The one-release deprecation: the default keeps the user's trees beside the mapping."""
+    from kiro_crew.agent_discovery_parts.skill_scope import mate_conductor_inherited_skills
+
+    _spec, project, goal, user, workspace = user_skills
+    scope = _scope_via("agent_skill_globs_inheriting", project)
+    assert {goal, user, workspace} <= set(scope)
+    assert mate_conductor_inherited_skills(project) == ["my-own", "team-skill"]
+
+
+def test_scoped_the_conductor_reports_no_inherited_skill(user_skills, scoped):
+    from kiro_crew.agent_discovery_parts.skill_scope import mate_conductor_inherited_skills
+
+    assert mate_conductor_inherited_skills(user_skills[1]) == []
+
+
+# -- scoped: the mapping is the whole scope, for every caller, as on Ultra Mode ---- #
 
 
 @pytest.fixture
 def user_skills(tmp_path, monkeypatch):
     """A ledger-mounted conductor beside a user ``~/.kiro/skills`` skill and a trusted
-    workspace ``.kiro/skills`` skill. Returns ``(spec, project, goal, user, workspace)``
-    where the last three are the globs each caller must keep."""
+    workspace ``.kiro/skills`` skill. Returns ``(spec, project, goal, user, workspace)``:
+    ``goal`` is the mapped glob each caller keeps, ``user`` and ``workspace`` the
+    inherited trees no caller may add back."""
     from kiro_crew import skill_trust
     from kiro_crew.agent_discovery_parts.skill_scope import expand_skill_uri
 
@@ -416,16 +444,16 @@ def _scope_via(caller: str, project) -> list[str]:
         "injection_plan_kas",
     ],
 )
-def test_every_caller_keeps_the_users_skills_beside_goal_conductor(user_skills, caller):
+def test_every_caller_scopes_the_conductor_to_its_mapped_skills(user_skills, scoped, caller):
     _spec, project, goal, user, workspace = user_skills
     scope = _scope_via(caller, project)
     assert goal in scope
-    assert user in scope
-    assert workspace in scope
+    assert user not in scope
+    assert workspace not in scope
 
 
-def test_kas_deny_rule_keeps_the_users_skills_beside_goal_conductor(user_skills):
-    """KAS loads both trees itself; Crew's ``deny skill`` rule must exclude them."""
+def test_kas_deny_rule_denies_the_users_skills_to_the_mapped_conductor(user_skills, scoped):
+    """KAS loads both trees itself; Crew's ``deny skill`` rule must not spare them."""
     from kiro_crew.acp import kas_skill_scope
     from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
 
@@ -433,19 +461,48 @@ def test_kas_deny_rule_keeps_the_users_skills_beside_goal_conductor(user_skills)
     globs = kas_skill_scope.scope_globs(
         MATE_CONDUCTOR_AGENT, spec, agents_dir=paths_mod.mate_agents_dir(), work_dir=project
     )
-    assert globs is not None and {goal, user, workspace} <= set(globs)
+    assert globs is not None and goal in globs
+    assert user not in globs and workspace not in globs
     rules = kas_skill_scope.skill_scope_rules(globs, work_dir=project)
+    assert rules, "a mapped scope must deny the skills outside it"
     kept = {name for rule in rules for name in rule.get("exclude", [])}
-    assert {"my-own", "team-skill"} <= kept
-    assert not any(rule.get("match") for rule in rules)
+    assert not {"my-own", "team-skill"} & kept
 
 
-def test_the_worker_and_other_agents_keep_the_mapped_only_rule():
-    from kiro_crew.agent_discovery_parts.skill_scope import mate_conductor_scope
-    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT, MATE_WORKER_AGENT
+def _notice_rows(monkeypatch, project, agent: str) -> tuple[list, list]:
+    """``(notice rows, pending-context entries)`` the helper writes for *agent*."""
+    import asyncio
+    from types import SimpleNamespace
 
-    spec = {"tools": ["read"], "mcpServers": {"kirocrew-core": {}}}
-    assert mate_conductor_scope(MATE_WORKER_AGENT, spec, ["/a"], None) == ["/a"]
-    assert mate_conductor_scope("custom", spec, ["/a"], None) == ["/a"]
-    # Unmapped: the inheritance rule of its own caller decides, not this one.
-    assert mate_conductor_scope(MATE_CONDUCTOR_AGENT, spec, [], None) == []
+    from kiro_crew.dashboard import chat_runner
+
+    rows: list = []
+    queued: list = []
+    slot = SimpleNamespace(append_pending_context=lambda e: queued.append(e) or True)
+    monkeypatch.setattr(chat_runner, "append_and_surface", lambda *args, **kw: rows.append(args))
+    asyncio.run(
+        chat_runner._notice_inherited_conductor_skills(
+            object(), slot, SimpleNamespace(cwd=str(project)), agent
+        )
+    )
+    return rows, queued
+
+
+def test_a_session_that_loads_an_inherited_skill_is_told_and_one_that_loads_none_is_not(
+    user_skills, monkeypatch
+):
+    """Per new session: the Bot is asked to say it in its reply (its chat draws no
+    ``notice`` row; the row is for the Sessions page). A session whose conductor
+    loads no inherited skill gets neither."""
+    from kiro_crew.agent_discovery_parts import skill_scope
+    from kiro_crew.mate_worker import MATE_CONDUCTOR_AGENT
+
+    rows, queued = _notice_rows(monkeypatch, user_skills[1], MATE_CONDUCTOR_AGENT)
+    assert len(rows) == 1 and len(queued) == 1
+    for text in (rows[0][3], queued[0]["content"]):
+        assert "my-own" in text and "team-skill" in text
+        assert "Abilities" in text and "Bot" in text
+    assert queued[0]["ephemeral"] is True
+
+    monkeypatch.setattr(skill_scope, "MATE_CONDUCTOR_INHERITS_USER_SKILLS", False)
+    assert _notice_rows(monkeypatch, user_skills[1], MATE_CONDUCTOR_AGENT) == ([], [])
