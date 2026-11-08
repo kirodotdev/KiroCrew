@@ -429,7 +429,13 @@ caller treats ``""`` as "no push target", so each refusal below fails closed.
    legitimate offline setup. On Windows a drive path (``C:\work\repo.git`` or
    ``C:/work/repo.git``) is local too, even though ``urlparse`` reads the drive letter as a
    scheme. Elsewhere the same text stays refused, because git on POSIX parses ``C:path``
-   as scp-like ssh to a host named ``C``.
+   as scp-like ssh to a host named ``C``. A value git reads as remote is refused on every
+   platform: git's scp-like rule sends a ``:`` before any ``/`` to ssh (``user@host:path``,
+   and ``file:x`` to a host named ``file``), and a ``file://`` url naming a host other than
+   ``localhost`` reaches that host. On Windows a UNC path (``\\host\share``,
+   ``//host/share``, ``\\?\UNC\host\...``) is refused too, read after the
+   percent-decoding git applies to a url; on POSIX the same text is a local path and stays
+   allowed. Spell a Windows drive url ``file:///C:/...``.
 
 With no ``origin_url``, the legacy ``target_url`` is re-validated and its rebuilt clone URL
 is used. The security guidance on untrusted URL destinations asks for exactly this:
@@ -439,6 +445,7 @@ allowlist the destination rather than trust persisted input.
 
 - `resolve_origin_url` host-allowlists a stored `origin_url` (exact host, no `http://`/`git://`, no sentinel); local paths stay allowed. (D-57)
 - A Windows drive path is a local `origin_url` only when running on Windows; on POSIX the same text is ssh to a one-letter host and stays refused (`test_a_drive_shaped_origin_stays_refused_where_git_reads_it_as_ssh`).
+- A value git reads as remote (scp-like `user@host:path`, `file:x`, `file://<host>/`) is not a local `origin_url` on any platform; `file:///` and `file://localhost/` stay local (`test_a_value_git_reads_as_remote_is_not_a_local_origin`). A UNC path is refused on Windows only (`test_a_unc_path_is_not_a_local_origin_on_windows`); on POSIX it is a local path (`test_a_unc_shaped_path_stays_a_local_origin_on_posix`).
 - A network `origin_url` must name the same `owner/repo` as the validated `target_url` (`_remote_slug`); a mismatch or an invalid `target_url` leaves no push target (`test_origin_url_wins_when_present`). (D-138)
 
 ### Why tool approval is one-shot and a queued change is not "filed"
