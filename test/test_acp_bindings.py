@@ -45,7 +45,7 @@ SHARED_BINDINGS_CHECKS = ("the_field_scan_counts_every_read_and_write_shape",)
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now.
 _MEMBERS: dict[str, tuple[str, object, str, str]] = {
-    "__init__": ("function", False, "22e43ccb505a", "acp"),
+    "__init__": ("function", False, "f6d122b437e4", "acp"),
     "_abc_impl": ("data", False, "", ""),
     "_advertised_effort_levels": ("function", False, "93b23ca4342b", "acp_model_effort"),
     "_apply_effort_overlay": ("function", False, "66550c0d40fa", "acp_cli_overlay"),
