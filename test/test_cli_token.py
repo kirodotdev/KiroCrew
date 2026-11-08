@@ -987,9 +987,9 @@ class TestOwnerVerifiedSecretTransport:
 
         assert exc.value.code == 1
         assert sends == [], "the nonce + secret must not reach an unproven peer"
-        out = capsys.readouterr().out
-        assert "ownership could not be verified" in out
-        assert "not running" not in out
+        err = capsys.readouterr().err
+        assert "ownership could not be verified" in err
+        assert "not running" not in err
 
 
 #: Lost-run ceiling for the loopback exchanges below. Each one takes milliseconds; the bound only

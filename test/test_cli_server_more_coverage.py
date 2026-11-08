@@ -1517,6 +1517,6 @@ class TestApproveBusyVsDown:
         with pytest.raises(SystemExit) as exc:
             cli_server._update_approve()
         assert exc.value.code == 1
-        out = capsys.readouterr().out
-        assert "busy" in out
-        assert "is not running" not in out
+        err = capsys.readouterr().err
+        assert "busy" in err
+        assert "is not running" not in err
