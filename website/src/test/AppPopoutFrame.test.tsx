@@ -182,12 +182,21 @@ function renderAtPopoutBasename(store = createTestStore()) {
   )
 }
 
-/** Stand-in for the shell's soft navigator: a navigate from OUTSIDE the frame,
- *  which the frame's pinned navigator never sees. */
+/** Stand-in for a navigation from OUTSIDE the frame (a desktop menu entry),
+ *  which the frame's pinned navigator never sees, and for the browser's
+ *  Forward button on this window's history. */
 function ShellNavigator() {
   const navigate = useNavigate()
-  return <button onClick={() => navigate('/chat')}>shell soft navigate</button>
+  return (
+    <>
+      <button onClick={() => navigate('/chat')}>outside navigate</button>
+      <button onClick={() => navigate(1)}>browser forward</button>
+    </>
+  )
 }
+
+/** The Return control's accessible name. */
+const RETURN = 'Return to main window and close this popout'
 
 /** Where the window's router is, and which history entry: a step back or a
  *  replace changes the key even when the path is the same. */
@@ -226,7 +235,7 @@ describe('AppPopoutFrame', () => {
     expect(screen.getByTestId('builtin-page')).toBeInTheDocument()
     const bar = screen.getByTestId('app-popout-title-bar')
     expect(bar).toHaveTextContent('Dev Fleet')
-    const ret = screen.getByRole('button', { name: 'Return to main window' })
+    const ret = screen.getByRole('button', { name: RETURN })
     expect(bar.contains(ret)).toBe(true)
     fireEvent.click(ret)
     expect(popout.returnSelfToMain).toHaveBeenCalledTimes(1)
@@ -338,11 +347,11 @@ describe('AppPopoutFrame', () => {
     expect(builtinMounts.count).toBe(1)
   })
 
-  it('a committed exit from outside the frame (the shell’s soft navigator) is still handed off, and the window steps back', () => {
+  it('a committed exit from outside the frame (a desktop menu entry) is still handed off, and the window steps back', () => {
     const store = createTestStore()
     act(() => { store.dispatch(setPendingInput('staged')) })
     renderWithProviders(<><ShellNavigator />{frameRoutes('/dev-fleet')}</>, { route: '/dev-fleet', store })
-    fireEvent.click(screen.getByRole('button', { name: 'shell soft navigate' }))
+    fireEvent.click(screen.getByRole('button', { name: 'outside navigate' }))
     expect(handedOff()).toEqual({
       path: '/chat',
       search: undefined,
@@ -352,6 +361,34 @@ describe('AppPopoutFrame', () => {
     })
     expect(store.getState().chat.pendingInput).toBeNull()
     expect(screen.getByTestId('builtin-page')).toHaveAttribute('data-path', '/dev-fleet')
+  })
+
+  it('Forward onto an exit already handed off settles back on the app, without a second hand-off', () => {
+    renderWithProviders(<><ShellNavigator /><LocationProbe />{frameRoutes('/dev-fleet')}</>, { route: '/dev-fleet' })
+    fireEvent.click(screen.getByRole('button', { name: 'outside navigate' }))
+    expect(handedOff()).toMatchObject({ path: '/chat' })
+    // The step back left `/chat` as the entry ahead of this one.
+    fireEvent.click(screen.getByRole('button', { name: 'browser forward' }))
+    expect(popout.forwardToMain).toHaveBeenCalledTimes(1)
+    expect(screen.getByTestId('location')).toHaveAttribute('data-path', '/dev-fleet')
+    expect(screen.getByTestId('builtin-page')).toBeInTheDocument()
+  })
+
+  it('opens a deep link to a page under the pinned app’s route on that app, without handing it to main', () => {
+    // `/apps/<name>` has exactly two segments, so the router reads this one
+    // through the builtin arm, as `/apps`: not the pinned app.
+    renderWithProviders(<><LocationProbe />{frameRoutes('/apps/my-tool')}</>, { route: '/apps/my-tool/extra' })
+    expect(popout.forwardToMain).not.toHaveBeenCalled()
+    expect(screen.getByTestId('location')).toHaveAttribute('data-path', '/apps/my-tool')
+    expect(screen.getByTestId('app-page')).toBeInTheDocument()
+  })
+
+  it('settles a differently cased deep link on its not-found notice, without handing it to main', () => {
+    // The document path names `/Apps`, which the router matches case-insensitively as `/apps/:name`.
+    renderWithProviders(<><LocationProbe />{frameRoutes('/Apps')}</>, { route: '/Apps/my-tool' })
+    expect(popout.forwardToMain).not.toHaveBeenCalled()
+    expect(screen.getByTestId('location')).toHaveAttribute('data-path', '/Apps')
+    expect(screen.getByText('No app at /Apps')).toBeInTheDocument()
   })
 
   it('reads a prompt staged in the same handler as the exit (dispatch, then navigate)', () => {
@@ -504,7 +541,7 @@ describe('AppPopoutFrame', () => {
     renderFrame('/apps/dev-fleet', '/apps/dev-fleet')
     expect(screen.queryByTestId('app-page')).toBeNull()
     expect(screen.getByText('No app at /apps/dev-fleet')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Return to main window' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: RETURN })).toBeInTheDocument()
     expect(popout.forwardToMain).not.toHaveBeenCalled()
   })
 
@@ -540,7 +577,7 @@ describe('AppPopoutFrame', () => {
     // The same treatment AppPage gives its own load, not a blank window.
     expect(screen.getByTestId('app-popout-list-loading')).toHaveTextContent('Loading app')
     // Return is there regardless: the window is never a dead end.
-    expect(screen.getByRole('button', { name: 'Return to main window' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: RETURN })).toBeInTheDocument()
   })
 
   it('a list that failed to load gets a Retry notice on the /apps arm, never AppPage (whose redirect would be handed to main)', () => {
@@ -554,7 +591,7 @@ describe('AppPopoutFrame', () => {
     // Retry asks for the list again; Return is still there.
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(appsList.refetch).toHaveBeenCalledTimes(1)
-    expect(screen.getByRole('button', { name: 'Return to main window' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: RETURN })).toBeInTheDocument()
   })
 
   it('a failed list does not touch a builtin route: the registry, not the list, judges that arm', () => {
@@ -587,7 +624,7 @@ describe('AppPopoutFrame', () => {
       expect(popout.registerPopout).toHaveBeenCalledTimes(1)
       expect(popout.registerPopout).toHaveBeenCalledWith(route)
       // The frame's own shell, not the hand-off (which renders nothing).
-      expect(screen.getByRole('button', { name: 'Return to main window' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: RETURN })).toBeInTheDocument()
     })
   }
 
@@ -598,7 +635,7 @@ describe('AppPopoutFrame', () => {
       renderAsAppTsx('/crashy')
       // BuiltinAppRoute's own boundary card, under the frame's title bar.
       expect(screen.getByText(CRASH_MESSAGE)).toBeInTheDocument()
-      expect(screen.getByRole('button', { name: 'Return to main window' })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: RETURN })).toBeInTheDocument()
       fireEvent.click(screen.getByRole('button', { name: 'Ask the agent' }))
       expect(handedOff()).toMatchObject({
         path: '/chat',
@@ -655,7 +692,7 @@ describe('AppPopoutFrame', () => {
     renderFrame('/chat', '/chat')
     expect(screen.queryByTestId('builtin-page')).toBeNull()
     expect(screen.getByText('No app at /chat')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Return to main window' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: RETURN })).toBeInTheDocument()
     // Nothing to forward: this window IS at its (bogus) route.
     expect(popout.forwardToMain).not.toHaveBeenCalled()
     expect(document.title).toBe('App — Kiro Crew')
@@ -665,15 +702,14 @@ describe('AppPopoutFrame', () => {
 })
 
 describe('the shell’s soft navigator in an app pop-out', () => {
-  // Read from source, like App.topbarAndShortcuts does for the shell’s shape:
-  // standing up useAppShell for a pop-out window would mean faking every
-  // window-level flag it keys on. The rule is the point: an "Ask the agent"
-  // control in an app pop-out must reach the router (and so this frame’s
-  // hand-off) instead of the hard `location.assign` that would turn the window
-  // into a second dashboard. Chat and artifact pop-outs keep the hard path.
-  it('is installed for an app pop-out and skipped for the other pop-outs and embeds', () => {
+  // Read from source, like App.topbarAndShortcuts does for the shell’s shape.
+  // What it does in an app pop-out is pinned through the real shell in
+  // App.appPopoutAskAgent.test.tsx; this pins the other windows: chat and
+  // artifact pop-outs and embeds install none and keep the hard path.
+  it('is hardNavigate in an app pop-out, the router in the dashboard, and skipped for the other pop-outs and embeds', () => {
     const src = readFileSync(join(__dirname, '..', 'shell', 'appShell.tsx'), 'utf8')
     const effect = src.slice(src.indexOf('installSoftNavigate(navigate') - 400, src.indexOf('installSoftNavigate(navigate'))
     expect(effect).toContain('if ((isPopout && !appPopoutRoute) || isEmbed) return')
+    expect(effect).toContain('if (appPopoutRoute) installSoftNavigate(hardNavigate)')
   })
 })

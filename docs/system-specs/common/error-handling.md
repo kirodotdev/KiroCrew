@@ -135,7 +135,18 @@ asks that answer before it writes the FIFO or notifies a mounted chat subscriber
 a veto therefore leaves the current page, its draft, and the hand-off queue
 unchanged. With no registered page guard the answer remains `true`, preserving
 the existing hand-off. The root error boundary's explicit hard-navigation mode
-continues to bypass the live React tree and stages before reloading.
+bypasses the live React tree: it stages, then leaves through `hardNavigate`,
+a full page load of `/chat` unless the window installed a hard-exit sink
+(`installHardExit`).
+
+An app pop-out window (`/popout/app/<route>`) must never load the dashboard
+itself, so it installs that sink (`AppPopoutHardExit` in
+`pages/AppPopoutFrame.tsx`): the sink drains the staged prompt and hands `/chat`
+to the main window through the pop-out channel. The shell installs
+`hardNavigate` as that window's soft navigator too, with no leave guard, since
+the pop-out's own page is never left. So every Ask the agent there, soft or
+hard, reaches the main window's chat and leaves the popped-out app mounted with
+its state; the main window asks its own leave guard before it navigates.
 
 The ask happens exactly once per click. A surface that already has a leave gate
 in scope (the notification sheet's crash fallback, through `AskAgentButton`'s

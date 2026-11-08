@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 // `/all` for every catalog: `../i18n` registers English only.
 import { i18next } from '../../i18n/all'
 import type { RunReport } from './lib/types'
@@ -172,11 +173,23 @@ describe('ReportView', () => {
     expect(onArchive).toHaveBeenCalledTimes(1)
   })
 
-  it('links to the shared artifact copy when a slug exists (no Share button)', () => {
-    render(<ReportView report={makeReport({ report_slug: 'focus-report-x' })} onArchive={vi.fn()} />)
+  it('links to the shared artifact copy when a slug exists (no Share button), through the router', () => {
+    function Where() {
+      return <div data-testid="where">{useLocation().pathname}</div>
+    }
+    render(
+      <MemoryRouter initialEntries={['/code-review-sage']}>
+        <ReportView report={makeReport({ report_slug: 'focus-report-x' })} onArchive={vi.fn()} />
+        <Where />
+      </MemoryRouter>,
+    )
     const link = screen.getByRole('link', { name: /Open shared copy/ })
     expect(link.getAttribute('href')).toBe('/artifacts/focus-report-x')
     expect(screen.queryByRole('button', { name: /Share/ })).not.toBeInTheDocument()
+    // A router navigation, not a page load: in an app pop-out window the
+    // frame's navigator is what hands this page to the main window.
+    fireEvent.click(link)
+    expect(screen.getByTestId('where')).toHaveTextContent('/artifacts/focus-report-x')
   })
 })
 

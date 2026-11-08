@@ -5851,13 +5851,9 @@
       "this_app_provides_agents_and_skills_but_no_visua": "[Ţĥìş àþþ þŕøṽìðèş àğèñţş àñð şķìĺĺş ƀùţ ñø ṽìşùàĺ ìñţèŕƒàçè.\n            Ùşè ìţş àğèñţş ƒŕøɱ çĥàţ. ·····························]",
       "not_installed": "[{{name}} ìşñ'ţ ìñşţàĺĺèð ··············]"
     },
-    "appPopoutControl": {
-      "pop_out_app_to_its_own_window": "[Þøþ øùţ àþþ ţø ìţş øẁñ ẁìñðøẁ ····················]",
-      "this_app_is_open_in_its_own_window_focus_it": "[Ţĥìş àþþ ìş øþèñ ìñ ìţş øẁñ ẁìñðøẁ — ƒøçùş ìţ ·······················]",
-      "focus_popped_out_window": "[Ƒøçùş þøþþèð-øùţ ẁìñðøẁ ················]",
+    "appPopoutTitleBar": {
       "return": "[Ŕèţùŕñ ·········]",
-      "return_to_main_window": "[Ŕèţùŕñ ţø ɱàìñ ẁìñðøẁ ···············]",
-      "return_this_app_to_the_main_window": "[Ŕèţùŕñ ţĥìş àþþ ţø ţĥè ɱàìñ ẁìñðøẁ ·················]"
+      "return_to_main_window_and_close_this_popout": "[Ŕèţùŕñ ţø ɱàìñ ẁìñðøẁ àñð çĺøşè ţĥìş þøþøùţ ······················]"
     },
     "approvalCard": {
       "actions_group": "[Àþþŕøṽàĺ àçţìøñş ··············]",
@@ -21642,6 +21638,14 @@
     "direct_link_note": "[Àñýøñè àĺĺøẁèð ƀý Ţàìĺşçàĺè àççèşş ŕùĺèş çàñ øþèñ ţĥìş ĺìñķ. ·····················]",
     "raised_by": "[Ŕàìşèð ƀý {{name}} ···············]",
     "take_over_keeps_draft": "[Ţàķè øṽèŕ ţø ţýþè. {{name}}'ş ðŕàƒţ şţàýş ẁìţĥ ţĥèɱ. ······················]"
+  },
+  "shell": {
+    "nav": {
+      "appRowPopoutAction": {
+        "pop_out_label_to_its_own_window": "[Þøþ øùţ {{label}} ţø ìţş øẁñ ẁìñðøẁ ··················]",
+        "label_is_open_in_its_own_window_focus_it": "[{{label}} ìş øþèñ ìñ ìţş øẁñ ẁìñðøẁ — ƒøçùş ìţ ···················]"
+      }
+    }
   },
   "commandCenter": {
     "automatic_cards": "[Àùţøɱàţìç çàŕðş ƒøŕ àĺĺ şèşşìøñş ················]",

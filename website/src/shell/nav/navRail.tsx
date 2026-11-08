@@ -105,7 +105,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
     !effectiveCollapsed && !isMobile ? (
       <div className="relative group/approw [&>.nav-item]:pr-9">
         {renderNavRow(n)}
-        <AppRowPopoutAction route={n.path} active={navRowActive(n.path)} />
+        <AppRowPopoutAction route={n.path} label={surfaceLabel(n)} active={navRowActive(n.path)} />
       </div>
     ) : renderNavRow(n)
   )

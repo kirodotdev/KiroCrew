@@ -6680,13 +6680,9 @@
       "this_app_is_disabled": "Это приложение отключено",
       "this_app_provides_agents_and_skills_but_no_visua": "Это приложение предоставляет агентов и навыки, но не имеет визуального интерфейса.\n            Используйте его агентов из чата."
     },
-    "appPopoutControl": {
-      "pop_out_app_to_its_own_window": "Открыть приложение в отдельном окне",
-      "this_app_is_open_in_its_own_window_focus_it": "Это приложение открыто в отдельном окне — перейти к нему",
-      "focus_popped_out_window": "Перейти к отдельному окну",
+    "appPopoutTitleBar": {
       "return": "Вернуть",
-      "return_to_main_window": "Вернуть в главное окно",
-      "return_this_app_to_the_main_window": "Вернуть это приложение в главное окно"
+      "return_to_main_window_and_close_this_popout": "Вернуться в главное окно и закрыть это отдельное окно"
     },
     "approvalCard": {
       "actions_group": "Действия подтверждения",
@@ -23959,5 +23955,13 @@
     "streak_days_many": "{{count}} дней · рекорд {{best}}",
     "notice_count_many": "{{count}} новостей в обзоре",
     "video_failed": "Не удалось загрузить видео о функции"
+  },
+  "shell": {
+    "nav": {
+      "appRowPopoutAction": {
+        "pop_out_label_to_its_own_window": "Открыть {{label}} в отдельном окне",
+        "label_is_open_in_its_own_window_focus_it": "Приложение {{label}} открыто в отдельном окне — перейти к нему"
+      }
+    }
   }
 }

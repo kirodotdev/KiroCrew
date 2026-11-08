@@ -6336,13 +6336,9 @@
       "this_app_is_disabled": "Diese App ist deaktiviert",
       "this_app_provides_agents_and_skills_but_no_visua": "Diese App stellt Agenten und Skills bereit, aber keine visuelle Oberfläche.\n            Verwenden Sie ihre Agenten aus dem Chat."
     },
-    "appPopoutControl": {
-      "pop_out_app_to_its_own_window": "App in ein eigenes Fenster auskoppeln",
-      "this_app_is_open_in_its_own_window_focus_it": "Diese App ist in einem eigenen Fenster geöffnet — dieses fokussieren",
-      "focus_popped_out_window": "Ausgekoppeltes Fenster fokussieren",
-      "return": "Zurückholen",
-      "return_to_main_window": "Zum Hauptfenster zurückkehren",
-      "return_this_app_to_the_main_window": "Diese App in das Hauptfenster zurückholen"
+    "appPopoutTitleBar": {
+      "return": "Zurückkehren",
+      "return_to_main_window_and_close_this_popout": "Zum Hauptfenster zurückkehren und dieses ausgekoppelte Fenster schließen"
     },
     "approvalCard": {
       "actions_group": "Freigabeaktionen",
@@ -22887,5 +22883,13 @@
     "streak_short_one": "{{count}} Tag in Folge",
     "load_failed": "Entdecken konnte nicht geladen werden.",
     "video_failed": "Feature-Video konnte nicht geladen werden"
+  },
+  "shell": {
+    "nav": {
+      "appRowPopoutAction": {
+        "pop_out_label_to_its_own_window": "{{label}} in ein eigenes Fenster auskoppeln",
+        "label_is_open_in_its_own_window_focus_it": "{{label}} ist in einem eigenen Fenster geöffnet — dieses fokussieren"
+      }
+    }
   }
 }
