@@ -39,7 +39,8 @@ UNKEYED_LOCKS: Dict[str, str] = {
     "tunnel": "tunnel.enabled and tunnel.relay_enabled are ignored; no tunnel or relay is started",
     "telemetry.otlp_hosts": (
         "telemetry.otlp_endpoint and telemetry.otlp_endpoints are ignored; "
-        "only endpoints this build ships may receive metrics"
+        "only endpoints this build ships or the policy names "
+        "(capabilities.telemetry.otlp_endpoint) may receive metrics"
     ),
     # Named for the RFC "developer_mode" policy term; the key that replaces this row
     # is separate work.

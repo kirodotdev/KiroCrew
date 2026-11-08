@@ -441,12 +441,34 @@ class TestEnterpriseBuildWithoutCompanion:
 
     def test_telemetry_uses_the_core_provider(self, cfg: KiroCrewConfig, monkeypatch) -> None:
         self._enterprise_build(monkeypatch)
+        from kiro_crew.metrics.otlp_governance import UNEVALUABLE
         from kiro_crew.platform import bootstrap as bootstrap_mod
         from kiro_crew.platform.defaults import DefaultTelemetryProvider
 
+        policy = {"now": None}
+
+        def load():
+            if policy["now"] == "broken":
+                raise PlatformCompositionError("unreadable")
+            return policy["now"]
+
         monkeypatch.setattr(bootstrap_mod, "plugin_entry_points", lambda: [])
         monkeypatch.setattr(bootstrap_mod, "discover_companion_context", self._no_discovery)
-        assert isinstance(bootstrap_mod.compose_telemetry_provider(cfg), DefaultTelemetryProvider)
+        monkeypatch.setattr(bootstrap_mod, "load_security_policy", load)
+        monkeypatch.setattr(bootstrap_mod, "assert_policy_signature_satisfied", lambda c: None)
+        monkeypatch.setattr(bootstrap_mod, "_LIVE_POLICY_TTL_SECS", 0.0)
+        provider = bootstrap_mod.compose_telemetry_provider(cfg)
+        # The core provider, holding a process with no context to the policy as it
+        # reads now: each read after the TTL sees a changed or unreadable policy.
+        assert isinstance(provider._inner, DefaultTelemetryProvider)
+        assert callable(provider.governance_redact)
+        first, second = object(), object()
+        policy["now"] = first
+        assert provider.governance_ceiling is first
+        policy["now"] = second
+        assert provider.governance_ceiling is second
+        policy["now"] = "broken"
+        assert provider.governance_ceiling is UNEVALUABLE
 
     def test_unreadable_entry_points_fail_closed(self, cfg: KiroCrewConfig, monkeypatch) -> None:
         # A scan that cannot read the metadata must not read as "no companion".

@@ -690,6 +690,9 @@ def telemetry_permitted(
     leave it empty for a read-only diagnostic probe (see
     :func:`is_governance_pinned_off`).
 
+    An enterprise build refuses every route here (the heartbeat, the install
+    receipt, the feedback survey) with the ``governance`` code.
+
     Deliberately does NOT include the beacon's once-per-day throttle. That
     throttle is specific to a heartbeat: an install receipt is a per-EVENT
     signal, so a shared day stamp would silently drop the second app a user
@@ -697,6 +700,16 @@ def telemetry_permitted(
     """
     if _env_truthy(DISABLE_ENV):
         return Verdict(False, f"opted out via {DISABLE_ENV}", "env_opt_out")
+    from kiro_crew.edition_locks import LOCKED_REASON, audit_refusal, locked_off
+
+    if locked_off():
+        # The admin decides where usage data goes (``capabilities.telemetry.
+        # otlp_endpoint``), and these endpoints are not ones the admin chose. Also
+        # no Privacy chapter is shown there, so no acknowledgement is ever recorded.
+        reason = f"anonymous telemetry is {LOCKED_REASON}"
+        if audit_tool:
+            audit_refusal(audit_tool, "capabilities.telemetry", "", reason)
+        return Verdict(False, reason, "governance")
     if is_governance_pinned_off(audit_tool=audit_tool):
         return Verdict(
             False, "disabled by governance policy (capabilities.telemetry)", "governance"
