@@ -6,12 +6,12 @@ non-finite numbers in ``test_issue_radar_crew_routes_controls.py``.
 """
 
 import asyncio
+import json
 from typing import Any
 from unittest import mock
 
 from aiohttp import web
 from issue_radar_crew_routes_helpers import (
-    BASE,
     OWNER,
     REPO,
     _CrewRouteCase,
@@ -357,39 +357,41 @@ class TestWorkItems(_CrewRouteCase):
 class TestTheRecordToolEmptiesLabelsWithClear(_CrewRouteCase):
     """``issue_radar_crew_record`` with ``clear: ["labels_applied"]``, end to end.
 
-    Some clients drop ``labels_applied: []``, hence ``clear``. The tool's loopback legs
-    are bridged onto the real read and write handlers.
+    Some clients drop ``labels_applied: []``, hence ``clear``. The core's forwarded
+    call is bridged onto the app's real ``agent-tools`` handler, which runs the real
+    read and write handlers in-process.
     """
 
     def agent(self, crew: dict) -> str:
         return f"dashboard:{crew['slot_key']}"
 
     async def record(self, crew: dict, args: dict[str, Any]) -> str:
+        from aiohttp.test_utils import make_mocked_request
+        from issue_radar_agent_tools_helpers import shipped
+
+        from kiro_crew.apps import app_agent_tools
+        from kiro_crew.apps.builtins.issue_radar.backend import agent_tools
+
         loop = asyncio.get_running_loop()
 
-        def leg(method: str, path: str, body: Any, session_key: Any) -> dict:
-            self.assertTrue(path.startswith(BASE), path)
+        def post(path: str, body: Any = None, *, session_key: Any = None, **_kw: Any) -> dict:
+            req = make_mocked_request(
+                "POST", path, headers={"X-Session-Key": session_key or ""}, app=self.app
+            )
+            req["internal_auth"] = True
+            req._read_bytes = json.dumps(body).encode()
             res = asyncio.run_coroutine_threadsafe(
-                self.call(
-                    method, path[len(BASE) :], body=body, internal_auth=True, session=session_key
-                ),
-                loop,
+                agent_tools.handle_agent_tool_call(req), loop
             ).result(timeout=30)
             payload = _payload(res)
             # The shape ``mcp_core._send`` hands back for a refusal.
             return payload if res.status < 400 else {"error": payload.get("error", ""), **payload}
 
-        def get(path: str, session_key: Any = None, **_kw: Any) -> dict:
-            return leg("GET", path, "", session_key)
-
-        def put(path: str, body: Any = None, session_key: Any = None) -> dict:
-            return leg("PUT", path, body, session_key)
-
         sk = self.agent(crew)
         with (
+            mock.patch.object(app_agent_tools, "declared_tool", lambda name: shipped(name)),
             mock.patch.object(mcp_core, "_resolve_session_key_strict", return_value=sk),
-            mock.patch.object(mcp_core, "_get", side_effect=get),
-            mock.patch.object(mcp_core, "_put", side_effect=put),
+            mock.patch.object(mcp_core, "_post", side_effect=post),
         ):
             return await asyncio.wait_for(
                 asyncio.to_thread(mcp_core._call_tool, "issue_radar_crew_record", args), timeout=30

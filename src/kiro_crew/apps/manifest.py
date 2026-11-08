@@ -791,8 +791,12 @@ class AppManifest:
         # surfaces / when-filter grammar.
         errors.extend(self.contributes.validate())
 
-        # Agent tools: shape, the core-enforced schema subset, and the app's namespace.
-        errors.extend(self.agentTools.validate(self.name))
+        # Agent tools: shape, the core-enforced schema subset, the app's namespace, and
+        # no strictSession on a process-backed app. Imported here: app_frame imports
+        # the manager, which imports this module.
+        from kiro_crew.apps.app_frame import process_backed
+
+        errors.extend(self.agentTools.validate(self.name, process_backed(self)))
 
         # A contributed command's `agent` is contained to the agents THIS app ships.
         # The prompt is app-authored, so letting it name any host agent would let an
