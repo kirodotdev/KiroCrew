@@ -5737,9 +5737,11 @@
   },
   "components": {
     "dataHomeOwnerNotice": {
+      "cause": "{{productName}} が一度 root として起動された可能性があります（たとえば sudo で）。root での実行をやめてから、ファイルを自分のアカウントに戻してください。",
       "check_failed": "{{productName}} のファイルの所有者を確認できませんでした。",
-      "message": "一部の {{productName}} のファイルが別のユーザーのものになっているため、{{productName}} が読み込めません。",
-      "run_this": "このコンピューターのターミナルでこのコマンドを実行してから、もう一度お試しください。"
+      "help_link": "ファイルを戻す方法",
+      "owned_by": "{{home}} にある一部の {{productName}} ファイルは {{owner}} の所有なので、{{productName}} は読み取れません。",
+      "unusable": "{{home}} にある一部の {{productName}} ファイルはこのアカウントでは使えないため、{{productName}} は読み取れません。"
     },
     "mateWorkers": {
       "approvals_label": "このクルーメイトのセッションからのツール承認: {{n}}",

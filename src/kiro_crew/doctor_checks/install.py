@@ -36,22 +36,25 @@ def _legacy_venv_entries(home: Path) -> list[str]:
 
 
 def _doctor_data_home_owner(issues: list[str]) -> None:
-    """Report data-home entries another account owns, with the line that fixes them.
+    """Report data-home entries another account owns, and where the docs explain them.
 
     Joins ``issues``: a home this account cannot read fails every config read and
     every Bot create, which is exactly what the doctor exists to catch.
     """
-    from kiro_crew.data_home_owner import check_data_home
+    from kiro_crew.data_home_owner import HELP_URL, check_data_home
 
     access = check_data_home(Path(cli_doctor.config_dir()))
     if access.ok:
         print("  owner:       ✅ this account owns its files")
         return
-    print("  owner:       ❌ some files belong to another user, so Kiro Crew can't read them:")
+    whose = f"belong to {access.owner}" if access.owner else "can't be used by this account"
+    print(f"  owner:       ❌ some files {whose}, so Kiro Crew can't read them:")
     for path in access.foreign:
         print(f"               {path}")
-    print(f"               fix: {access.fix_command}")
-    issues.append(f"data home files belong to another user; run: {access.fix_command}")
+    print("               Kiro Crew was probably started as root once (for example with sudo).")
+    print("               Stop running it as root, then give the files back to your account:")
+    print(f"               {HELP_URL}")
+    issues.append(f"data home files {whose}; see {HELP_URL}")
 
 
 def _doctor_data_home() -> None:

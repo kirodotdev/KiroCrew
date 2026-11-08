@@ -6069,9 +6069,11 @@
   },
   "components": {
     "dataHomeOwnerNotice": {
+      "cause": "O {{productName}} provavelmente foi iniciado uma vez como root, por exemplo com sudo. Pare de executá-lo como root e depois devolva os arquivos à sua própria conta.",
       "check_failed": "Não foi possível verificar a quem pertencem os arquivos do {{productName}}.",
-      "message": "Alguns arquivos do {{productName}} pertencem a outro usuário, então o {{productName}} não consegue lê-los.",
-      "run_this": "Execute este comando em um terminal neste computador e tente de novo."
+      "help_link": "Como devolver os arquivos",
+      "owned_by": "Alguns arquivos do {{productName}} em {{home}} pertencem a {{owner}}, por isso o {{productName}} não consegue lê-los.",
+      "unusable": "Alguns arquivos do {{productName}} em {{home}} não podem ser usados por esta conta, por isso o {{productName}} não consegue lê-los."
     },
     "mateWorkers": {
       "approvals_label": "Aprovações de ferramentas das sessões deste colega: {{n}}",

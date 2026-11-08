@@ -616,6 +616,59 @@ reclaims marked directories, so these stay; above 1000 the row becomes a warning
 and prints the manual move to do with the gateway stopped. Doctor itself deletes
 nothing.
 
+### Kiro Crew files belong to another account
+
+`kirocrew doctor`, the gateway log, Settings and the New Bot dialog say that some
+files in your data home (`~/.kiro/crew` unless you set `KIROCREW_HOME`) belong to
+another account, usually `root`, so Kiro Crew can't read them. When the notice
+says the files "can't be used by this account" instead, they are already yours
+but their permissions keep you out: skip to step 6.
+
+This almost always means Kiro Crew was started as root once, for example with
+`sudo kirocrew ...`. `sudo` keeps your `HOME`, so that run wrote root-owned files
+into your own data home. Kiro Crew now refuses such a run, but it does not change
+the owner of files back by itself: doing that as root inside a folder an agent can
+write is not safe to automate.
+
+To fix it yourself:
+
+1. Stop running Kiro Crew as root. Start it as your normal account.
+2. Stop Kiro Crew and every agent first, so nothing writes into the folder while
+   you change it: `kirocrew stop`, then quit the desktop app if you use it, and
+   check that no `kirocrew` or `kiro-cli` process is still running.
+3. Find the folder to fix: use the folder the notice names (`kirocrew doctor`
+   prints it too). Below it is written `<folder>`; put that path in its place.
+   Use that real folder, not a link to it.
+4. Check for files that have a second hard link. An agent could have linked a
+   system file into the folder earlier, and stopping the agent does not remove
+   that link:
+
+   ```bash
+   sudo find -P <folder> -xdev -type f -links +1
+   ```
+
+   It only lists files, and it runs as root so it can look inside folders the
+   earlier root run left unreadable to you. This must print nothing. If it prints
+   anything, stop here and do not run the next step.
+5. Give the folder back to your account. This is your own action, run in your own
+   terminal, as root, with Kiro Crew and every agent stopped:
+
+   ```bash
+   sudo find -P <folder> -xdev ! -user "$(id -un)" \( -type d -o -links 1 \) -execdir chown -h "$(id -un)" {} \;
+   ```
+
+   It changes only folders and single-link files on that folder's own disk that
+   another account owns, and it never follows a link out of the folder. Do not run
+   it while an agent is running: anything that can write the folder during the
+   change can point it at files outside the folder.
+6. Give your account read and write access to its own files again. Run this as
+   your normal account, without `sudo`; it can only change files you own:
+
+   ```bash
+   chmod -R u+rwX <folder>
+   ```
+7. Run `kirocrew doctor` again. The data home owner check should now pass.
+
 ## Log Levels
 
 ```bash

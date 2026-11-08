@@ -1626,8 +1626,10 @@ the crew manager the door is CONFIG mode: the dialog closes and the crew manager
 re-reads its roster so the new card appears in place; it does NOT navigate to the
 mate's chat and asks for no greeting. A create refused with 409 `data_home_not_owned` (files in the data home belong
 to another account, see `cli.md` "Data home owned by another account") shows that
-cause in one sentence with the server's `fix_command` to copy; Settings shows the
-same notice on every tab while `/api/status` reports `data_home_access.ok` false.
+cause in one sentence naming the folder and its owner, then the likely cause (a
+root run) and a link to the docs section that explains giving the files back; it
+offers no command to copy. Settings shows the same notice on every tab while
+`/api/status` reports `data_home_access.ok` false.
 The dialog's own success path (cache
 invalidation, the post-failure reconcile, the goal stored as
 `description`) is identical on both doors; only the caller's `onCreated`
