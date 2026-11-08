@@ -1188,6 +1188,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _AGENTCORE_SCOPE,
         _POLICY_DISTRIBUTION_HEADERS_ENV,
         _POLICY_DISTRIBUTION_URL_ENV,
+        _TELEMETRY_OTLP_ENDPOINT,
+        _TELEMETRY_SCOPE,
         _UNAVAILABLE_DISPOSITIONS,
         DEFAULT_FETCH_TIMEOUT_SECS,
         MAX_DURATION_SECS,
@@ -1207,6 +1209,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _apply_agentcore_gateway_url,
         _apply_agentcore_posture,
         _apply_agentcore_workload_name,
+        _apply_telemetry_otlp_endpoint,
         _capability_raw_for_gate,
         _command_deny_patterns,
         _is_enterprise,
@@ -1219,6 +1222,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         compose_profiles,
         deny_all_profile,
         registry_local_control_plane_permitted,
+        telemetry_otlp_endpoint,
     )
     from kiro_crew.platform.governance_parts.catalog import (  # noqa: F401
         _SCOPE_ALIASES,

@@ -493,7 +493,13 @@ def _theme_payload(cfg: KiroCrewConfig) -> dict[str, object]:
 
     One builder for all four response sites so a newly-added preference cannot
     be surfaced by some of them and silently omitted by the rest.
+
+    An enterprise build reports ``privacy_acked`` as true, so the SPA never opens
+    the first-run Privacy chapter there: the admin, not the user, decides where
+    usage data goes. Only the response says so; the stored value is unchanged.
     """
+    from kiro_crew.edition import is_enterprise
+
     return {
         "mode": cfg.dashboard.theme_mode or "",
         "color": cfg.dashboard.theme_color or "",
@@ -501,7 +507,7 @@ def _theme_payload(cfg: KiroCrewConfig) -> dict[str, object]:
         "translucent_panels": cfg.dashboard.translucent_panels or "",
         "onboarded": cfg.dashboard.onboarded,
         "import_onboarded": cfg.dashboard.import_onboarded,
-        "privacy_acked": cfg.dashboard.privacy_acked,
+        "privacy_acked": cfg.dashboard.privacy_acked or is_enterprise(),
         "crewmates_onboarded": cfg.dashboard.crewmates_onboarded,
     }
 

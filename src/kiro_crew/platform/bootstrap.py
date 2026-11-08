@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from typing import TYPE_CHECKING, Any, Sequence, cast
 
 from kiro_crew import edition
@@ -138,8 +139,16 @@ def compose_telemetry_provider(cfg: "KiroCrewConfig") -> "TelemetryProvider":
     """
     eps = plugin_entry_points()
     profile = resolve_profile(cfg, entry_points=eps)
-    if profile == PROFILE_STANDALONE or _enterprise_on_core_defaults(eps):
+    if profile == PROFILE_STANDALONE:
         return DefaultTelemetryProvider()
+    if _enterprise_on_core_defaults(eps):
+        # No companion carries a ceiling here, so read the policy the core-defaults
+        # boot would install, live: it names the collector
+        # (``capabilities.telemetry.otlp_endpoint``) and its host list.
+        return cast(
+            "TelemetryProvider",
+            _LivePolicyTelemetry(DefaultTelemetryProvider(), DefaultCredentialPolicy().redact),
+        )
     companion = _checked_companion(profile, cfg, eps)
     assert_security_floor(companion.security)
     # The calling process installs no context, so the core cannot read a ceiling
@@ -171,6 +180,56 @@ class _PolicyBoundTelemetry:
 
     def __getattr__(self, name: str) -> object:
         return getattr(self._inner, name)
+
+
+#: How long :class:`_LivePolicyTelemetry` reuses one policy read: the same window
+#: ``metrics.provider._CONSENT_RECHECK_SECS`` gives a config change.
+_LIVE_POLICY_TTL_SECS = 30.0
+
+
+class _LivePolicyTelemetry:
+    """The core telemetry provider for a process with no context and no companion.
+
+    ``governance_ceiling`` re-reads the security policy at most once per
+    :data:`_LIVE_POLICY_TTL_SECS`, so a policy that turns telemetry off or moves its
+    collector stops this process's export too, as it does in a process with a
+    context. A read that fails answers ``otlp_governance.UNEVALUABLE``, which
+    refuses every host.
+    """
+
+    def __init__(self, inner: object, redact: object) -> None:
+        self._inner = inner
+        self.governance_redact = redact
+        self._lock = threading.Lock()
+        self._read_at: "float | None" = None
+        self._ceiling: object = None
+
+    @property
+    def governance_ceiling(self) -> object:
+        with self._lock:
+            now = time.monotonic()
+            if self._read_at is None or now - self._read_at >= _LIVE_POLICY_TTL_SECS:
+                self._ceiling = _read_policy_now()
+                self._read_at = now
+            return self._ceiling
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+
+def _read_policy_now() -> object:
+    """The installed policy, signature mandate checked, or ``UNEVALUABLE`` on failure."""
+    from kiro_crew.metrics.otlp_governance import UNEVALUABLE
+
+    try:
+        ceiling = load_security_policy()
+        if ceiling is not None:
+            assert_policy_signature_satisfied(ceiling)
+        return ceiling
+    except Exception:
+        # ``gate_exporter`` logs the export stopping; this read repeats per TTL.
+        logger.debug("security policy unreadable; OTLP export refused", exc_info=True)
+        return UNEVALUABLE
 
 
 def _enterprise_on_core_defaults(eps: "Sequence[Any]") -> bool:
