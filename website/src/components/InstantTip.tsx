@@ -469,11 +469,14 @@ export function useInstantTip({ hold = 0, placement = 'above', openOnTap = false
 /** The bubble. Shared chrome here; the caller passes only content and a
  *  variant class for width/wrap (`whitespace-nowrap` for a short two-liner,
  *  `max-w-[26rem] whitespace-pre-wrap break-words` for prose). Pass the
- *  hook's `tipId` so the anchor's `aria-describedby` resolves. */
-export function InstantTip({ tip, tipId, className = '', children }: {
+ *  hook's `tipId` so the anchor's `aria-describedby` resolves. `arrow` draws
+ *  the flow bubble's pointer for any anchor: in a stacked list a bubble with
+ *  none reads as the row it covers. */
+export function InstantTip({ tip, tipId, className = '', arrow = false, children }: {
   tip: TipPos | null
   tipId?: string
   className?: string
+  arrow?: boolean
   children: React.ReactNode
 }) {
   const trustRoot = useGuideTrustRootAttrs()
@@ -497,7 +500,7 @@ export function InstantTip({ tip, tipId, className = '', children }: {
   // its prose-aware placement. Vertically for `below`: a chip on the last line
   // of a full-height pane would open the bubble off the bottom; a flow anchor
   // goes above after all (its `flip`), an explicit `below` is clamped to the bottom edge.
-  // A flow bubble's arrow (`nub`, its offset from the bubble's left) moves the
+  // The arrow (`nub`, its offset from the bubble's left) moves the
   // other way when the clamp moves the bubble, so it stays on the anchor.
   useLayoutEffect(() => {
     setFit(null)
@@ -551,7 +554,7 @@ export function InstantTip({ tip, tipId, className = '', children }: {
       {children}
       {/* A rotated square astride the edge that faces the anchor, painted in
           the bubble's own border and fill so it reads as part of it. */}
-      {tip.flow && <span
+      {(tip.flow || arrow) && <span
         aria-hidden="true"
         data-testid="instant-tip-arrow"
         className={`absolute h-2 w-2 rotate-45 border-border-strong bg-bg-elevated ${placement === 'below' ? '-top-[5px] border-l border-t' : '-bottom-[5px] border-b border-r'}`}
