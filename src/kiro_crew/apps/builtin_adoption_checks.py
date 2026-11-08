@@ -51,7 +51,14 @@ NEVER_RETRIED_CODES = frozenset(
 
 #: Transient failures: retried with backoff.
 TRANSIENT_CODES = frozenset(
-    {"network_unreachable", "network_timeout", "http_status", "disk_full", "config_unreadable"}
+    {
+        "network_unreachable",
+        "network_timeout",
+        "http_status",
+        "disk_full",
+        "config_unreadable",
+        "stage_io_failed",
+    }
 )
 
 ALL_REASON_CODES = RECHECKED_CODES | NEVER_RETRIED_CODES | TRANSIENT_CODES

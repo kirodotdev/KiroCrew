@@ -28,9 +28,10 @@ from sel_helpers import (  # noqa: F401 -- fixtures are requested by name
     sel_dir_fixture,
     small_segments_fixture,
 )
+from windows_sim import replace_sharing_violation
 
 import kiro_crew.sel as sel_mod
-from kiro_crew import platform_compat
+from kiro_crew import atomic_write, platform_compat
 from kiro_crew import sel as kiro_crew_sel
 from kiro_crew.sel import SecurityEventLog
 
@@ -1044,6 +1045,50 @@ class TestPruneCannotClobberAConcurrentRotation:
         with patch.object(SecurityEventLog, "_open_rotation_lock", return_value=None):
             log.prune(keep_days=365)
         assert live.read_text(encoding="utf-8") == before, "swept without the lock"
+
+    @staticmethod
+    def _aged_log(sel_dir) -> SecurityEventLog:
+        log = SecurityEventLog(base_dir=sel_dir, sync=True)
+        base = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        for i in range(3):
+            log.log(
+                _make_event(
+                    event_id=f"old{i:04d}",
+                    timestamp=(base + timedelta(seconds=i)).isoformat(),
+                )
+            )
+        _fill(log, 1, start=950)
+        return log
+
+    def test_prune_retries_a_held_live_log_rename(self, sel_dir, small_segments, monkeypatch):
+        """A Windows reader briefly holding the live log does not cost the day's prune."""
+        log = self._aged_log(sel_dir)
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(atomic_write, "_REPLACE_BACKOFF_SECONDS", 0)
+        with replace_sharing_violation(match="security_events.jsonl", times=2) as sim:
+            removed = log.prune(keep_days=365)
+        assert sim["n"] == 3
+        assert removed >= 3
+        live = (sel_dir / "security_events.jsonl").read_text(encoding="utf-8")
+        assert "old0000" not in live and "seq=950" in live
+        assert not list(sel_dir.glob(".sel_prune_*"))
+
+    def test_prune_raises_a_rename_held_past_the_retry(self, sel_dir, small_segments, monkeypatch):
+        """Raised, not logged as a lock skip, so the heartbeat's prune_failed counter sees it."""
+        log = self._aged_log(sel_dir)
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(atomic_write, "_REPLACE_BACKOFF_SECONDS", 0)
+        live = sel_dir / "security_events.jsonl"
+        before = live.read_text(encoding="utf-8")
+        with (
+            replace_sharing_violation(
+                match="security_events.jsonl", times=atomic_write._REPLACE_MAX_ATTEMPTS
+            ),
+            pytest.raises(PermissionError),
+        ):
+            log.prune(keep_days=365)
+        assert live.read_text(encoding="utf-8") == before
+        assert not list(sel_dir.glob(".sel_prune_*"))
 
     def test_prune_re_anchors_after_replacing_the_live_log(self, sel_dir, small_segments):
         """The replace changes the inode, so the cached identity must follow.
