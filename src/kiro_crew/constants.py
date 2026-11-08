@@ -1749,7 +1749,9 @@ CHANNEL_SEND_NAMESPACES: tuple[str, ...] = tuple(
 #: the send roster and carries its reason, the way ``slack`` and ``unified`` do. A
 #: channel graduates by distinguishing configured recipients from learned peers in
 #: ``configured_targets()`` -- at which point deleting it from this subtraction is
-#: the whole change.
+#: the whole change. WeCom marks its learned peers ``learned=True``, which
+#: ``sole_direct_target`` skips; it leaves this subtraction once the ratchet reads
+#: that flag instead of the method's source.
 CHANNEL_OWNER_DM_NAMESPACES: tuple[str, ...] = tuple(
     sorted(set(CHANNEL_SEND_NAMESPACES) - {"weixin", "wecom"})
 )
