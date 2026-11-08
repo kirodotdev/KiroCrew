@@ -4519,14 +4519,19 @@ The dashboard's skill *browse* endpoints are deliberately **not** trust-gated: r
 `SKILL.md` is how the operator decides whether to grant trust, so requiring the grant to
 view the file would make that decision blind. The boundary that matters — an unconsented
 project skill never reaching the agent's context — is enforced in `SkillsLoader`.
-This does not widen App Kit visibility: an app caller that asks the catalog for a
-session-scoped project, or browses a `kiro-workspace` skill, must positively own the slot
-named by `X-Session-Key`, and that owned slot must itself name a project. Foreign,
-unscoped, projectless, missing, and absent slot identities all return the same 404 and
-emit a denied `app_isolation` API-access record. A successful ownership and project-binding
-decision emits an allowed `app_isolation` record naming the selected slot. This prevents
-the shared-project fallback used by owner dashboard browsing from lending another slot's
-project to an app-owned, projectless slot.
+This does not widen App Kit visibility: an app caller that asks the catalog (including
+`skill_search`) or browses a `kiro-workspace` skill must positively own the slot named by
+`X-Session-Key`. Foreign, unscoped, missing, and absent slot identities all return the same
+404 and emit a denied `app_isolation` API-access record. An owned slot with no project is
+refused the same way on the `kiro-workspace` browse routes (tree, file, detail), because
+they resolve through the shared-project fallback used by owner dashboard browsing, which
+would lend that slot another slot's project. The catalog admits it: the catalog resolves
+the project strictly per slot, so the slot reads the global rows that an owned slot with a
+project also reads, and no project skills. `skill_search` narrows that to the agent's own
+`skill://` scope as usual. App chat slots are created without a project, so this is how an
+app's own chat reaches its skills. A successful ownership decision emits an allowed `app_isolation`
+record naming the selected slot. `skill_search` reports the uniform 404 as a refusal of
+this chat (`slot_not_found`), not as a missing skill.
 
 **Enforcement is audited, on first use rather than per message.** Granting and revoking
 consent are audited `critical=True` where the operator acts. The decision that *uses* that

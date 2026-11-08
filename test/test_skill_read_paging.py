@@ -411,7 +411,7 @@ class TestGatewayContract:
         _skill(root, "small", "one\ntwo\n")
         loader = opened(SkillsLoader(skills_path=root, install_builtins=False))
         monkeypatch.setattr(prompts, "_read_session_key", lambda request: "dashboard:scoped")
-        monkeypatch.setattr(prompts, "_deny_foreign_app_skill_slot", lambda *args: None)
+        monkeypatch.setattr(prompts, "_deny_foreign_app_skill_slot", lambda *args, **kwargs: None)
         monkeypatch.setattr(prompts, "_get_skills", lambda state: loader)
         monkeypatch.setattr(prompts, "requesting_slot_project", lambda *args: None)
         monkeypatch.setattr(prompts, "_named_slot", lambda *args: SimpleNamespace(agent="custom"))
