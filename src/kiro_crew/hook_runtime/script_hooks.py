@@ -172,6 +172,9 @@ async def run_script_hook(
     # rewrites ``hook.event`` in place, so the live field may name another event
     # by the time the check below runs, while the stdin payload names this one.
     firing_event = str((hook_event or {}).get("hook_event_name") or hook.event)
+    # An agent spec hook's payload spells the event as kiro-cli does
+    # (``preToolUse``); the policy's ``events`` list names the store's ``PreToolUse``.
+    firing_event = firing_event[:1].upper() + firing_event[1:]
     # Offloaded: resolving the governance scope can walk the profile store, which
     # must not run on the gateway's shared event loop.
     gov_denied = await asyncio.to_thread(_script_hooks_capability_denied, sk)
@@ -839,8 +842,9 @@ class ScriptHookStore:
         the extra hooks were written in, which ``tool_name`` (the call's title)
         does not carry. It matches when any name does, and an empty sequence
         leaves only an unscoped (``*``) extra hook matching. The first name is
-        also the ``tool_name`` an extra hook's stdin payload reports, so a script
-        that branches on it reads the same vocabulary its matcher is written in.
+        also the ``tool_name`` a ``~/.kiro/hooks`` file hook's stdin reports. An
+        agent spec's own hook reads kiro-cli's field names instead
+        (:func:`kiro_crew.agent_sdk.spec_hooks.kiro_cli_hook_payload`).
         For AgentSpawn/UserPromptSubmit/Stop, all hooks for that event fire.
 
         Optional ``subagent_id``, ``parent_session_key``, and ``agent_role`` are
@@ -924,6 +928,15 @@ class ScriptHookStore:
             extra_event["session_id"] = acp_session_id
             extra_event["acp_session_id"] = acp_session_id
             extra_run["acp_session_id"] = acp_session_id
+        # An agent spec's own hook was written for kiro-cli, so it reads kiro-cli's
+        # field names. A ``~/.kiro/hooks`` file hook (``user_file``) was written for
+        # KAS, whose names are the ones above, and keeps them.
+        spec_event = extra_event
+        if extra_hooks:
+            # circular import: spec_hooks imports kiro_crew.hooks at load time.
+            from kiro_crew.agent_sdk.spec_hooks import kiro_cli_hook_payload
+
+            spec_event = kiro_cli_hook_payload(extra_event, event, extra_hooks_tool_names)
         # Only a hook that passes its matcher changes the status bookkeeping
         # (last_run / run_count / last_status). A fire that matched nothing has
         # nothing to record, so it must not rewrite hooks.json: that rewrite ran
@@ -1021,7 +1034,8 @@ class ScriptHookStore:
                 )
                 continue
             if id(hook) in extra_ids:
-                result = await run_script_hook(hook, context, extra_event, **extra_run)
+                payload = spec_event if hook.spec_origin in ("user", "project") else extra_event
+                result = await run_script_hook(hook, context, payload, **extra_run)
                 result.from_spec = bool(hook.spec_origin)
             else:
                 result = await run_script_hook(hook, context, hook_event)
