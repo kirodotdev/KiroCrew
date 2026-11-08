@@ -8,7 +8,8 @@ grants the deny alone held back under :data:`CREW_SPEC_DENIES_KEY`, together wit
 the list, and the session handle reads them back as one
 :class:`~kiro_crew.platform.spec_denied_grant.SpecDeniedGrant`. See that module for
 how the gate uses it. Any other key beside a deny (``denyByDefault``,
-``fallbackAction``, an authored ``ask``) keeps the grant withheld, as before.
+``fallbackAction``, an authored ``ask``) keeps the grant withheld, as before; a
+boolean shell ``autoAllowReadonly`` does not.
 """
 
 from __future__ import annotations
