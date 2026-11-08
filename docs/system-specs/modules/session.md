@@ -1563,7 +1563,13 @@ against sweep completeness, and are torn down at `close_all`.
   reply, and every later chunk is kept (codex echoes only at the terminal, so
   there the reply appears at the turn's end instead of streaming); a turn that
   ends without that echo requeues the steer as its own turn, which answers it,
-  so the held text stays dropped and counted.
+  so the held text stays dropped and counted. Tool calls are never held: the
+  text held so far goes out just before the next tool call renders
+  (`_release_held_text(before_tool=True)`), so the transcript keeps the model's
+  order. Text written before a tool call is the model's work, not the
+  placeholder, so it is kept even when the echo never comes; only text with no
+  tool call after it is dropped. That is a known trade-off: a turn whose steer
+  is requeued keeps the text it wrote before a tool call.
   **Who may end quietly.** The applier's one gate is who opened the turn: a
   monitor wake (`_directive_self_wake`) or a headless producer (cron, crew, app,
   task runner — `_directive_user_origin` False) may; a turn a person opened
