@@ -166,7 +166,17 @@ _WINDOWS_DISPATCHERS = frozenset(
 #: `_EXEC_ENV_VARS` already refuses, arriving through the process environment
 #: instead. Neither is visible in the command line, so the check reads its own
 #: environment -- the one a child shell inherits by default.
-_ENV_PRELOAD_VARS = ("BASH_ENV", "ENV", "SHELLOPTS", "BASHOPTS")
+#:
+#: `ENV` is not listed because no shell that runs an agent command reads it. Only
+#: an INTERACTIVE POSIX shell sources it (sh, dash, ksh, bash in posix mode or run
+#: as sh, zsh emulating sh or ksh), and kiro-cli starts its shell tool with `-c`
+#: and no `-i`: `$SHELL -c` (falling back to /bin/bash, then /bin/sh) or `bash -c`.
+#: A granted line cannot start an interactive shell either, because every shell
+#: name is in `_DISPATCHERS`. Container images export `ENV` for their interactive
+#: logins, so refusing on it would decline every name grant on such a host for a
+#: file that never runs. Written as a command-line prefix it is still refused, by
+#: `_EXEC_ENV_VARS`, since there the command itself picks the start-up file.
+_ENV_PRELOAD_VARS = ("BASH_ENV", "SHELLOPTS", "BASHOPTS")
 
 
 #: An EXPORTED SHELL FUNCTION, which shadows a program name directly rather than

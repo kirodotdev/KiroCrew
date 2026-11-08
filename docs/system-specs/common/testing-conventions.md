@@ -771,7 +771,7 @@ developer's machine rather than the correctness of one suite, so it holds for al
 testpaths. It pins `$XDG_CONFIG_HOME` and the launchd paths, traps the spawn
 funnels against service mutation, pins `KIROCREW_HOME` and the import-time `~/.kiro`
 bindings, scrubs the inherited shell-preload and exported-function variables
-`name_grant` refuses on (`BASH_ENV`/`ENV`/`SHELLOPTS`/`BASHOPTS`, `BASH_FUNC_*` keys,
+`name_grant` refuses on (`BASH_ENV`/`SHELLOPTS`/`BASHOPTS`, `BASH_FUNC_*` keys,
 and the legacy `() {` value spelling — a RHEL-family host inherits `BASH_FUNC_which%%`
 from `which2.sh`, and the refusal outranks every narrower code), redirects
 `tempfile`'s base, and fails the run on residue in the

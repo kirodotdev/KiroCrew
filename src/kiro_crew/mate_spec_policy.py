@@ -220,27 +220,44 @@ def _layer_permissions(
     target["permissions"] = merged
 
 
+def mcp_allow_refs(rule: Any) -> list[str] | None:
+    """The ``allowedTools`` refs that express ``mcp`` *rule*'s ``match``, deduplicated.
+
+    ``server/*`` becomes ``@server`` and any other pattern ``@<pattern>``, the
+    refs KAS's projection derives back into the same rule. ``None`` for a rule
+    that is not ``mcp``, or whose ``match`` is not a list of strings. The worker
+    merge (:func:`_carry_mcp_allow`) and the Add-abilities preview
+    (``mate_worker_kit``) both read a carried allow through this one mapping.
+    """
+    if not isinstance(rule, dict) or rule.get("capability") != "mcp":
+        return None
+    match = rule.get("match") or []
+    if not isinstance(match, list):
+        return None
+    refs = []
+    for pattern in match:
+        if not isinstance(pattern, str):
+            return None
+        server, _, tool = pattern.partition("/")
+        refs.append(f"@{server}" if tool == "*" else f"@{pattern}")
+    return list(dict.fromkeys(refs))
+
+
 def _carry_mcp_allow(rule: dict[str, Any], target: dict[str, Any]) -> bool:
     """Add the ``allowedTools`` refs that grant ``mcp`` allow *rule*, exactly.
 
-    ``server/*`` becomes ``@server`` and any other pattern ``@<pattern>``, the
-    refs KAS's projection derives back into the same rule. They are added only
-    when :func:`allow_granted_by_spec` then proves the rule granted, so nothing
+    The refs are :func:`mcp_allow_refs`. They are added only when
+    :func:`allow_granted_by_spec` then proves the rule granted, so nothing
     wider than the rule is written; the governance ceiling still runs over the
     merged spec afterwards. A ref for an excluded tool or a muted server is
     proved but not written: the merge already took those grants away, and the
     tool they name never reaches the worker. Returns whether the rule is granted.
     """
-    if rule.get("capability") != "mcp":
+    refs = mcp_allow_refs(rule)
+    if refs is None:
         return False
-    refs = []
-    for pattern in rule.get("match") or []:
-        if not isinstance(pattern, str):
-            return False
-        server, _, tool = pattern.partition("/")
-        refs.append(f"@{server}" if tool == "*" else f"@{pattern}")
     have = list(target.get("allowedTools") or [])
-    new = [r for r in dict.fromkeys(refs) if r not in have]
+    new = [r for r in refs if r not in have]
     if not allow_granted_by_spec(rule, {**target, "allowedTools": [*have, *new]}):
         return False
     excluded = set(target.get("excludedTools") or [])

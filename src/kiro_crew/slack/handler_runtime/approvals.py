@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         _ACTION_APPROVE,
         _ACTION_REJECT,
         _ACTION_TRUST,
+        _IDENTITY_NAME_MAX,
         _SLACK_SECTION_TEXT_LIMIT,
         _TRUNCATION_MARKER,
         LLMEvent,
@@ -34,11 +35,13 @@ if TYPE_CHECKING:
         _linked_approvals,
         add_trusted_session,
         effective_session_key,
+        escape_mrkdwn,
         is_allowed_user,
         logger,
         redact_credentials,
         redact_exfiltration_urls,
         sel,
+        trusted_mcp_identity,
     )
 
 
@@ -90,16 +93,37 @@ class _LinkedApprovalEvent:
 
     The dashboard's permission event (``AcpEvent``) and the Slack-native
     ``LLMEvent`` have different shapes, so adapt the few fields the block
-    builder reads: ``request_id``, ``title``, ``tool_input``, ``tool_purpose``.
+    builder reads: ``request_id``, ``title``, ``tool_input``, ``tool_purpose``,
+    and the MCP identity with the flag that says whether it is proven.
     """
 
-    __slots__ = ("request_id", "title", "tool_input", "tool_purpose")
+    __slots__ = (
+        "request_id",
+        "title",
+        "tool_input",
+        "tool_purpose",
+        "mcp_server_name",
+        "tool_name",
+        "mcp_identity_trusted",
+    )
 
-    def __init__(self, request_id: str | int, title: str, tool_input: str = "") -> None:
+    def __init__(
+        self,
+        request_id: str | int,
+        title: str,
+        tool_input: str = "",
+        *,
+        mcp_server_name: str = "",
+        tool_name: str = "",
+        mcp_identity_trusted: bool = False,
+    ) -> None:
         self.request_id = request_id
         self.title = title
         self.tool_input = tool_input
         self.tool_purpose = ""
+        self.mcp_server_name = mcp_server_name
+        self.tool_name = tool_name
+        self.mcp_identity_trusted = mcp_identity_trusted
 
 
 def _linked_slots_for(session_key: str) -> list[Any]:
@@ -220,6 +244,10 @@ async def post_linked_approval(
     session_key: str,
     title: str,
     tool_input: str = "",
+    *,
+    mcp_server_name: str = "",
+    tool_name: str = "",
+    mcp_identity_trusted: bool = False,
 ) -> str | None:
     """Mirror a dashboard tool-approval prompt into a linked Slack thread.
 
@@ -232,6 +260,10 @@ async def post_linked_approval(
     Returns the Slack message ts on success, or ``None`` if the post failed.
     The caller (``_on_permission_prompt`` in chat_turn/permission_prompt.py) treats ``None``
     as "delivery failed" and surfaces it rather than silently parking on an unanswerable prompt.
+
+    *mcp_server_name*, *tool_name* and *mcp_identity_trusted* are the permission event's
+    own identity fields, passed as they are: the card names the server only when the
+    flag proves the pair (:func:`trusted_mcp_identity`), as the native card does.
 
     Trust ("Trust session") is offered only when BOTH hold:
 
@@ -256,10 +288,17 @@ async def post_linked_approval(
     title, _ = redact_credentials(title)
     tool_input, _ = redact_exfiltration_urls(tool_input)
     tool_input, _ = redact_credentials(tool_input)
-    event = _LinkedApprovalEvent(request_id, title, tool_input)
+    event = _LinkedApprovalEvent(
+        request_id,
+        title,
+        tool_input,
+        mcp_server_name=mcp_server_name,
+        tool_name=tool_name,
+        mcp_identity_trusted=mcp_identity_trusted,
+    )
     trust_grantable = channel.startswith("D") and _linked_trust_grantable(session_key, request_id)
-    # _build_approval_blocks is typed for AcpEvent but only reads the four
-    # attributes the shim provides (request_id/title/tool_input/tool_purpose).
+    # _build_approval_blocks is typed for AcpEvent but only reads the
+    # attributes the shim provides.
     blocks = _build_approval_blocks(event, is_dm=trust_grantable)  # type: ignore[arg-type]
     try:
         approval_ts = await slack.post_blocks(
@@ -284,6 +323,25 @@ def resolve_linked_approval(channel: str, approval_ts: str) -> None:
     _linked_approvals.pop(f"{channel}:{approval_ts}", None)
 
 
+def mcp_identity_text(server: str, tool: str) -> str:
+    """The mrkdwn line naming the MCP server and tool a card asks about, or ``""``.
+
+    Both names are the trusted ``_meta.kiro`` identity (:func:`trusted_mcp_identity`),
+    not the title: ``email_send`` on a card does not say which server sends the mail,
+    and the model chooses the title. Scrubbed like every other string the card posts,
+    then bounded and escaped, so a name cannot carry a ``<!channel>``. Every Slack
+    approval card draws its identity line here, the transport card too.
+    """
+    if not server.strip():
+        return ""
+    shown: list[str] = []
+    for name in (server.strip(), tool.strip() or "unnamed tool"):
+        name, _ = redact_exfiltration_urls(name)
+        name, _ = redact_credentials(name)
+        shown.append(escape_mrkdwn(name[:_IDENTITY_NAME_MAX]))
+    return f"MCP tool: *{shown[0]}* / *{shown[1]}*"
+
+
 def _build_approval_blocks(event: LLMEvent, is_dm: bool = True, source: str = "") -> list[dict]:
     """Build Block Kit blocks for tool approval prompt.
 
@@ -296,7 +354,8 @@ def _build_approval_blocks(event: LLMEvent, is_dm: bool = True, source: str = ""
 
     Shows the full command text (from tool_input) in a code block so users
     can see exactly what will run before approving.  Falls back to the
-    truncated title when tool_input is unavailable.
+    truncated title when tool_input is unavailable.  A call whose MCP identity
+    is proven also names its server beside the title (:func:`mcp_identity_text`).
 
     In DMs: Approve / Trust / Reject
     In group channels: Approve / Reject only (Trust excluded
@@ -377,7 +436,11 @@ def _build_approval_blocks(event: LLMEvent, is_dm: bool = True, source: str = ""
         )
 
     blocks.append({"type": "actions", "elements": buttons})
-    blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": footer}]})
+    footer_elements = [{"type": "mrkdwn", "text": footer}]
+    identity = mcp_identity_text(*trusted_mcp_identity(event))
+    if identity:
+        footer_elements.append({"type": "mrkdwn", "text": identity})
+    blocks.append({"type": "context", "elements": footer_elements})
     return blocks
 
 

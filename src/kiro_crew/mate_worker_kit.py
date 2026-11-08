@@ -182,8 +182,43 @@ def _added(
     return rows
 
 
-def _approval_refs(spec: dict[str, Any]) -> set[str]:
-    """Approval selectors from both file-level and per-server grants."""
+def _allow_rules(spec: dict[str, Any]) -> list[dict[str, Any]]:
+    """The ``allow`` rules in *spec*'s ``permissions`` block."""
+    perms = spec.get("permissions")
+    rules = perms.get("rules") if isinstance(perms, dict) else None
+    return [
+        rule
+        for rule in (rules if isinstance(rules, list) else [])
+        if isinstance(rule, dict) and rule.get("effect") == "allow"
+    ]
+
+
+def _permission_refs(spec: dict[str, Any], base: dict[str, Any] | None) -> set[str]:
+    """The ``allowedTools`` refs *spec*'s ``mcp`` allow rules land as on the worker.
+
+    The worker merge writes an allow its list can express as that list's own refs
+    (``mate_spec_policy.mcp_allow_refs``), unless the list already grants it
+    (``mate_spec_policy._carry_mcp_allow``). A rule the worker *base* already
+    grants, and a ref the base already lists, are left out the same way.
+    """
+    from kiro_crew.agent_sdk.kas_tool_view import allow_granted_by_spec, permission_allow_derivable
+    from kiro_crew.mate_spec_policy import mcp_allow_refs
+
+    held = base or {}
+    listed = held.get("allowedTools")
+    have = {t for t in listed if isinstance(t, str)} if isinstance(listed, list) else set()
+    refs: set[str] = set()
+    for rule in _allow_rules(spec):
+        carried = mcp_allow_refs(rule)
+        if carried is None or not permission_allow_derivable(rule):
+            continue
+        if not allow_granted_by_spec(rule, held):
+            refs.update(ref for ref in carried if ref not in have)
+    return refs
+
+
+def _listed_refs(spec: dict[str, Any]) -> set[str]:
+    """Approval selectors *spec* lists: ``allowedTools`` and per-server ``autoApprove``."""
     value = spec.get("allowedTools")
     refs = {t for t in value if isinstance(t, str)} if isinstance(value, list) else set()
     servers = spec.get("mcpServers")
@@ -197,32 +232,68 @@ def _approval_refs(spec: dict[str, Any]) -> set[str]:
     return refs
 
 
-def _approval_changes(before: dict[str, Any], after: dict[str, Any]) -> list[dict[str, str]]:
+def _approval_refs(spec: dict[str, Any], base: dict[str, Any] | None = None) -> set[str]:
+    """Approval selectors from file-level, per-server and ``permissions`` grants.
+
+    The listed ones are :func:`_listed_refs`; the ``permissions`` ones are
+    :func:`_permission_refs`, less what the worker *base* already grants.
+    """
+    return _listed_refs(spec) | _permission_refs(spec, base)
+
+
+def _approval_changes(
+    before: dict[str, Any], after: dict[str, Any], base: dict[str, Any] | None = None
+) -> list[dict[str, str]]:
     """One row per auto-approval grant the add writes, so the owner sees it before applying.
 
     Diffed from the file before and after (the same written result ``apply``
-    saves), so the preview cannot list fewer grants than the file will hold. Both
-    channels count: an ``allowedTools`` entry, and a tool in a server entry's own
-    ``autoApprove``; either lets the worker run that tool with no prompt, so both
-    are listed as ``allowedTools`` rows (``@server/tool``).
+    saves), so the preview cannot list fewer grants than the file will hold. Three
+    channels count: an ``allowedTools`` entry, a tool in a server entry's own
+    ``autoApprove``, and an ``mcp`` allow in ``permissions``, which the worker
+    merge writes into the worker's ``allowedTools`` unless the worker *base*
+    already grants it. Each lets the worker run that tool with no prompt, so all
+    three are listed as ``allowedTools`` rows (``@server`` / ``@server/tool``).
     """
 
     return [
         {"section": "allowedTools", "id": ref, "change": "added"}
-        for ref in sorted(_approval_refs(after) - _approval_refs(before))
+        for ref in sorted(_approval_refs(after, base) - _approval_refs(before, base))
     ]
+
+
+def _unlisted_allow_added(before: dict[str, Any], after: dict[str, Any]) -> bool:
+    """Whether *after* holds a ``permissions`` allow that *before* did not, of a
+    shape no ``allowedTools`` ref expresses.
+
+    Such an allow grants on its own: KAS keeps a scoped or excluded one in the
+    block, and Crew's gate answers an unscoped shell or file one itself
+    (``kas_permissions.crew_answered_builtins``). An allow the list can express
+    is counted through its refs instead (:func:`_permission_refs`).
+    """
+    from kiro_crew.agent_sdk.kas_tool_view import permission_allow_derivable
+
+    held = {_digest(rule) for rule in _allow_rules(before)}
+    return any(
+        _digest(rule) not in held and not permission_allow_derivable(rule)
+        for rule in _allow_rules(after)
+    )
 
 
 def _runs_unasked(
     before: dict[str, Any], after: dict[str, Any], base: dict[str, Any] | None = None
 ) -> bool:
-    """Whether a newly selected tool intersects an approval the worker will hold.
+    """Whether the add lets a tool the worker can use run without a prompt.
 
-    A selector on a server the worker *base* declares counts too, against the
-    file's approvals and the base's own, since the worker inherits both.
+    A newly selected tool that intersects an approval the worker will hold
+    counts. A selector on a server the worker *base* declares counts too, against
+    the file's approvals and the base's own, since the worker inherits both. So
+    does a new ``permissions`` allow that grants with no ``allowedTools`` ref
+    (:func:`_unlisted_allow_added`); ``deny`` and ``ask`` rules never count.
     """
+    if _unlisted_allow_added(before, after):
+        return True
     existing = set(_kit_of(before)["tools"])
-    grants = _approval_refs(after)
+    grants = _approval_refs(after, base)
     new = [
         ref
         for ref in _kit_of(after)["tools"]
@@ -673,7 +744,7 @@ def preview(member: str, body: Any) -> dict[str, Any]:
         "changes": [
             *_directions_change(current, tkit.get("prompt") or ""),
             *_added(tkit, spec, base, new_spec),
-            *_approval_changes(spec, new_spec),
+            *_approval_changes(spec, new_spec, base),
             *_skipped(tkit, spec, base),
             *_exclusion_changes(spec, new_spec),
             *_muted_server_changes(spec, new_spec),
@@ -716,7 +787,14 @@ def apply_reporting(member: str, body: Any) -> tuple[dict[str, Any], bool]:
             raise WorkerKitError("stale_revision")
         if _digest(new_spec) != _digest(spec):
             atomic_write(path, json.dumps(new_spec, indent=2) + "\n", restrict_to_owner=True)
-            regrants = [row["id"] for row in _approval_changes(spec, new_spec)]
+            base = _worker_base_or_none()
+            if base is None:
+                # The preview leaves out a ``permissions`` allow the base already
+                # grants, which an unread base cannot show: only the listed
+                # channels re-grant, so a failed read restores no revoked approval.
+                regrants = sorted(_listed_refs(new_spec) - _listed_refs(spec))
+            else:
+                regrants = [row["id"] for row in _approval_changes(spec, new_spec, base)]
             revocations.record(path.stem, [], regrants)
             policy_changed = _digest(policy_of(new_spec)) != _digest(policy_of(spec))
     try:

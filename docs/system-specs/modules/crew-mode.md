@@ -4427,9 +4427,16 @@ file is the sum of what was added to it. A new crewmate's file is minimal
 reading any agent file, so everything it can do at first comes from the worker
 base. A preview writes nothing and lists each `added` and each `skipped` item,
 plus every auto-approval the add writes
-(`allowedTools` rows, from either channel) and every tool the template newly
-excludes. The apply needs the preview's `revision` (`_plan_revision`, binding
-the file and the result shown) or answers `stale_revision`. The template's
+(`allowedTools` rows, from any of three channels: an `allowedTools` entry, a
+server's `autoApprove`, and an `mcp` allow in `permissions`, which the worker
+merge writes into the worker's `allowedTools` as `mate_spec_policy.mcp_allow_refs`
+unless the worker base already grants it) and every tool the template newly
+excludes. Its `runs_unasked` says whether the add lets a tool run without a
+prompt: a newly selected tool that meets one of those grants, or a new
+`permissions` allow no `allowedTools` ref expresses (a scoped or excluded one KAS
+keeps, an unscoped shell or file one Crew's gate answers itself); a `deny` or
+`ask` rule never counts. The apply needs the preview's `revision`
+(`_plan_revision`, binding the file and the result shown) or answers `stale_revision`. Each approval row an apply writes is recorded as granted again (see *A revoked approval stays revoked*); when the worker base cannot be read at that moment, a `permissions` allow re-grants nothing, since the preview leaves out the ones the base already grants. The template's
 `excludedTools` join the file's, and its `hooks`, `permissions` and
 `toolsSettings` are layered into the file (`mate_worker_kit._carry_policy`), less
 every hook, rule and tool setting the worker base already holds

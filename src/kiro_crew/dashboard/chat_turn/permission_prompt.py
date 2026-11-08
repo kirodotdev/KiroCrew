@@ -368,6 +368,11 @@ async def _on_permission_prompt(
                 session_key,
                 (f"{_child_lf_warning}{event.title}" if _child_lf_warning else event.title),
                 event.tool_input or "",
+                # The identity as the event carries it: the Slack card names the
+                # server only when the flag proves the pair.
+                mcp_server_name=event.mcp_server_name,
+                tool_name=event.tool_name,
+                mcp_identity_trusted=event.mcp_identity_trusted,
             )
             if _slack_approval_ts is None and not fut.done():
                 # Delivery failed — do not park for the whole
@@ -767,33 +772,39 @@ async def _on_permission_prompt(
                 state=state,
             )
             return _Flow.BREAK
-        try:
-            _parsed_input = json.loads(event.tool_input) if event.tool_input else None
-        except Exception:
-            _parsed_input = None
-        try:
-            pre_hook_results = await _fire(
-                turn,
-                HOOK_EVENT_PRE_TOOL_USE,
-                tool_name=validated_tool,
-                tool_input=_parsed_input,
-                tool_id=event.harness_tool_id,
-                tool_identity=event.tool_name,
-                mcp_server=event.mcp_server_name,
-            )
-        except Exception as hook_exc:
-            await _reject_hook_error(
-                client,
-                slot,
-                event,
-                session_key=session_key,
-                error=str(hook_exc),
-                metadata={"reason": "interactive"},
-                refusal_reasons=_refusal_reasons,
-                refusal_notices=_refusal_notices,
-                state=state,
-            )
-            return _Flow.BREAK
+        # When the gate fired this call's PreToolUse hooks before the card and they
+        # passed, the answer does not run them a second time. A deny-rules override
+        # card is drawn before that fire, and with no context builder the gate never
+        # runs, so those calls fire them here.
+        pre_hook_results: list[str] = []
+        if not turn._pre_tool_hooks_fired:
+            try:
+                _parsed_input = json.loads(event.tool_input) if event.tool_input else None
+            except Exception:
+                _parsed_input = None
+            try:
+                pre_hook_results = await _fire(
+                    turn,
+                    HOOK_EVENT_PRE_TOOL_USE,
+                    tool_name=validated_tool,
+                    tool_input=_parsed_input,
+                    tool_id=event.harness_tool_id,
+                    tool_identity=event.tool_name,
+                    mcp_server=event.mcp_server_name,
+                )
+            except Exception as hook_exc:
+                await _reject_hook_error(
+                    client,
+                    slot,
+                    event,
+                    session_key=session_key,
+                    error=str(hook_exc),
+                    metadata={"reason": "interactive"},
+                    refusal_reasons=_refusal_reasons,
+                    refusal_notices=_refusal_notices,
+                    state=state,
+                )
+                return _Flow.BREAK
         if _pre_tool_hooks_should_block(pre_hook_results):
             await _reject_hook_blocked(
                 client,
