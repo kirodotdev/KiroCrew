@@ -33,6 +33,7 @@ from aiohttp import web
 
 from kiro_crew import _facade_mirror
 from kiro_crew.acp.types import TurnUsage
+from kiro_crew.dashboard.handlers.codex_usage import read_codex_rate_limits
 from kiro_crew.dashboard.handlers.usage_sessions import _CACHE_TTL, _usage_sessions_snapshot
 from kiro_crew.dashboard.handlers.usage_store import (  # noqa: F401 - usage_series reads these per row
     _coerce_int,
@@ -659,7 +660,7 @@ def get_usage_cache() -> dict:
 
 
 async def api_kiro_usage(request: web.Request) -> web.Response:
-    """GET /api/usage/kiro — local session analytics + cached billing."""
+    """GET /api/usage/kiro — local session analytics, cached billing and Codex's windows."""
     global _CACHE, _CACHE_TS
     now = time.time()
 
@@ -699,6 +700,7 @@ async def api_kiro_usage(request: web.Request) -> web.Response:
             "username": username,
             "sessions": sessions,
             "billing": billing,
+            "codex": await asyncio.to_thread(read_codex_rate_limits),
             "refreshing": refreshing,
         }
 
