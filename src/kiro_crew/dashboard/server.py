@@ -1204,7 +1204,7 @@ async def start_dashboard(
         # cleanup, before the instance tunnels and the crew-log drain it uses.
         # Imports nothing here; the puller is started after bind, below.
         app.on_cleanup.append(_stop_remote_puller)
-        _register_instances_hooks(app, state, port)
+        _register_instances_hooks(app, state, _dashboard_sock.getsockname()[1])
         _register_browser_harness_lifecycle(app, state)
         _register_connections_warm_lifecycle(app, state)
         _register_workflow_lifecycle(app, state)
