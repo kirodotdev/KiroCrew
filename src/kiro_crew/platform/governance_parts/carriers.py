@@ -135,7 +135,8 @@ class UpdatePins:
     # The release channel this fleet follows (one of :data:`UPDATE_CHANNELS`), in
     # place of the local ``$KIROCREW_HOME/channel`` file (RFC
     # crew-lts-edition, appendix row "Update channel"). Empty = unpinned:
-    # the local file decides, except an LTS build follows ``stable``.
+    # the local file decides. An LTS build follows ``lts`` whatever this
+    # says (RFC D11).
     channel: str = ""
     # The operator-authored shell commands for the command update provider. Their
     # PRESENCE is what enables the provider (there is no mechanism selector): when

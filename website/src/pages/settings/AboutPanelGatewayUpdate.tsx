@@ -250,6 +250,7 @@ export function AboutPanelGatewayUpdates({
   checkIntervalSecs,
   botName,
   autoUpdateSwitch,
+  unpublishedNotice,
 }: {
   gwUpdate: AboutPanelGatewayUpdateState
   showUpdate: boolean
@@ -270,6 +271,10 @@ export function AboutPanelGatewayUpdates({
   checkIntervalSecs: number
   botName: string
   autoUpdateSwitch: React.ReactNode
+  /** Shown instead of the check controls and the auto-update switch when the
+   *  followed channel has no published builds (the check is deferred); the
+   *  standing Restart row stays. */
+  unpublishedNotice?: React.ReactNode
 }) {
   const {
     gwChanges, gwTarget, gwTargetDisplay, gwChecked, gwError, gwUnavailableReason, gwCommandCopied,
@@ -281,7 +286,7 @@ export function AboutPanelGatewayUpdates({
   const namedTarget = gwTarget && gwTarget !== runningVersion ? gwTarget : ''
   return (
     <div className="flex flex-col gap-2.5">
-      {(showUpdate || channelMovePending) ? (
+      {unpublishedNotice ? unpublishedNotice : (showUpdate || channelMovePending) ? (
         <>
           {showUpdate && (
             <p className="text-sm text-muted flex items-center gap-1.5">
@@ -443,7 +448,7 @@ export function AboutPanelGatewayUpdates({
           )}
         </>
       )}
-      {autoUpdateSwitch}
+      {!unpublishedNotice && autoUpdateSwitch}
 
       {/* Standing maintenance action, NOT gated on an update being
           available. Restarting is how this install picks up code that

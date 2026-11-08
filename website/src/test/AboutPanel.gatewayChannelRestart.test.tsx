@@ -108,6 +108,38 @@ describe('AboutPanel gateway channel switcher', () => {
     expect(within(switcher).queryByTitle('Nightly')).toBeNull()
   })
 
+  it('shows the LTS lane read-only, with no switcher', async () => {
+    // RFC LTS edition D11: the backend holds an LTS build on lts
+    // and refuses every switch, so a control offering stable or insider would
+    // only fail.
+    stubFetch()
+    seedStatus({ update_channel: 'lts' })
+    mountWeb()
+
+    const row = await screen.findByTestId('gateway-channel-locked')
+    // A translated label, not the raw id.
+    expect(row.textContent).toContain('LTS (long-term support)')
+    expect(screen.queryByTestId('gateway-channel-switcher')).toBeNull()
+    expect(screen.queryByTestId('gateway-channel-unpublished')).toBeNull()
+  })
+
+  it('says why updates are off while the lts lane has no builds', async () => {
+    // The backend defers the check for an unpublished channel; without this
+    // line the user sees only "Not checked yet" and a locked row.
+    stubFetch()
+    seedStatus({ update_channel: 'lts', update_check_status: 'deferred' })
+    mountWeb()
+
+    const notice = await screen.findByTestId('gateway-channel-unpublished')
+    expect(notice.textContent).toContain('no builds have been published on the LTS (long-term support) channel')
+    // The notice is the only update message: no Check button or auto-update
+    // switch that could do nothing contradicts it.
+    expect(screen.queryByRole('button', { name: /check for updates/i })).toBeNull()
+    expect(screen.queryByText('Update the gateway automatically')).toBeNull()
+    // Restart is a standing maintenance action, not an update control.
+    expect(screen.getByTestId('gateway-restart-row')).toBeTruthy()
+  })
+
   it('keeps nightly on screen for an install already following it, as an exit', async () => {
     // A two-segment control whose value is `nightly` matches nothing and shows
     // no indicator at all -- the user could not tell which lane they are on.

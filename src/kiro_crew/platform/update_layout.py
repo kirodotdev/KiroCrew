@@ -29,6 +29,24 @@ from kiro_crew.platform.update_capability import (
 #: Release channels the installer publishes.
 RELEASE_CHANNELS = ("stable", "insider", "nightly")
 
+
+def channel_is_published(channel: str) -> bool:
+    """Whether *channel* has a feed and an installer lane.
+
+    False for the LTS edition's ``lts`` (RFC D11) until the release
+    pipeline publishes it: there is then no feed to read and ``cli.sh`` refuses
+    the channel, so no surface may offer an upgrade command for it.
+    shortcut: keyed on RELEASE_CHANNELS; drop it once the release pipeline
+    publishes lts and cli.sh accepts it.
+    """
+    return channel in RELEASE_CHANNELS
+
+
+def unpublished_channel_note(channel: str) -> str:
+    """The one sentence every surface shows for a channel with no builds yet."""
+    return f"Updates follow the {channel} channel, which has no published builds yet."
+
+
 #: Distributions managed by an external updater (desktop app, container), mapped
 #: to the copy shown for them. Built from the capability module's table so the
 #: CLI and the dashboard cannot show different words for the same state.
@@ -216,6 +234,8 @@ def non_managed_pip_upgrade_command(channel: str | None = None) -> PipUpgradeHin
     """
     if channel is None:
         channel = release_channel()
+    if not channel_is_published(channel):
+        return PipUpgradeHint(command=None, note=unpublished_channel_note(channel))
     pip = _running_interpreter_pip_prefix()
     pinned = _pinned_wheel_upgrade_command(channel, pip)
     if pinned is not None:
@@ -302,17 +322,19 @@ def detect_install_layout() -> InstallLayout:
 def policy_release_channel() -> str:
     """The channel the policy requires, or ``""`` when the local file decides.
 
-    The policy's ``updates.channel`` pin; with none, ``stable`` in an LTS
-    build. :func:`release_channel` and the channel-switch API both read this, so
-    the channel followed and the channel a switch may pick cannot disagree.
+    An LTS build follows only its own ``lts`` channel, whatever the policy
+    pins (RFC LTS edition D11). Otherwise the policy's ``updates.channel``
+    pin, or ``""``. :func:`release_channel` and the channel-switch API both read
+    this, so the channel followed and the channel a switch may pick cannot
+    disagree.
     """
     from kiro_crew.edition import is_lts
-    from kiro_crew.platform.governance import active_update_pins
+    from kiro_crew.platform.governance import LTS_UPDATE_CHANNEL, active_update_pins
 
+    if is_lts():
+        return LTS_UPDATE_CHANNEL
     pinned = active_update_pins().channel
-    if pinned in RELEASE_CHANNELS:
-        return pinned
-    return "stable" if is_lts() else ""
+    return pinned if pinned in RELEASE_CHANNELS else ""
 
 
 def release_channel() -> str:
@@ -326,9 +348,9 @@ def release_channel() -> str:
     ``shutil.rmtree``. Doing that on the event loop as a side effect of asking
     where a directory is is the blocking hazard this avoids.
 
-    A channel the policy pins (``updates.channel``) wins over the file; with no
-    pin an LTS build follows ``stable`` whatever the file says (RFC
-    LTS edition D3, appendix row "Update channel").
+    A channel the policy pins (``updates.channel``) wins over the file; an
+    LTS build follows ``lts`` whatever the file or the policy says (RFC
+    LTS edition D11, appendix row "Update channel").
     """
     required = policy_release_channel()
     if required:

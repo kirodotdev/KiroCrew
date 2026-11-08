@@ -499,7 +499,10 @@ const SUPPORTED_PLATFORMS = new Set(["darwin", "linux", "win32"]);
 // Byte host for human (manual) downloads -- deliberately the same CDN the
 // updater pulls from, so a manual reinstall lands on identical artifacts.
 const DOWNLOAD_BASE = "https://download.crew.kiro.dev";
-// Channels with a desktop publish lane. "dev" has none.
+// Channels with a desktop publish lane. "dev" has none. Nor, yet, does "lts"
+// (the LTS edition's channel, policy-channel.js): it joins this set in the
+// same change that publishes it (test_windows_signing_contract.py keeps the two
+// sets equal).
 const KNOWN_CHANNELS = new Set(["nightly", "insider", "stable"]);
 // Channels with a WINDOWS publish lane. publish-windows.yml is wired into
 // nightly.yml and both of release.yml's channels: insider publishes a fresh
@@ -599,14 +602,20 @@ function channelForVersion(version) {
  *
  * @param {"nightly"|"insider"|"stable"|null} stamped - channelForVersion(version)
  * @param {"insider"|"stable"|""|null|undefined} preference - user opt-in, falsy = default
- * @param {"nightly"|"insider"|"stable"|""} [required] - policy channel, "" = none
- * @returns {"nightly"|"insider"|"stable"|null}
+ * An LTS build requires `lts` (RFC crew-lts-edition D11). Its bytes
+ * carry a bare version, so it is a production stamp that follows `lts`. Whether
+ * `lts` has a publish lane is channelHasLane's question, not this one.
+ *
+ * @param {"nightly"|"insider"|"stable"|null} stamped - channelForVersion(version)
+ * @param {"insider"|"stable"|""|null|undefined} preference - user opt-in, falsy = default
+ * @param {"nightly"|"insider"|"stable"|"lts"|""} [required] - policy channel, "" = none
+ * @returns {"nightly"|"insider"|"stable"|"lts"|null}
  */
 function resolveChannel(stamped, preference, required = "") {
   if (stamped === null) return null;
   if (required) {
     if (stamped === "nightly") return required === "nightly" ? "nightly" : null;
-    return required === "insider" || required === "stable" ? required : null;
+    return required === "insider" || required === "stable" || required === "lts" ? required : null;
   }
   if (stamped === "nightly") return "nightly";
   if (preference === "insider" || preference === "stable") return preference;
