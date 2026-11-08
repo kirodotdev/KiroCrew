@@ -145,7 +145,10 @@ file. KAS's wire discards it from the server entry, so the projection carries
 each switched-off tool of a launched server as `@<server>/<tool>` in the
 agent's `excludedTools` (`kas_tool_limits.disabled_tool_exclusions`), the carrier
 the crewmate worker uses; KAS tags each MCP tool `@<server>/<tool>` and drops
-one whose tag equals an `excludedTools` entry. A member DM whose
+one whose tag equals an `excludedTools` entry. The harness adds the global
+`~/.kiro/settings/mcp.json` switches the same way (`kas_tool_limits.with_switched_off_tools`):
+the dashboard's tool-off action (`api_mcp_toggle_tool`) writes there, and the spec rebuild
+never copies one onto Crew's own servers. A member DM whose
 `agent.member_acp_backend` is `kiro` runs on KAS (the loader reads it so), so
 it honours them too. A crewmate's WORKER runs a spec built per session
 from the worker base plus that crewmate's file (`mate_worker.worker_session_spec`,
