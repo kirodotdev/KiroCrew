@@ -55,6 +55,10 @@ export default function GrillTree({ tree, dispatch, onExpand }: Props) {
   const [expandingIds, setExpandingIds] = useState<Set<string>>(new Set())
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const [tried, setTried] = useState<Set<string>>(new Set())
+  // Expand stays focusable while it runs (see the button), so a second press
+  // must be refused here. `expandingIds` only changes on a later render, so
+  // the press claims the node in this ref first.
+  const expandClaims = useRef<Set<string>>(new Set())
 
   const live = tree.filter(n => n.status !== 'pruned')
   const childrenOf = (id: string | null) => live.filter(n => n.parent === id)
@@ -63,10 +67,13 @@ export default function GrillTree({ tree, dispatch, onExpand }: Props) {
     setCollapsed(s => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n })
 
   async function expand(id: string) {
+    if (expandClaims.current.has(id)) return
+    expandClaims.current.add(id)
     setExpandingIds(s => new Set(s).add(id))
     try {
       await onExpand(id)
     } finally {
+      expandClaims.current.delete(id)
       setExpandingIds(s => { const next = new Set(s); next.delete(id); return next })
       setTried(s => new Set(s).add(id))
     }
@@ -125,8 +132,12 @@ export default function GrillTree({ tree, dispatch, onExpand }: Props) {
             {node.status === 'answered' ? (
               <>
                 <span className="text-text">{i18nT('apps.autoResearch.grillTree.answered')} {node.answer}</span>
-                <button onClick={() => expand(node.id)} disabled={atMaxDepth || spinning}
-                        className="flex items-center gap-1 text-accent disabled:opacity-40">
+                {/* `aria-disabled` while expanding, not `disabled`: the press
+                    that started it holds focus here, and a disabled button
+                    would drop it to <body>. At max depth it stays disabled. */}
+                <button type="button" onClick={() => { void expand(node.id) }} disabled={atMaxDepth}
+                        aria-disabled={spinning} aria-busy={spinning}
+                        className="flex items-center gap-1 text-accent disabled:opacity-40 aria-disabled:opacity-40 aria-disabled:cursor-not-allowed">
                   {spinning ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />} {i18nT('apps.autoResearch.grillTree.expand')}
                 </button>
                 {atMaxDepth && <span className="text-warn">{i18nT('apps.autoResearch.grillTree.max_depth_add_research_manually_or_prune')}</span>}
