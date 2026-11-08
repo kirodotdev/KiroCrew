@@ -32,8 +32,11 @@ _TOTAL_STEPS = 6
 
 # How often to poll CloudFormation events / the on-box log while launching.
 _PROGRESS_POLL_SECS = 8
-# Indirection so tests can stub the poll sleep.
+# A launch quiet for this long prints the elapsed time, so the wait never looks hung.
+_HEARTBEAT_SECS = 30
+# Indirections so tests can stub the poll sleep and the clock.
 _sleep = time.sleep
+_now = time.monotonic
 
 
 def _deploy_with_progress(
@@ -130,7 +133,9 @@ def _stream_progress(
     instance_id: str,
 ) -> None:
     """Poll + print stack events and on-box bootstrap log until the worker ends."""
+    started = last_output = _now()
     while worker.is_alive():
+        printed = False
         # 1) New stack resource events.
         try:
             for ev in ec2.list_stack_events(tag, profile, region):
@@ -142,11 +147,13 @@ def _stream_progress(
                 marker = "FAILED" in ev["status"]
                 line = f"  {ev['status']:<22} {ev['resource']}"
                 (ui.fail if marker else ui.detail)(line.rstrip())
+                printed = True
                 if ev["reason"] and (marker or "COMPLETE" not in ev["status"]):
                     ui.detail(f"      {ev['reason'][:200]}")
-                if ev["resource"] == "Instance" and not instance_id:
-                    st = ec2.describe(tag, profile, region)
-                    instance_id = str(st.get("instance_id", "") or "")
+                # The event's physical id IS the instance id; the stack's
+                # InstanceId output only exists once the WaitCondition completes.
+                if ev["resource"] == "Instance" and ev["physical_id"]:
+                    instance_id = ev["physical_id"]
         except AWSError:
             pass
         # 2) On-box bootstrap log tail (once the instance is up + SSM-managed).
@@ -156,6 +163,14 @@ def _stream_progress(
                     continue
                 seen_log_lines.add(logln)
                 ui.detail(f"      [box] {logln[:180]}")
+                printed = True
+        now = _now()
+        if printed:
+            last_output = now
+        elif now - last_output >= _HEARTBEAT_SECS:
+            mins, secs = divmod(int(now - started), 60)
+            ui.detail(f"  still working… {mins}:{secs:02d} elapsed")
+            last_output = now
         _sleep(_PROGRESS_POLL_SECS)
 
 
