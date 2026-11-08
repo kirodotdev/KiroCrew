@@ -155,11 +155,17 @@ class TestDeferredSubmission:
 
         manual_clock.install(monkeypatch, mcp_core)
         count = 128  # An eight-second POST per member outlives the progress ceiling.
+        beats = []
+        submitted = []
 
         def submit(path, body, **_kwargs):
+            if path == "/api/session-keepalive":
+                beats.append(body)
+                return {"ok": True}
             assert path == "/api/spawn"
+            submitted.append(body)
             manual_clock.advance(8)
-            return {"id": f"a{gateway.call_count}"}
+            return {"id": f"a{len(submitted)}"}
 
         gateway.side_effect = submit
         step = spawn_run("spawn_run", {"tasks": [f"task {i}" for i in range(count)]})
@@ -167,14 +173,19 @@ class TestDeferredSubmission:
         start = manual_clock.monotonic()
         for index in range(count):
             text = step.step()
-            assert gateway.call_count == index + 1
-            assert gateway.call_args.args[1]["task"] == f"task {index}"
+            assert len(submitted) == index + 1
+            assert submitted[-1]["task"] == f"task {index}"
             assert step.due_at() == manual_clock.monotonic()
             assert entry.progressing(manual_clock.monotonic())
             assert (text is not None) == (index == count - 1)
         assert manual_clock.monotonic() - start > PROGRESS_WEDGE_CEILING_SECS
         assert len(step.agent_ids) == count
         assert f"Spawned {count} subagent(s)." in text
+        # The submission outlives every silence bound, so the call beats through it.
+        # A step starts every 8 s and a beat is due 30 s after the last one, so
+        # the beats land every 32 s until the last step starts.
+        assert len(beats) == (count - 1) * 8 // 32
+        assert all(b["phase"] == "submit" for b in beats)
 
     def test_refused_name_skips_only_its_siblings_and_reconciles_each(self, gateway):
         from kiro_crew.mcp_tools.spawn import spawn_run

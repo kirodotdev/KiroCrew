@@ -708,6 +708,14 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "vetoed read or an unrouted delete, which is a defect, not a feature the "
         "reader would choose a harness by"
     ),
+    "ACP_BACKENDS_TOOL_SILENCE_TIMER": (
+        "whether each non-shell tool call gets its own silence timer, which needs a "
+        "harness whose tool frames name the MCP server of every MCP-served call. Both "
+        "states recover a call the harness lost, the timer within minutes and the "
+        "liveness windows later, and neither cuts a call that reports progress; a wrong "
+        "membership cuts a quiet MCP call at the built-in bound or recovers a lost call "
+        "late, which is a defect, not a feature the reader would choose a harness by"
+    ),
     "ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS": (
         "whether an advertised <model>[<effort>] id is applied as two writes. The "
         "model switch either lands or is refused, which its own line already says"

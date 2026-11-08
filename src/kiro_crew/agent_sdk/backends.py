@@ -266,6 +266,9 @@ with no row here.
    * - ``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL``
      - driver-internal (whether a kindless permission frame takes the preceding
        tool_call's ``kind``; read per frame by the session handle's wire accessor)
+   * - ``ACP_BACKENDS_TOOL_SILENCE_TIMER``
+     - driver-internal (whether the session handle gives each non-shell tool call
+       its own silence bound, read once per dispatched call)
    * - ``ACP_BACKENDS_DIRECT_CLIENT_CHILD_CALLS_MARKED``,
        ``ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED``
      - driver-internal (whether that transport's permission events say
@@ -1328,6 +1331,7 @@ from kiro_crew.agent_sdk.backends_routing import (  # noqa: E402,F401 - re-expor
     ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
     ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED,
     ACP_BACKENDS_SIDE_READONLY,
+    ACP_BACKENDS_TOOL_SILENCE_TIMER,
     Readback,
     Routing,
     gate_probe_command_for,

@@ -616,11 +616,12 @@ not lost while the person is in control: it waits for the hand-back and then
 runs**, which is how the agent resumes by itself after a sign-in. The wait lives in
 the TOOL, not in one HTTP call: the op route answers at once with
 `user_in_control` and `hold: true`, and the `browser` tool parks itself as a
-`DeferredTool` (the shim runs one worker thread, and the ACP tool-stall watchdog
-ends a tool call silent for 600 s) that every `HANDBACK_POLL_S` (5 s) posts
+`DeferredTool` (the shim runs one worker thread, and the call has its own silence
+timer on the ACP side, `acp-client.md` "Per-call silence timer") that every `HANDBACK_POLL_S` (5 s) posts
 `/api/browser/handback` -- a short long-poll of at most `HANDBACK_WAIT_S` (3 s) on
 `LiveHub.wait_for_release`, the awaitable the release sets -- and every 30 s pings
-the session keepalive. On `released` the op is posted again and runs. Bounded by
+the session keepalive with the call's heartbeat (`tool_call_id`, phase
+`waiting_for_handback`), beside the MCP progress note the stdio loop sends. On `released` the op is posted again and runs. Bounded by
 `HOLD_TIMEOUT_S` (10 minutes) from each park, owned by the gateway's hub
 (`LiveSession.parked_until`, one per session, so every call parked there hears
 the end; a re-posted op held again starts a new hold on both sides): a poll after it

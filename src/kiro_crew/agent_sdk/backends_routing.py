@@ -162,6 +162,20 @@ ACP_BACKENDS_META_IDENTITY: FrozenSet[str] = frozenset({ACP_BACKEND_GOOSE})
 # permission event can only narrow or veto.
 ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL: FrozenSet[str] = frozenset({ACP_BACKEND_KAS})
 
+# Backends whose ``tool_call`` frame says, in a field the harness writes, whether
+# an MCP server served the call, so the session handle can give each non-shell
+# call its own silence bound (``acp.tool_silence``): a built-in, an MCP tool on a
+# network or a stdio server, or a sub-agent call. kiro-cli names the server in
+# ``_meta.kiro.mcpServerName`` on an MCP call and stamps ``_meta.kiro.toolName``
+# on every tool, built-ins included (``acp_frames/kiro/tool-classes-b-live.jsonl``,
+# ``acp_frames/kiro/side-read-only-live.jsonl``); KAS names the server in
+# ``_meta.kiro.serverName`` on an MCP call and stamps the tool's ACP ``kind`` on a
+# built-in (``acp_frames/kas/mcp-live-apply-live.jsonl``,
+# ``acp_frames/kas/side-read-only-live.jsonl``). A harness outside the set keeps
+# the oracle-driven tool-stall rules alone: with no such field a quiet MCP call
+# reads as a built-in and would get the built-in's five-minute bound.
+ACP_BACKENDS_TOOL_SILENCE_TIMER: FrozenSet[str] = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
+
 # Backends whose sub-agent calls the direct ``AcpClient`` tells apart from the
 # parent's (``acp.client_permissions._is_child_permission_frame``): a frame under a
 # foreign ``sessionId`` (kiro-cli's sub-agents run in their own session), or a

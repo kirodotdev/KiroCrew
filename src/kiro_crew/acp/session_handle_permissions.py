@@ -111,6 +111,9 @@ async def approve_tool(
     ``AcpClient.approve_tool``.
     """
     gate_event = self._permission_gate_events.pop(request_id, None)
+    # Answered: the call's silence timer runs again from here (a withdrawn or
+    # ended grant puts the request back, and it is pending again).
+    self.note_ask_answered(getattr(gate_event, "tool_call_id", "") or "")
     # Taken first, before any await: it records the session's cancellation
     # generation, so a turn Stop at any point after this leaves no grant behind.
     capability = mediated_request_capability.ApprovalMint(self._session_key or "", gate_event)
@@ -248,6 +251,8 @@ async def reject_tool(self: AcpSessionHandle, request_id: str | int, reason: str
     """
     recorded = self._permission_options.pop(request_id, None)
     gate_event = self._permission_gate_events.pop(request_id, None)
+    # Answered, so the call's silence timer runs again from here.
+    self.note_ask_answered(getattr(gate_event, "tool_call_id", "") or "")
     # A deny (or cancel) invalidates any mediated-secret grant minted for this
     # call id (see ``AcpClient.reject_tool``).
     mediated_request_capability.invalidate_for_gate_event(self._session_key or "", gate_event)

@@ -1,13 +1,14 @@
 """The session's MCP servers.
 
-The launch roster the liveness oracle attributes a tool by, the init drain, the readiness
-wait, OAuth and sign-in offers, and the failed-server reattempt.
+The launch roster the liveness oracle attributes a tool by, the servers the silence timer
+reads as network servers, the init drain, the readiness wait, OAuth and sign-in offers,
+and the failed-server reattempt.
 
 Each function here whose first parameter is ``self`` is an ``AcpSessionHandle`` method: the
 class binds it by name, so it reads and writes the session's own state on the instance,
 and a patch of the method on the class or on an instance reaches every caller.
 
-Instance fields written: ``_config_options``, ``_mcp_launches``,
+Instance fields written: ``_config_options``, ``_mcp_launches``, ``_mcp_network_servers``,
 ``_mcp_reattempt_counts``, ``_mcp_reattempt_waiting``, ``_mcp_sign_in_completed``,
 ``_mcp_sign_in_ask``, ``_mcp_sign_in_asked``, ``_mcp_sign_in_dropped``, ``_mcp_sign_in_needed``,
 ``_mcp_sign_in_wanted``, ``_oauth_emitted_servers``, ``_pending_oauth_requests``.
@@ -147,6 +148,45 @@ def mcp_launch_roster(
     return {name: tuple(argvs) for name, argvs in roster.items()}, refused
 
 
+def mcp_network_servers(spec: object, wire_servers: object) -> frozenset[str]:
+    """The names of one session's MCP servers declared with a ``url``. Pure, never raises.
+
+    Read from the same two sources as :func:`mcp_launch_roster`. A server is a
+    network server only when no source declares it as a stdio ``command``, so a
+    name both ways keeps the longer stdio bound of the per-call silence timer
+    (``acp.tool_silence``). Bounded like the roster: at most ``BUCKET_CAP`` names
+    of at most ``NAME_CAP`` characters.
+    """
+    url_named: set[str] = set()
+    stdio_named: set[str] = set()
+
+    def _add(name: object, entry: object) -> None:
+        if not isinstance(name, str) or not name or len(name) > NAME_CAP:
+            return
+        if not isinstance(entry, Mapping):
+            return
+        url = entry.get("url")
+        if isinstance(url, str) and url:
+            if len(url_named) < BUCKET_CAP:
+                url_named.add(name)
+        elif _launch_argv(entry) is not None:
+            stdio_named.add(name)
+
+    try:
+        servers = spec.get("mcpServers") if isinstance(spec, Mapping) else None
+        if isinstance(servers, Mapping):
+            for name, entry in servers.items():
+                _add(name, entry)
+        if isinstance(wire_servers, (list, tuple)):
+            for element in wire_servers:
+                if isinstance(element, Mapping):
+                    _add(element.get("name"), element)
+    except Exception:
+        logger.debug("MCP network servers unreadable", exc_info=True)
+        return frozenset()
+    return frozenset(url_named - stdio_named)
+
+
 # MCP-server-init drain (parity with AcpClient._drain_notifications): after
 # set_mode, briefly consume the session queue so MCP-init/oauth/config frames
 # are processed before the first prompt, instead of racing into the first turn.
@@ -227,7 +267,7 @@ def _mcp_attribution_launches(
 
 
 def record_mcp_launches(self: AcpSessionHandle, spec: Any, wire_servers: Any) -> None:
-    """Record how this session launched its stdio MCP servers.
+    """Record how this session launched its stdio MCP servers, and which are network ones.
 
     *spec* is the agent spec the session runs and *wire_servers* the final
     ``mcpServers`` array it sent; both were already read by the runtime, so
@@ -242,6 +282,7 @@ def record_mcp_launches(self: AcpSessionHandle, spec: Any, wire_servers: Any) ->
         logger.debug("session %s: MCP launch roster not recorded", self._session_id, exc_info=True)
         roster, refused = {}, 0
     self._mcp_launches = roster
+    self._mcp_network_servers = mcp_network_servers(spec, wire_servers)
     if refused:
         logger.warning(
             "session %s: %d MCP server launch(es) past the roster bounds are not "

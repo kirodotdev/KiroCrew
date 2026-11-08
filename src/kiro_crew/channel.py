@@ -22,6 +22,7 @@ from enum import Enum
 from typing import Any
 
 from kiro_crew import name_grant, permission_floor
+from kiro_crew.agent_sdk.drivers.acp_vocab import continue_timed_out_calls
 from kiro_crew.approval_mode_policy import session_mode_permitted
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.channel_account_check import session_after_account_check
@@ -1398,7 +1399,9 @@ async def _stream_task(
     try:
         # Read before anything streams, as a channel bot's turn reads it.
         spec = await turn_spec(client, agent.agent_name)
-        async for event in client.stream(message):
+        # A call whose own silence timer ends the prompt is handed back to the
+        # model inside this turn, on the same session (``acp.timed_out_continuation``).
+        async for event in continue_timed_out_calls(client.stream, message):
             if event.kind == EVENT_TEXT_CHUNK:
                 chunks.append(event.text)
 

@@ -25,6 +25,7 @@ from kiro_crew.acp import session_handle_model_selection as _sh_models
 from kiro_crew.acp import session_handle_native_children as _sh_children
 from kiro_crew.acp import session_handle_permissions as _sh_permissions
 from kiro_crew.acp import session_handle_steering as _sh_steering
+from kiro_crew.acp import session_handle_tool_silence as _sh_silence
 from kiro_crew.acp import session_handle_turn as _sh_turn
 from kiro_crew.acp import session_handle_updates as _sh_updates
 from kiro_crew.acp import session_handle_watchdog as _sh_watchdog
@@ -73,6 +74,7 @@ _MEMBER_OWNERS = frozenset(
         "kiro_crew.acp.session_handle_native_children",
         "kiro_crew.acp.session_handle_permissions",
         "kiro_crew.acp.session_handle_steering",
+        "kiro_crew.acp.session_handle_tool_silence",
         "kiro_crew.acp.session_handle_turn",
         "kiro_crew.acp.session_handle_updates",
         "kiro_crew.acp.session_handle_watchdog",
@@ -110,6 +112,27 @@ class AcpSessionHandle:
     _emit_watchdog_metric = _sh_watchdog._emit_watchdog_metric
     _end_stalled_tool = _sh_watchdog._end_stalled_tool
     _input_wait_status = _sh_watchdog._input_wait_status
+    # The per-call silence timer: ``kiro_crew.acp.session_handle_tool_silence``.
+    _silence_class_for = _sh_silence._silence_class_for
+    _park_baseline = _sh_silence._park_baseline
+    _held_state = _sh_silence._held_state
+    note_tool_call_activity = _sh_silence.note_tool_call_activity
+    _retire_call_timer = _sh_silence._retire_call_timer
+    _note_call_frame = _sh_silence._note_call_frame
+    note_subagent_frame = _sh_silence.note_subagent_frame
+    note_tool_heartbeat = _sh_silence.note_tool_heartbeat
+    note_kas_subtask_frame = _sh_silence.note_kas_subtask_frame
+    _note_child_calls = _sh_silence._note_child_calls
+    _unrouted_child_frames_now = _sh_silence._unrouted_child_frames_now
+    _roster_route_proven = _sh_silence._roster_route_proven
+    _retire_unseen_subagent_timers = _sh_silence._retire_unseen_subagent_timers
+    _retire_unreachable_crew_timers = _sh_silence._retire_unreachable_crew_timers
+    _retire_silence_timers = _sh_silence._retire_silence_timers
+    _reset_tool_silence = _sh_silence._reset_tool_silence
+    _held_calls = _sh_silence._held_calls
+    _sync_silence_hold = _sh_silence._sync_silence_hold
+    note_ask_answered = _sh_silence.note_ask_answered
+    _silent_tool_call = _sh_silence._silent_tool_call
     # The session's MCP servers: ``kiro_crew.acp.session_handle_mcp``.
     _remote_flat_launches = _sh_mcp._remote_flat_launches
     _mcp_attribution_launches = _sh_mcp._mcp_attribution_launches
@@ -374,6 +397,34 @@ class AcpSessionHandle:
         # scan looks at its sockets. Empty means no server can be found, which
         # keeps the whole-tree sample and the full window.
         self._mcp_launches: dict[str, tuple[tuple[str, ...], ...]] = {}
+        # The servers the session declared with a ``url``, recorded beside the
+        # roster: an MCP call on one of them gets the network silence bound
+        # (``acp.tool_silence``), any other MCP call the stdio one.
+        self._mcp_network_servers: frozenset[str] = frozenset()
+        # The calls this session's native sub-agents have open this turn, of any
+        # kind (``_note_child_calls``), keyed by the child-scoped call and naming
+        # the call's own id: while one is open, a sub-agent call is not judged by
+        # its silence bound. Past the call map's bound the overflow flag holds
+        # it for the rest of the turn instead.
+        self._child_open_calls: dict[str, str] = {}
+        self._child_calls_overflow: bool = False
+        # The hold that pauses every call's silence timer while a KAS hook runs
+        # or an ask naming no call waits (``_sync_silence_hold``): the time
+        # banked this turn, since when one is open, and the turn's consumer park
+        # then: a hold banks only the time no park covers, so a stretch both
+        # parked and held is subtracted once. Subtracted like a park.
+        self._silence_held_total: float = 0.0
+        self._silence_held_since: float | None = None
+        self._silence_held_parked: float = 0.0
+        # The runtime's count of frames that named a session and reached none,
+        # taken at turn start (``_roster_route_proven``); None when the runtime
+        # cannot say, which proves nothing.
+        self._unrouted_child_frames_at_turn: int | None = None
+        # Whether ``/api/session-keepalive`` can reach this handle: set only when
+        # the session registry that route reads publishes this handle's provider
+        # (``kiro_crew.keepalive_route``). False times no call on Kiro Crew's
+        # own servers, whose heartbeat is their proof of activity.
+        self.keepalive_routed: bool = False
         self._oracle = LivenessOracle(
             sample_min_secs=self._watchdog.wellness_sample_secs,
             cleanup_tenancy=lambda: self._runtime.session_tenancy(self._session_id),
@@ -491,6 +542,12 @@ class AcpSessionHandle:
         # queue in the meantime). Pure queue-depth checks cannot see frames that
         # are temporarily held in a concurrent consumer's buffer list.
         self._ingress_seq: int = 0
+        # The share of those buffered frames that are this session's own (not a
+        # co-tenant's fanned-out frame). The same guard moves the tool-idle
+        # clock only when this advances, so a co-tenant frame that lands
+        # during the oracle await voids one verdict without restarting the
+        # tool-stall window.
+        self._own_ingress_seq: int = 0
         # Consumer-park accounting, read by the idle clocks in _dispatch_events
         # and by external observers via parked_for_secs(). `_parked_total` is
         # cumulative for the turn; `_parked_since` is set only while suspended at

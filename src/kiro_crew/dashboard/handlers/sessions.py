@@ -140,9 +140,15 @@ if TYPE_CHECKING:
         api_sessions_clearable_count,
     )
     from kiro_crew.dashboard.handlers.sessions_parts.live_turn import (  # noqa: F401
+        _HEARTBEAT_ID_MAX_CHARS,
+        _HEARTBEAT_SUBAGENTS_MAX,
+        _MODEL_THINK_WINDOW_DEFAULT_SECS,
+        _model_think_window,
+        _note_tool_heartbeat,
         _provider_steer_stamp,
         _resolve_app_approval,
         _service_wait_ping,
+        _subagent_activity_at,
         _wait_end_reason,
         api_approval_resolve,
         api_approvals,
@@ -238,6 +244,7 @@ if TYPE_CHECKING:
     from kiro_crew.security import redact_credentials  # noqa: F401
     from kiro_crew.security import redact_exfiltration_urls  # noqa: F401
     from kiro_crew.validation import sanitize_string  # noqa: F401
+    from kiro_crew.validation_parts.core_agent_schemas import SPAWN_BATCH_MEMBERS_MAX  # noqa: F401
 
 from aiohttp import web
 

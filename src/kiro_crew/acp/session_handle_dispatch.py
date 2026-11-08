@@ -15,8 +15,8 @@ Instance fields written: ``_awaiting_permission``, ``_codex_compaction_pending``
 
 Instance fields read: ``_awaited_responses``, ``_cancel_grace_secs``, ``_cancel_ts``,
 ``_cancelled``, ``chat_shared``, ``_engine_fallback``, ``_ingress_seq``, ``_kas_compact_turn``,
-``_keepalive_parked``, ``_keepalive_ts``, ``_parked_total``, ``_queue``, ``_runtime``,
-``_session_id``, ``_skill_reads``, ``_stale_eligible``, ``_steers_proven``,
+``_keepalive_parked``, ``_keepalive_ts``, ``_own_ingress_seq``, ``_parked_total``, ``_queue``,
+``_runtime``, ``_session_id``, ``_skill_reads``, ``_stale_eligible``, ``_steers_proven``,
 ``_tool_call_diff_path``, ``_tool_call_harness_tool_name``, ``_tool_call_input_redacted``,
 ``_tool_call_inputs``, ``_tool_call_is_shell``, ``_tool_call_mcp_server``,
 ``_tool_call_raw_params``, ``_tool_call_tool_name``, ``_turn_done``, ``_watchdog``,
@@ -57,10 +57,12 @@ from kiro_crew.acp.liveness import (
     INTERACTIVE_NARROWING_RISKS,
     VERDICT_DEAD,
     VERDICT_STUCK_INPUT,
+    VERDICT_UNKNOWN,
     VERDICT_WORKING,
 )
 from kiro_crew.acp.session_handle_watchdog import INTERACTIVE_POLICY_WAIT
 from kiro_crew.acp.stale_compaction import consume_stale_compaction_status
+from kiro_crew.acp.tool_silence import named_tool_call_id
 from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     EVENT_AGENT_SWITCHED,
@@ -104,6 +106,13 @@ logger = logging.getLogger("kiro_crew.acp.session_handle")
 #: a turn budget it never reaches, instead of racing the arm against the turn's
 #: own deadline.
 QUEUE_POLL_SECS = 5.0
+
+#: Shortest spacing between two reads of the per-call silence timers. The read
+#: runs at the top of every pass, frame or no frame, so a stream of frames that
+#: are not the silent call's cannot starve it; this keeps a fast stream from
+#: walking the in-flight calls once per frame. Named so a test can read it on
+#: every tick.
+SILENCE_CHECK_SECS = 1.0
 
 #: Longest a cancelled kiro turn waits for the metering frame behind its answer.
 #: The frame follows within milliseconds; the bound keeps a missing one from
@@ -157,6 +166,8 @@ async def _dispatch_events(
     # between quiet samples is judged on its longest silence, not on the one
     # flat reading that happens to land on a probe tick.
     tool_moved_ts = float("-inf")
+    # When the per-call silence timers are next read (``acp.tool_silence``).
+    silence_due = float("-inf")
 
     _buffered: list[JsonRpcMessage] = []
     _last_yield = time.monotonic()
@@ -254,6 +265,51 @@ async def _dispatch_events(
                     usage=self.last_prompt_stats.to_turn_usage(),
                 )
                 return
+
+            # Per-call silence timer (``acp.tool_silence``): each non-shell call
+            # in flight has its own bound, restarted only by a frame attributable
+            # to that call. Read at the top of every pass rather than only in the
+            # empty-queue arm below: frames that are not the silent call's (a
+            # co-tenant's fanned-out roster, a sibling call's streamed output)
+            # keep that arm from running at all, and a lost file edit beside a
+            # busy subagent would otherwise wait out the build-scale window. The
+            # oracle arm and the hard cap stay behind it; a shell call has no
+            # silence class and keeps their rules alone. The action is the same
+            # non-lethal tool-stall recovery, naming the silent call: the
+            # recovery prompt tells the model the call timed out, so it can retry.
+            # Read only with nothing queued: a frame still waiting there may be
+            # the silent call's own (its result, landed while this loop was in
+            # an await), and it is judged once it has been handled. Nor while a
+            # concurrent _wait_for_response runs (set_model, a command): it
+            # takes frames off this queue and holds them until its own answer
+            # comes, so a call's own frame can be out of sight in its buffer.
+            if (
+                self._tool_dispatched
+                and not self._cancelled
+                and self._queue.qsize() == 0
+                and not self._awaited_responses
+            ):
+                _silence_now = time.monotonic()
+                if _silence_now >= silence_due:
+                    silence_due = _silence_now + SILENCE_CHECK_SECS
+                    _silent = self._silent_tool_call(_silence_now)
+                    if _silent is not None:
+                        _silence_evidence = _silent.evidence()
+                        self._emit_watchdog_metric(
+                            "cancel",
+                            VERDICT_UNKNOWN,
+                            _silence_evidence,
+                            _silent.silence,
+                            window="silence",
+                        )
+                        async for ev in self._end_stalled_tool(
+                            VERDICT_UNKNOWN,
+                            _silence_evidence,
+                            _silent.silence,
+                            stalled=_silent.state,
+                        ):
+                            yield ev
+                        return
 
             # Cooperative yield, placed where the previous frame is fully
             # handled and the next one is not yet dequeued: every branch
@@ -355,12 +411,15 @@ async def _dispatch_events(
                     # Path B — concurrent _wait_for_response: it dequeues
                     # the frame (qsize unchanged), buffers it, and re-
                     # injects it later. _ingress_seq (incremented in
-                    # _wait_for_response for notification frames) advances.
+                    # _wait_for_response for every buffered frame) advances,
+                    # and _own_ingress_seq too when the frame is this
+                    # session's own.
                     #
                     # Combining both signals means an UNKNOWN-over-window
                     # cancel cannot fire while real activity is in-flight on
                     # either delivery path.
                     _ingress_before = self._ingress_seq
+                    _own_ingress_before = self._own_ingress_seq
                     _q_depth_before = self._queue.qsize()
                     _keepalive_before = self._keepalive_ts
                     verdict, evidence = await self._consult_oracle_offloaded(model_wait=False)
@@ -369,19 +428,20 @@ async def _dispatch_events(
                         self._ingress_seq != _ingress_before
                         or self._queue.qsize() > _q_depth_before
                     ):
-                        # Both clocks advance. Neither signal can name the
-                        # arriving frame's owner (it has not been dequeued),
-                        # so this deliberately keeps the guard's existing
-                        # fail-safe over-count — the same trade _ingress_seq
-                        # already documents at its increment. A co-tenant
-                        # frame landing inside the oracle await therefore
-                        # still defers the tool clock, but by ONE tick: when
-                        # it is dequeued the ownership check below leaves
-                        # last_own_data_ts alone, so the deferral cannot
-                        # compound into an unbounded one.
+                        # The verdict is void for this tick and the stale
+                        # clock advances. The tool clock moves only for a
+                        # frame proven to be this session's: one a concurrent
+                        # _wait_for_response buffered names its owner
+                        # (_own_ingress_seq), and one still queued is
+                        # dequeued next, where the ownership check below
+                        # decides. A co-tenant frame landing inside the
+                        # oracle await therefore costs one tick and keeps
+                        # the idle measured so far, so the next consult that
+                        # no frame interrupts acts on the whole window.
                         last_data_ts = time.monotonic()
-                        last_own_data_ts = last_data_ts
-                        parked_at_own_data = self._parked_total
+                        if self._own_ingress_seq != _own_ingress_before:
+                            last_own_data_ts = last_data_ts
+                            parked_at_own_data = self._parked_total
                         continue
                     if self._keepalive_ts > _keepalive_before:
                         # A keepalive for THIS session landed during the
@@ -668,6 +728,12 @@ async def _dispatch_events(
                 # (a co-tenant's), and only the runtime knows which.
                 last_own_data_ts = last_data_ts
                 parked_at_own_data = parked_at_data
+            else:
+                # Fanned out to several sessions: the runtime is shared, so a
+                # kiro-cli sub-agent of this session, whose frames carry its own
+                # sessionId, has its frames dropped, and its silence would be
+                # read off frames this session never saw.
+                self._retire_unseen_subagent_timers(runtime_shared=True)
             self.last_prompt_stats.event_count += 1
 
             # Turn-complete response
@@ -847,6 +913,13 @@ async def _dispatch_events(
                     if msg.id is not None:
                         await self._runtime.send_error(msg.id, -32600, "invalid request id")
                     continue
+                # The request is its call's frame (a child's: its sub-agent's).
+                # The human wait that follows is a consumer park, which every
+                # clock subtracts, so the call's timer is paused while it lasts.
+                if _perm_event.sub_session_id:
+                    self.note_subagent_frame()
+                else:
+                    self.note_tool_call_activity(_perm_event.tool_call_id)
                 # Before the fidelity gate: a tool the spec switched off is
                 # refused whether or not this consumer opted into the child
                 # contract, and naming that reason in the audit is more use
@@ -899,6 +972,9 @@ async def _dispatch_events(
                         ),
                     )
                     continue
+                # Pending until approve_tool or reject_tool takes it: an ask
+                # naming no call pauses every call's timer meanwhile.
+                self._sync_silence_hold()
                 # Mark BEFORE the yield: the consumer parks on this event, and
                 # an observer reading the park mid-flight must be able to tell
                 # "waiting for a human" from "the consumer stopped pulling".
@@ -909,15 +985,28 @@ async def _dispatch_events(
                 # itself (decline) unless this consumer can put it to a person;
                 # the returned event is the ask that consumer must answer. No
                 # trust tier applies: it is the server's requirement, not ours.
+                # The ask is its call's frame, as a permission request is; while
+                # it waits on a person the call is not judged, and the answer
+                # restarts its timer (answer_elicitation).
+                self.note_tool_call_activity(named_tool_call_id(msg.params))
                 _elicit_event = await self._handle_elicitation_request(msg)
                 if _elicit_event is None:
                     continue
+                self._sync_silence_hold()
                 # Same park marking as a permission: the consumer waits on a
                 # human here too, and an observer must not read that as a stall.
                 self._awaiting_permission = True
                 yield _elicit_event
             elif action == "server_request_unknown":
+                # A request this client cannot read that names one of this
+                # turn's calls: whatever it asked, that call's silence proves
+                # nothing from here on.
+                self._retire_call_timer(named_tool_call_id(msg.params))
                 await self._runtime.send_error(msg.id, JSONRPC_METHOD_NOT_FOUND, "Method not found")
+            elif action == "skip":
+                # A notification nothing here reads; one naming a call is a
+                # frame for it of a kind the silence timer cannot read.
+                self._retire_call_timer(named_tool_call_id(msg.params))
             elif action == "update":
                 for ev in self._handle_update(msg):
                     # Before the yield, so the observation is recorded even for a
@@ -1105,6 +1194,9 @@ async def _dispatch_events(
                         # children. Fanned-out rosters name no owner and
                         # must not be counted on every co-tenant.
                         self._note_native_roster(subs)
+                        # And its sub-agent calls' activity; a co-tenant's
+                        # roster restarts no timer of this session's.
+                        self.note_subagent_frame()
                     yield AcpEvent(
                         kind=EVENT_SUBAGENT_LIST,
                         subagents=subs,
@@ -1129,6 +1221,8 @@ async def _dispatch_events(
                     # Native-subtask residency seam (RFC §14.8): same
                     # count as _handle_update's plain-spelling route.
                     self._note_native_child(ssid)
+                    # A child's frame: its sub-agent call's activity.
+                    self.note_subagent_frame()
                     # A backend-internal child's update under the
                     # extension method `_kiro.dev/session/update`. BOTH
                     # session-update spellings are live carriers, not a
@@ -1178,6 +1272,7 @@ async def _dispatch_events(
                         cache_scope=ssid,
                         cache_overflow=self._tool_call_cache_overflow_for_wire(),
                     )
+                    self._note_child_calls(upd, ssid)
                     self._release_settled_tool_call(upd, ssid)
                 tcid = str(upd.get("toolCallId") or "")
                 # Single-source the text-shape read via the shared parser so the
@@ -1195,6 +1290,9 @@ async def _dispatch_events(
                 # is the session the user is already looking at.
                 own_session = bool(ssid) and ssid == self._session_id
                 if own_session:
+                    # kiro-cli's preview of this session's own call
+                    # (``tool_call_chunk``) is that call's frame.
+                    self._note_call_frame(upd)
                     continue
                 if ssid and tcid:
                     # A child's tool call is this session's side effect for

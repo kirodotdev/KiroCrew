@@ -27,6 +27,7 @@ from kiro_crew.agent_sdk.drivers.acp_vocab import (
     STOP_CLASS_STALLED,
     STOP_RECOVERY_MAX_RETRIES,
     classify_stop_reason,
+    continue_timed_out_calls,
 )
 from kiro_crew.agent_sdk.mcp_problems import (
     UNATTENDED_MCP_WAIT_SECS,
@@ -945,7 +946,10 @@ async def execute_task(
             # build and episodic-query embed above are turn setup, not the turn,
             # and this loop re-runs per attempt so each row measures its own turn.
             _turn_t0 = _time.monotonic()
-            async for event in client.stream(full_prompt):
+            # A call whose own silence timer ends the prompt is handed back to the
+            # model on this session (``acp.timed_out_continuation``), so the step
+            # goes on with what it already did instead of re-running from the top.
+            async for event in continue_timed_out_calls(client.stream, full_prompt):
                 if event.kind == EVENT_TEXT_CHUNK:
                     _attempt_emitted = True
                     result_text += event.text

@@ -202,6 +202,8 @@ async def answer_elicitation(
     # Popped only once the payload is built: a content error above leaves the
     # request pending for a corrected answer.
     self._pending_elicitations.pop(request_id, None)
+    # Answered: the call's silence timer runs again from here.
+    self.note_ask_answered(request.tool_call_id)
     self._audit_elicitation_decision(
         request_id, action, "consumer", tool_call_id=request.tool_call_id, mode=request.mode
     )

@@ -9,7 +9,8 @@ and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_abandoned_steering``, ``_awaited_responses``,
 ``_cancel_grace_secs``, ``_cancel_ts``, ``_cancelled``, ``_ingress_seq``,
-``_release_task``, ``_session_key``, ``_stale_probe``, ``_steering_answers``.
+``_own_ingress_seq``, ``_release_task``, ``_session_key``, ``_stale_probe``,
+``_steering_answers``.
 
 Instance fields read: ``_pending_elicitations``, ``_prompt_or_tool_seen``, ``_queue``,
 ``_runtime``, ``_session_id``, ``_steering_settled``, ``delete_delay_secs``,
@@ -480,6 +481,12 @@ async def _wait_for_response(
             # completion was sitting in this buffer. A spurious bump only
             # defers one watchdog tick, so over-counting is fail-safe.
             self._ingress_seq += 1
+            if not msg.fanout_no_owner:
+                # A frame routed to this session (a response, or a
+                # notification that names it) is this session's own
+                # progress, so the guard may move the tool-idle clock for
+                # it. A co-tenant's fanned-out frame only voids one tick.
+                self._own_ingress_seq += 1
             buffered.append(msg)
         raise AcpTimeoutError(f"Timeout waiting for response to request {req_id}")
     finally:

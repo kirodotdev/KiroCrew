@@ -51,6 +51,7 @@ from kiro_crew.acp.types import (
     EVENT_STRUCTURED_STATUS,
     EVENT_SUBAGENT_ACTIVITY,
     EVENT_TEXT_CHUNK,
+    EVENT_THINKING_CHUNK,
     EVENT_TODO_UPDATE,
     EVENT_TOOL_CALL,
     EVENT_TOOL_CALL_UPDATE,
@@ -291,6 +292,8 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
         # No HostBudget charge: a native child lives INSIDE the parent's
         # runtime process, whose residency is already charged.
         self._note_native_child(frame_sid)
+        # A child's frame is its sub-agent call's activity, and no other call's.
+        self.note_subagent_frame()
         # A ``kirocrew/status`` riding a CHILD-routed frame is not this
         # session's status: the native sub-agent has no task row of its own
         # (its recovery boundary is the parent session), so its wait must
@@ -311,6 +314,7 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
             cache_scope=frame_sid,
             cache_overflow=self._tool_call_cache_overflow_for_wire(),
         )
+        self._note_child_calls(update, frame_sid)
         # A child's rows share the parent's stores and the admission's
         # population; released here under the child's own scope, since
         # this arm re-tags only the call and text events and the terminal
@@ -345,6 +349,15 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
         return out
 
     session_update = update.get("sessionUpdate", "")
+    # A frame naming one of this turn's calls is that call's own activity, the
+    # one thing that restarts its silence timer (``acp.tool_silence``), and one
+    # of a kind the timer does not read retires it. A KAS sub-agent's nested
+    # call names a child id this turn does not hold, so it does nothing here.
+    self._note_call_frame(update)
+    # A KAS frame naming one of this session's sub-agents, of any kind (its
+    # thinking and usage included, which return before the KAS branch below),
+    # is that sub-agent's activity.
+    self.note_kas_subtask_frame(update)
 
     # usage_update updates context stats only — it is not an AcpEvent.
     # parse_usage_update reconciles the flat (AcpClient) and nested shapes.
@@ -415,6 +428,9 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
         if session_update in ("tool_call", "tool_call_update"):
             kas_sub_events = self._handle_kas_subagent(update)
             if kas_sub_events is not None:
+                # A pipeline frame names no subtask of its own, so it is
+                # stamped here as well as by note_kas_subtask_frame above.
+                self.note_subagent_frame()
                 return kas_sub_events
             _child_prefix = self._build_child_tool_activity_prefix(update)
             if _child_prefix:
@@ -443,6 +459,7 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
                     cache_scope=self._session_id,
                     cache_overflow=self._tool_call_cache_overflow_for_wire(),
                 )
+                self._note_child_calls(update, "kas-child")
                 self._release_settled_tool_call(update, self._session_id)
                 return _child_prefix
         if session_update == "agent_message_chunk":
@@ -471,6 +488,17 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
         cache_scope=self._session_id,
         cache_overflow=self._tool_call_cache_overflow_for_wire(),
     )
+    if (
+        session_update in (UPDATE_AGENT_MESSAGE_CHUNK, UPDATE_AGENT_THOUGHT_CHUNK)
+        and not msg.fanout_no_owner
+        and any(ev.kind in (EVENT_TEXT_CHUNK, EVENT_THINKING_CHUNK) for ev in events)
+    ):
+        # The model's own next step. It starts only once every call of its batch
+        # has returned to it, so the calls dispatched before this frame are no
+        # longer the turn's to time out, terminal frame or not; the oracle and
+        # the hard cap keep them. A call its harness never terminates gets no
+        # timer at all (``tool_silence.HARNESS_UNTERMINATED_TOOLS``).
+        self._retire_silence_timers(update)
     if (
         session_update == "agent_message_chunk"
         and not update.get("messageId")
@@ -546,10 +574,14 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
             # and counter samples never bleed across tools — including from a
             # walk still running against the previous tool's command.
             _server, _tool_name = ToolCallState.identity_of(ev)
+            # The call's own silence timer starts at this dispatch; only a frame
+            # attributable to it restarts it (``acp.tool_silence``).
+            _silence_class, _silence_server = self._silence_class_for(ev)
+            _dispatch_ts = time.monotonic()
             inflight_tool = ToolCallState(
                 title=ev.title,
                 command=ev.tool_input,
-                dispatch_ts=time.monotonic(),
+                dispatch_ts=_dispatch_ts,
                 dispatch_boot_ts=boottime_now(),
                 dispatch_steady_ts=steady_now(),
                 dispatch_parked_secs=self._parked_total,
@@ -560,6 +592,10 @@ def _handle_update(self: AcpSessionHandle, msg: JsonRpcMessage) -> list[AcpEvent
                 mcp_server_name=_server,
                 tool_name=_tool_name,
                 interactive_risk=(interactive.risk if interactive else INTERACTIVE_NONE),
+                silence_class=_silence_class,
+                silence_server=_silence_server,
+                last_activity_ts=_dispatch_ts,
+                activity_parked=self._park_baseline(_dispatch_ts),
             )
             # The shared hand-off rule stores the call by id and makes it the
             # judged one (the interactive classification rides as the aux

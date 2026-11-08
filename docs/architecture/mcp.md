@@ -6056,6 +6056,30 @@ a daemon thread into a queue the loop waits on with the same short timeout; the
 worker, the parked-call timer, cancels and ping answers do not depend on how a
 frame was read.
 
+**The progress heartbeat.** A parked call whose `tools/call` carried a
+`_meta.progressToken` (a string or an integer; `request_progress_token`) gets an
+MCP `notifications/progress` every `PROGRESS_HEARTBEAT_SECS` (30s) while it is
+progressing (`progress_heartbeat`): its own token, a `progress` count that only
+grows, and its current phase as the `message`, which is
+`DeferredTool.progress_phase()` (the tool's own `phase`, or a word it names:
+`wait` says `waiting`, `ask_question` and the browser's ask say
+`waiting_for_answer`, the hand-back `waiting_for_handback`, `spawn_run` and
+`spawn_sub_agents` their `submit` / `poll` / `hold` / `collect`). A call whose step is stuck past
+`DEFERRED_STEP_STUCK_SECS`, or whose cancel landed, skips that beat. On the pooled
+topology the gateway routes the frame to the one stub whose request carried the
+token, like any progress notification. Each step also runs with
+`mcp_caller.current_tool_call_id()` set to the harness call the request was
+approved under, so a step's keepalive POST names its call
+(`mcp_caller.heartbeat_fields`: `tool_call_id` and `phase`) and the session's
+per-call silence timer (`acp-client.md`, "Per-call silence timer") restarts that
+call alone. Together they are how Kiro Crew's own long tools stay inside a 5 to 30
+minute silence bound without an exemption list; a `wait` whose identity is a guess
+still pings with an empty body, which names no call. The keepalive reaches only a
+session the gateway's own registry holds (`kiro_crew.keepalive_route`), so a session
+held anywhere else (`kirocrew chat`, `kirocrew run`, a sub-agent run on a shared
+session) does not time these tools' calls at all, and the oracle and the hard cap
+judge them there.
+
 **The in-flight report.** A backend whose long calls are all deferred can prove
 they are healthy. When the client's `initialize` declared
 `mcp_caller.INFLIGHT_CAPABILITY_KEY` under `capabilities.experimental`, the loop

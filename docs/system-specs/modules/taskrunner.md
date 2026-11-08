@@ -551,7 +551,12 @@ Inside a step (`task_executor.execute_task(..., taskq=handle)`):
   releases the lane slot, waits `_recovery_delay(delay)` (a module seam), then
   `reclaim`s the row under a NEW generation -- the interrupted turn's late
   writes are fenced as `stale_result` -- and re-runs the turn with a prompt that
-  names the stall. `execute_task` is a coroutine on the gateway loop, so every
+  names the stall. A turn that ends because a call's own silence timer ran
+  out never reaches this arm while its continuation budget lasts: the step's
+  stream runs through `continue_timed_out_calls`, which tells the same session
+  the call timed out and goes on with the model's answer inside the same turn,
+  at most `STOP_RECOVERY_MAX_RETRIES` times, the completion's usage summed over
+  both prompts. `execute_task` is a coroutine on the gateway loop, so every
   handle write it makes goes through an `*_async` seam (`recovering_async`,
   `running_async`) and every answer read through `recorded_answer_async` /
   `consume_answer_async`: the DB half runs on the store's writer thread, the
