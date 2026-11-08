@@ -373,8 +373,9 @@ on its next match, never drops the skill.
 
 kiro-cli compacts its own window and drops the session-start blocks with it.
 `SessionManager.mark_needs_reinjection` arms a one-shot flag on confirmed
-compaction, and the Claude branch arms it when its compaction times out
-after taking the turn semaphore
+compaction, the Claude branch arms it when its compaction times out
+after taking the turn semaphore, and the harness-managed (KAS) branch when
+its `/compact` fails with no status reported
 ([session](../system-specs/modules/session.md), "Context compaction"); the
 next turn reads it through `consume_reinjection` (owned by
 `messaging/turn_bracket.py`, re-exported from `messaging/dispatch.py`) and passes
