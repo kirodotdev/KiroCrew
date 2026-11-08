@@ -275,8 +275,9 @@ describe('CrewmateSwitcher star', () => {
   it('holds the star while its write is in flight', async () => {
     setup({ onToggleStar: vi.fn(), starPending: new Set(['fixer']) })
     const list = await open()
-    expect(within(list).getByTestId('crewmate-switcher-star-fixer')).toBeDisabled()
-    expect(within(list).getByTestId('crewmate-switcher-star-oncall')).not.toBeDisabled()
+    // Held with aria-disabled, so a focused star keeps its focus.
+    expect(within(list).getByTestId('crewmate-switcher-star-fixer')).toHaveAttribute('aria-disabled', 'true')
+    expect(within(list).getByTestId('crewmate-switcher-star-oncall')).not.toHaveAttribute('aria-disabled')
   })
 })
 

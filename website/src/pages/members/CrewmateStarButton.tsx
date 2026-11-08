@@ -39,10 +39,13 @@ export default function CrewmateStarButton({
       type="button"
       onClick={(e) => {
         e.stopPropagation()
-        onToggle(m)
+        if (!pending) onToggle(m)
       }}
       aria-pressed={!!m.starred}
-      disabled={pending}
+      // Held, never `disabled`, while the write is in flight: disabling the
+      // star a reader just pressed blurs it to <body>, and an unstarred star at
+      // md+ is shown only while hovered or focused, so it would vanish too.
+      aria-disabled={pending || undefined}
       aria-label={label}
       title={label}
       // 24x24 minimum target (the icon is 13px): a touch that lands beside
