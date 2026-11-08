@@ -8359,6 +8359,7 @@
       "run": "Run",
       "run_now_2": "Run now",
       "select": "Select {{name}}",
+      "strict_badge": "Exact time",
       "view_last_result": "View last result",
       "batchActions": {
         "actions_for_selected": "Actions for the checked jobs",
@@ -8370,6 +8371,8 @@
         "run_skipped_running": "{{name}} (already running)",
         "batch_failed_one": "{{action}}: {{failed}} of {{count}} job failed. Failed jobs stay selected.",
         "batch_failed_other": "{{action}}: {{failed}} of {{count}} jobs failed. Failed jobs stay selected.",
+        "batch_failed_reason_one": "{{action}}: {{failed}} of {{count}} job failed ({{reason}}). Failed jobs stay selected.",
+        "batch_failed_reason_other": "{{action}}: {{failed}} of {{count}} jobs failed ({{reason}}). Failed jobs stay selected.",
         "run_confirm_body": "Each job starts a new run now. Paused and running jobs are skipped.",
         "run_confirm_title_one": "Run {{count}} job now?",
         "run_confirm_title_other": "Run {{count}} jobs now?",

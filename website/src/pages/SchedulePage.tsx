@@ -4,7 +4,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { Trans } from 'react-i18next'
 import { useImeGuard } from '../hooks/useImeGuard'
 import Clickable from '../components/Clickable'
-import { List, CalendarDays, CalendarClock, Plus, ClipboardList, ChevronRight, Globe, History, Trash2, FolderPlus, MoreHorizontal, Pencil, Folder, LayoutGrid, GitPullRequestArrow, Download, KeyRound, Info, X, Loader2 } from 'lucide-react'
+import { List, CalendarDays, CalendarClock, Plus, ClipboardList, ChevronRight, Globe, History, Trash2, FolderPlus, MoreHorizontal, Pencil, Folder, LayoutGrid, GitPullRequestArrow, Download, KeyRound, Info, X, Loader2, Clock } from 'lucide-react'
 import { api, type MemberRosterRow } from '../api/client'
 import { membersRosterQuery } from '../api/membersQuery'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -1196,7 +1196,7 @@ export default function SchedulePage() {
                     the page -- it was spending the column's pixels to fit fewer
                     characters. `fmtCron`'s raw-expression fallback stays legible
                     without it. */}
-                <TableCell className="truncate" title={j.schedule}>{scheduleLabel(j)}{j.timezone && <span className="block truncate text-[11px] text-muted">{jobZoneCaption(j)}</span>}</TableCell>
+                <TableCell className="truncate" title={j.schedule}>{scheduleLabel(j)}{j.timezone && <span className="block truncate text-[11px] text-muted">{jobZoneCaption(j)}</span>}{j.strict_schedule && <span className="flex items-center gap-1 text-[11px] text-muted" title={i18nT('pages.schedulePage.enable_strict_schedule_no_jitter')} data-testid="schedule-strict-badge"><Clock size={11} className="shrink-0" aria-hidden="true" />{i18nT('pages.schedulePage.strict_badge')}</span>}</TableCell>
                 <TableCell className="align-top"><CollapsibleMessage message={j.script ? j.script : j.command ? j.command : j.safeMessage} /></TableCell>
                 <TableCell title={j.last_error ? '' : j.last_result || ''}><span className="block truncate">{j.is_running ? <Badge variant="ok"><span className="inline-block w-1.5 h-1.5 rounded-full bg-ok animate-pulse mr-1 align-middle" />{i18nT('pages.schedulePage.running')}</Badge> : j.enabled ? (j.last_status === 'ok' ? <Badge variant="ok">{i18nT('pages.schedulePage.ok')}</Badge> : isPartlyBlocked(j) ? <Badge variant="warn" title={`${i18nT('pages.schedulePage.partial_hint')}\n${j.last_error || ''}`}>{i18nT('pages.schedulePage.partial')}</Badge> : j.last_status === 'error' ? <Badge variant="err">{i18nT('pages.schedulePage.error')}</Badge> : <Badge variant="ok">{i18nT('pages.schedulePage.ready')}</Badge>) : <Badge variant="warn">{i18nT('pages.schedulePage.paused')}</Badge>}</span></TableCell>
                 <TableCell className="text-muted">

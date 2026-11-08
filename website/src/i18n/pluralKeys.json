@@ -538,6 +538,7 @@
   "pages.chat.gatewayNotice.background_turn_waited",
   "pages.chat.gatewayNotice.eager_spawn_stopped",
   "pages.schedulePage.batchActions.batch_failed",
+  "pages.schedulePage.batchActions.batch_failed_reason",
   "pages.schedulePage.batchActions.changes_n_jobs",
   "pages.schedulePage.batchActions.run_confirm_title"
 ]

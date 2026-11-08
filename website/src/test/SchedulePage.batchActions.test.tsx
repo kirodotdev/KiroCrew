@@ -180,28 +180,39 @@ describe('SchedulePage batch actions', () => {
     expect(await screen.findByRole('dialog')).toHaveTextContent('Delete 1 scheduled job?')
   })
 
-  it('keeps failed jobs checked and names the count', async () => {
+  it('keeps failed jobs checked and names the count and the reason', async () => {
     const api = await renderChecked(['Alpha job', 'Gamma job'])
     vi.mocked(api).toggleCron.mockImplementation(async (id: string) => {
-      if (id === 'c') throw new Error('nope')
+      if (id === 'c') throw new Error('job is already running')
       return {}
     })
     openMenu()
     fireEvent.click(menuItem('Pause'))
 
-    expect(await screen.findByText('Pause: 1 of 2 jobs failed. Failed jobs stay selected.')).toBeInTheDocument()
+    expect(await screen.findByText('Pause: 1 of 2 jobs failed (job is already running). Failed jobs stay selected.')).toBeInTheDocument()
     const rowCheckbox = (name: string) =>
       within(screen.getByText(name).closest('tr') as HTMLElement).getByRole('checkbox')
     expect(rowCheckbox('Gamma job')).toBeChecked()
     expect(rowCheckbox('Alpha job')).not.toBeChecked()
   })
 
-  it('counts a refusal reported in the response body as a failure', async () => {
+  it('counts a refusal reported in the response body as a failure and names its reason', async () => {
     const api = await renderChecked(['Beta job'])
     vi.mocked(api).toggleCron.mockResolvedValue({ error: 'not your job' })
     openMenu()
     fireEvent.click(menuItem('Resume'))
-    expect(await screen.findByText('Resume: 1 of 1 job failed. Failed jobs stay selected.')).toBeInTheDocument()
+    expect(await screen.findByText('Resume: 1 of 1 job failed (not your job). Failed jobs stay selected.')).toBeInTheDocument()
+  })
+
+  it('omits the reason when the failure carries none', async () => {
+    const api = await renderChecked(['Alpha job', 'Gamma job'])
+    vi.mocked(api).toggleCron.mockImplementation(async (id: string) => {
+      if (id === 'c') throw 'bare rejection'  // not an Error: no message to show
+      return {}
+    })
+    openMenu()
+    fireEvent.click(menuItem('Pause'))
+    expect(await screen.findByText('Pause: 1 of 2 jobs failed. Failed jobs stay selected.')).toBeInTheDocument()
   })
 
   it('disables an action no checked job would change', async () => {
