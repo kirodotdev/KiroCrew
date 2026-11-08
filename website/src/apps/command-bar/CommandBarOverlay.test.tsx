@@ -493,20 +493,26 @@ describe('CommandBarOverlay rows', () => {
     // today's field list, is what is pinned here. The overlay's reader also carried
     // an `as Promise<AppNavRecord[]>` assertion, which would have hidden exactly the
     // divergence this guards; it type-checks without one, so it no longer has one.
+    //
+    // Only product sources are read: a test file never writes the shared cache, and
+    // test files are ~60% of website/src. Reading all ~7000 files synchronously ran
+    // past the 15 s test timeout on Windows, where every open is scanned (#32921).
     const srcRoot = path.join(__dirname, '..', '..')
-    const files: string[] = []
+    const bodies: string[] = []
     const pending = [srcRoot]
     while (pending.length) {
       const dir = pending.pop()!
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
         const file = path.join(dir, entry.name)
         if (entry.isDirectory()) pending.push(file)
-        else if (/\.tsx?$/.test(entry.name) && readFileSync(file, 'utf-8').includes("queryKey: ['apps']")) files.push(file)
+        else if (/\.tsx?$/.test(entry.name) && !/\.test\.|\.spec\./.test(entry.name)) {
+          const body = readFileSync(file, 'utf-8')
+          if (body.includes("queryKey: ['apps']")) bodies.push(body)
+        }
       }
     }
-    expect(files.length).toBeGreaterThanOrEqual(3)
-    for (const f of files) {
-      const body = readFileSync(f, 'utf-8')
+    expect(bodies.length).toBeGreaterThanOrEqual(3)
+    for (const body of bodies) {
       // Invalidation-only call sites hold no queryFn and cannot diverge.
       const readers = body.match(/queryKey: \['apps'\],\s*\n\s*queryFn:[^\n]*/g) ?? []
       for (const reader of readers) {
