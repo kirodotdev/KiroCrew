@@ -8,6 +8,7 @@ of a relocated builtin skill's old copy. The family's other files are described 
 
 from __future__ import annotations
 
+import logging
 import time
 from pathlib import Path
 
@@ -375,6 +376,31 @@ class TestSkillsLoader:
         always = loader.get_always_skills()
         assert "memory" in always
         assert "weather" not in always
+
+    def test_inclusion_always_without_always_true_is_named_once(self, tmp_path, caplog):
+        """``inclusion: always`` is the steering key: a skill carrying it alone stays
+        on demand, and the listing says so once instead of ignoring it silently."""
+        skills_dir = tmp_path / "skills"
+        _create_skill(
+            skills_dir,
+            "talk",
+            "---\nname: talk\ndescription: Talk\ninclusion: always\n---\n# Talk\n",
+        )
+        _create_skill(
+            skills_dir,
+            "both",
+            "---\nname: both\ndescription: Both\ninclusion: always\nalways: true\n---\n# Both\n",
+        )
+        loader = _settled(SkillsLoader(skills_path=skills_dir, install_builtins=False))
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.skills"):
+            loader.list_skills()
+            rows = loader.list_skills()
+
+        assert {row["key"]: row["always"] for row in rows} == {"talk": False, "both": True}
+        named = [r.getMessage() for r in caplog.records if "inclusion: always" in r.getMessage()]
+        assert len(named) == 1, named
+        assert str(Path("talk") / "SKILL.md") in named[0]
+        assert "always: true" in named[0]
 
     def test_get_context(self, tmp_path):
         skills_dir = tmp_path / "skills"
