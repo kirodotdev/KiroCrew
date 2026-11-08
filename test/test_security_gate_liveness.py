@@ -706,7 +706,11 @@ def _url_payload_command(n: int) -> str:
 #: a shell reads, a command after a heredoc, a ``\n`` escape in ``$'...'``). Deny-only:
 #: the default read is unchanged and nothing the floor refused is allowed now; the
 #: walk is bounded by ``rm_floor._WALK_BUDGET_CHARS``.
-_PACKAGE_LINE_BUDGET = 34_936
+#: Raised by 31, from 34,936, for ``readonly_bash``'s ``uniq`` operand walk (a bare
+#: ``-`` is an operand, every word after the first operand is one, and a glob in
+#: any word prompts) and the ``git blame --output`` write flag. Nothing is
+#: relaxed. Re-measured.
+_PACKAGE_LINE_BUDGET = 34_967
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

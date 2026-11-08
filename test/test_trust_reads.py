@@ -333,6 +333,48 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("cat f | sort -u") is True
         assert is_read_only_bash("cat f | uniq -c") is True
 
+    def test_uniq_stdin_dash_is_an_operand_before_the_output_file(self):
+        """A bare `-` names stdin as uniq's INPUT, so the next word is its output."""
+        assert is_read_only_bash("cat f | uniq - /tmp/pwned") is False
+        assert is_read_only_bash("cat f | uniq -c - /tmp/pwned") is False
+        assert is_read_only_bash("cat f | uniq -- - /tmp/pwned") is False
+        assert is_read_only_bash("cat f | uniq -f 1 - /tmp/pwned") is False
+        # An abbreviation is not a value-taking option: `--c` is `--count` on BSD.
+        assert is_read_only_bash("cat f | uniq --c /tmp/in /tmp/pwned") is False
+        assert is_read_only_bash("cat f | uniq --skip-f 1 /tmp/pwned") is False
+        # A glob in a skipped option value can expand into extra operands.
+        assert is_read_only_bash("cat f | uniq -f 1*") is False
+        assert is_read_only_bash("cat f | uniq --skip-fields [0-9]") is False
+        assert is_read_only_bash("cat f | uniq -*") is False
+        assert is_read_only_bash("cat f | uniq --skip-fields 1 - /tmp/pwned") is False
+        assert is_read_only_bash("cat f | sort | uniq - /tmp/pwned | head") is False
+        assert is_read_only_bash("cat f |& uniq - /tmp/pwned") is False
+        # Reads: `-` alone, and the value of a value-taking option.
+        assert is_read_only_bash("cat f | uniq -") is True
+        assert is_read_only_bash("cat f | uniq -f 1 -c") is True
+        assert is_read_only_bash("cat f | uniq --skip-fields=1 -c") is True
+        assert is_read_only_bash("cat f | uniq -c /tmp/in") is True
+        assert is_read_only_bash("cat f | sort | uniq -d") is True
+
+    def test_uniq_option_shaped_word_after_the_input_is_an_operand(self):
+        """BSD uniq stops reading options at the first operand.
+
+        So `uniq in -c` writes a file named `-c` there.
+        """
+        assert is_read_only_bash("cat f | uniq /tmp/in -M") is False
+        assert is_read_only_bash("cat f | uniq - -M") is False
+        assert is_read_only_bash("cat f | uniq /tmp/in -- /tmp/pwned") is False
+        assert is_read_only_bash("cat f | uniq -c -d /tmp/in") is True
+
+    def test_git_blame_may_not_write_via_its_output_flag(self):
+        """`git blame --output=FILE` truncates FILE, like `git log` does."""
+        assert is_read_only_bash("git blame --output=/tmp/pwned f") is False
+        assert is_read_only_bash("git blame --output /tmp/pwned f") is False
+        assert is_read_only_bash("git blame --outp=/tmp/pwned f") is False
+        assert is_read_only_bash("git blame -L 1,2 f") is True
+        # git has no `blame -o`; an `o` in an attached `-L` value is a read.
+        assert is_read_only_bash("git blame -L:open_file f") is True
+
     def test_allowlisted_git_verb_may_not_change_a_ref_or_remote(self):
         """`git branch`/`git tag`/`git remote` have read and write modes.
 
