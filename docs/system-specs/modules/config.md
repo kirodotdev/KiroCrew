@@ -2252,14 +2252,19 @@ scan has not landed); if the re-resolve still misses, that turn fails with
    *before* `get_or_create`, while no session lock is held, so the standard
    `finally` teardown runs without ever creating a session or dispatching an agent.
 
-A chat create and an agent switch with `agent_kind: "template"`
-(`dashboard/chat_api/slot_create.py`, `dashboard/chat_api/agent_switch.py`) refuse
-a name that did not resolve too. Before refusing, each awaits
-`rescan_if_incomplete()` (`config/loader_snapshots.py`): one off-loop scan on
-`discovery_executor()` while `materialized_snapshot_complete()` is False, then one
-re-resolve. It matters most after the first scan in a process, which has no earlier
-snapshot to keep a skipped spec's name from. A complete snapshot costs no scan, and
-a failed scan leaves the refusal in place.
+A chat create, an agent switch and an MCP `session_create`
+(`dashboard/chat_api/slot_create.py`, `dashboard/chat_api/agent_switch.py`,
+`dashboard/session_control_parts/session_create.py`) refuse a template name that
+did not resolve too, and a name-first pick (no `agent_kind`) is refused or stored
+unresolved. Before that, each pick that is not `agent_kind: "member"` awaits
+`rescan_before_refusal()` (`config/loader_snapshots.py`): one off-loop
+`refresh_materialized_agents` on `discovery_executor()`, then one re-resolve. That
+finds a spec written outside the in-process writers (by hand, by kiro-cli) after
+the snapshot warmed, and one the first scan in a process could not read. A member
+pick never rescans: members come from the config the handler loaded. The
+refresh's memo makes a miss with nothing moved on disk a listing of the agents
+directories and a stat per spec (a revision it cannot prove scans, as a catalog
+fetch does), and a failed scan leaves the refusal in place.
 
 The eager-spawn pre-warm path mirrors the **self-heal** step (rescan →
 re-register-from-source) only (so the speculative session bakes in the app's own

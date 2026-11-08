@@ -475,16 +475,16 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 validate_memory_files=False,
                 selection_kind=agent_kind,
             )
-            from kiro_crew.config.loader_snapshots import rescan_if_incomplete
+            from kiro_crew.config.loader_snapshots import rescan_before_refusal
 
             if (
-                agent_kind == "template"
+                agent_kind != "member"
                 and not bindings.requested_resolved
-                and await rescan_if_incomplete()
+                and await rescan_before_refusal()
             ):
-                # A scan that could not read a spec may lack this template while
-                # its file is on disk (a member comes from the config just loaded).
-                # The staleness check below covers the extra await.
+                # The snapshot may lack a template whose file is on disk (a
+                # member comes from the config just loaded). The staleness check
+                # below covers the extra await.
                 bindings = await asyncio.to_thread(
                     resolve_agent_bindings,
                     cfg,
