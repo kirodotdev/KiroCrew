@@ -811,6 +811,13 @@ class KasHarness(MembershipHarness):
 
         ``agent.child_env_defaults`` applies here too, for the same reason: the
         relay is a kiro-cli process with the same core-count-sized pools.
+
+        Crew's own engine bundle also gets ``NODE_USE_SYSTEM_CA=1``, unless the
+        operator already set it (``0`` included). Node trusts only its built-in
+        roots otherwise, so a corporate CA that lives only in the OS store fails
+        every TLS call. kiro-cli sets the same default when it spawns KAS
+        (``apply_node_system_ca_env`` in its ``launch.rs``), so the relay needs
+        nothing from Crew.
         """
         from kiro_crew.config.loader import inject_kiro_cli_api_key, strip_kiro_cli_api_key
 
@@ -820,6 +827,7 @@ class KasHarness(MembershipHarness):
             strip_kiro_cli_api_key(env)
         if _runs_crew_engine_bundle(spawned_binary):
             defer_mandatory_mcps_env(env)
+            env.setdefault("NODE_USE_SYSTEM_CA", "1")
         else:
             pin_mandatory_mcps_env(env, spawned_binary=spawned_binary)
         apply_child_env_defaults(env)
