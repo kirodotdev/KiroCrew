@@ -15574,6 +15574,7 @@
         "last_search_ok": "上次搜索：成功",
         "last_search_refused": "上次搜索：被拒绝",
         "last_search_failed": "上次搜索：失败",
+        "pending_import_budget": "等待中：本分钟的导入额度（knowledge.import_chunk_budget）已用完。请一分钟后再同步。",
         "confirm_account_to_enable": "确认上方的 AWS 账户后即可添加此来源。",
         "enter_region_to_add": "输入 AWS 区域后即可添加此来源。",
         "profile_blank_uses_default_chain": "留空则使用默认的 AWS 凭证。",

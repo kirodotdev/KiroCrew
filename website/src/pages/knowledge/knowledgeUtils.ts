@@ -9,6 +9,9 @@ export interface ParsedSourceProps {
   recursive?: boolean
   wordCount?: number
   ignorePatterns?: string[]
+  /** Why a 'pending' row waits; the gateway writes `import_budget` when the
+   *  explicit-import budget deferred its ingest. */
+  pendingReason?: string
 }
 
 export function parseSourceProps(s: Source): ParsedSourceProps {
@@ -26,6 +29,7 @@ export function parseSourceProps(s: Source): ParsedSourceProps {
     recursive: props.recursive as boolean | undefined,
     wordCount: props.word_count as number | undefined,
     ignorePatterns: Array.isArray(props.ignore_patterns) ? props.ignore_patterns.filter((p): p is string => typeof p === 'string') : undefined,
+    pendingReason: typeof props.pending_reason === 'string' ? props.pending_reason : undefined,
   }
 }
 
