@@ -334,9 +334,10 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
   // focus on <body>. Hand it to the neighbouring row's open control instead.
   // Each deletion commits on its own, so a multi-note clear changes `items`
   // several times while the clicked control is still mounted and focused; the
-  // target waits until every cleared note has gone (or the clear settled, which
-  // covers a partial failure). Focus the user moved to another live element is
-  // left alone.
+  // target waits until every cleared note has gone, the clear settled (which
+  // covers a partial failure), or the clicked control unmounted (an expanded
+  // stack's header goes when one note is left), so focus never waits on
+  // <body>. Focus the user moved to another live element is left alone.
   useEffect(() => {
     const r = refocus.current
     if (!r) return
@@ -345,7 +346,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
       refocus.current = null
       return
     }
-    if (!r.settled && items.some(n => r.gone.has(n.ts))) return
+    if (!r.settled && r.origin?.isConnected && items.some(n => r.gone.has(n.ts))) return
     // The clearing control survived (a partial failure kept its rows), so
     // focus never fell to <body>.
     if (active && active === r.origin && active.isConnected) {
