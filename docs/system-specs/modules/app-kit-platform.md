@@ -4464,6 +4464,14 @@ The boundary:
   dismissed card. An unnamed text pattern is named by its declaration index before
   the grant filter runs, so a pattern waiting for approval never renames a later
   one or its off switch.
+- **Failure.** A frame that does not say `ready` within `READY_TIMEOUT_MS`, says
+  `failed`, or cannot be minted is removed, and the dashboard draws its own card
+  in the app card's place (`FrameHost.cardSpot`, the card surface tokens) naming
+  the cause (`timeout`, `app`, `unavailable`). Its Retry disposes the provider's
+  non-ready hover frame and mints a new one through the same grant-checked route
+  (`FrameHost.retryFrame`); nothing about the grant, sandbox or timeout changes.
+  A provider-list refresh closes the card and drops its hover, so a Retry never
+  resends a link payload (`fullUrl` or not) built from the replaced list.
 - **Updates.** A frame keeps the module it loaded. Each resolved provider carries
   a revision (entry, version, install and update time); when an app-list refresh shows a new
   revision for a key, its frames are disposed, so the next hover loads the current
