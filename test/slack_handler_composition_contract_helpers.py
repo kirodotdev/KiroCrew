@@ -410,10 +410,11 @@ def world_fixture(monkeypatch: pytest.MonkeyPatch, tmp_path):
         log.add("voice.tts_available", **kwargs)
         return True
 
-    async def _inline(func, /, *args, **kwargs):
+    async def _inline(func, /, *args, _admission_timeout=None, **kwargs):
         # A thread hop finishes whenever the worker gets the CPU, so a reaction task
         # scheduled before it would land on either side of it in the transcript. Run
-        # the work in place: the order then depends on the code alone.
+        # the work in place: the order then depends on the code alone, and the call
+        # always gets a worker, so the pool's admission bound has nothing to bound.
         return func(*args, **kwargs)
 
     async def _inline_gate(func, /, *args, on_queue_timeout, **kwargs):

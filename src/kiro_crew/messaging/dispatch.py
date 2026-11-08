@@ -45,7 +45,11 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from kiro_crew import _facade_mirror
 from kiro_crew.acp.types import STOP_REASON_COMPACTION_FAILED
 from kiro_crew.context import session_store_for_turn
-from kiro_crew.executors import run_in_embed_pool
+from kiro_crew.executors import (
+    TURN_BUILD_ADMISSION_TIMEOUT_SECS,
+    EmbedAdmissionTimeout,
+    run_in_embed_pool,
+)
 from kiro_crew.hooks import (
     HOOK_REPLY,
 )
@@ -125,7 +129,7 @@ from kiro_crew.messaging.turn_bracket import driver_turn_landed  # noqa: F401 (r
 from kiro_crew.messaging.turn_bracket import rearm_reinjection  # noqa: F401 (re-exported)
 from kiro_crew.messaging.turn_bracket import rollback_skill_bodies  # noqa: F401 (re-exported)
 from kiro_crew.messaging.turn_bracket import stop_reason_landed  # noqa: F401 (re-exported)
-from kiro_crew.messaging.turn_bracket import TurnBracket
+from kiro_crew.messaging.turn_bracket import TurnBracket, rearm_first_turn
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
 from kiro_crew.parent_turns import settle_turn
 from kiro_crew.security import (
@@ -674,9 +678,9 @@ class ChannelTurns:
         *bind* is :func:`drive_turn`'s ``bind_provider``, guarded and run where
         that pipeline always ran it; it never ends the turn. *is_muted* replaces
         the mute read with :func:`drive_turn`'s :func:`conversation_is_muted`.
-        *quiet* silences the tool-less refusal without touching the record, which
-        is all ``ChannelTurn.unprompted`` ever meant. *skill_trigger_text* is
-        handed to ``build_message`` unchanged.
+        *quiet* silences the tool-less and memory refusals without touching the
+        record, which is all ``ChannelTurn.unprompted`` ever meant.
+        *skill_trigger_text* is handed to ``build_message`` unchanged.
         """
         channel = self.channel
         sessions = self._sessions
@@ -1064,6 +1068,8 @@ class ChannelTurns:
                     user_display_name=asker.display_name,
                     skill_trigger_text=skill_trigger_text,
                     tab_notices=bracket.tab_notices,
+                    # A wake has nobody waiting on it, and a refused one stops its monitor.
+                    _admission_timeout=None if monitor else TURN_BUILD_ADMISSION_TIMEOUT_SECS,
                 )
                 # A monitor wake runs with nobody watching: a governance check
                 # that cannot be evaluated refuses the call.
@@ -1413,10 +1419,12 @@ class ChannelTurns:
                     logger.warning(
                         "%s: could not display tool-less refusal", channel, exc_info=True
                     )
-        except UnknownMemoryStore as exc:
-            logger.warning("%s member memory unavailable: %s", channel, exc)
+        except (UnknownMemoryStore, EmbedAdmissionTimeout) as exc:
+            logger.warning("%s memory unavailable: %s", channel, exc)
             verdict = Verdict.MEMORY_REFUSED
-            if monitor is None:
+            if _acquired and isinstance(exc, EmbedAdmissionTimeout):
+                rearm_first_turn(sessions, session_key, provider, is_new=is_new, resumed=resumed)
+            if monitor is None and not quiet:
                 try:
                     await renderer.on_text_chunk(redact_local_paths(redact(str(exc)))[0][:1000])
                     await renderer.on_done()
