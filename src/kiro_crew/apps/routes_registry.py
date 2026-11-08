@@ -49,6 +49,7 @@ from kiro_crew.apps.routes_lifecycle import (
     _app_may_run_after_install,
     _register_app_off_loop,
     _reinstall_from_registry,
+    _rerun_on_enable_after_update,
     _start_backend_after_install,
     _suspend_app_for_session_approval_reconsent,
 )
@@ -264,6 +265,11 @@ async def handle_registry_install(request: web.Request) -> web.Response:
             backend_refused = await _start_backend_after_install(result["name"])
             if backend_refused:
                 result["backend_refused"] = backend_refused
+            if was_installed:
+                # An update: the new tree gets back what onEnable installed into the
+                # installed folder (see handle_update_app). This is also how an
+                # adopted app takes a catalog update.
+                result.update(await _rerun_on_enable_after_update(request, result["name"]))
     result["registration"] = reg.to_dict()
     sel().log_api_access(
         caller="dashboard", operation="app_registry_install", outcome="completed", resources=name
@@ -403,6 +409,9 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
                     r["registration"] = reg.to_dict()
                     if backend_refused:
                         r["backend_refused"] = backend_refused
+                    if was_installed:
+                        # An update, as in handle_registry_install: onEnable runs again.
+                        r.update(await _rerun_on_enable_after_update(request, r["name"]))
             return r
 
     install_task = asyncio.create_task(_locked_install())

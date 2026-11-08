@@ -5,7 +5,8 @@ the event loop, starting a backend after an install and stopping one with its ou
 observed, whether an app may run once installed, restoring an app after a failed update,
 re-installing an installed app from the registry, suspending one for session-approval
 reconsent, the refusal while a startup hook still runs, dropping an app's
-notification channels, and telling open dashboards an app's files were replaced.
+notification channels, telling open dashboards an app's files were replaced, and
+running ``setup.onEnable`` for an enable and again after an update of an enabled app.
 
 Part of the ``kiro_crew.apps.routes`` family: callers and tests reach every name here
 as ``kiro_crew.apps.routes.<name>``, and a patch there reaches this module too
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 import time
 from functools import partial
 from typing import TYPE_CHECKING, Any
@@ -37,7 +39,11 @@ from kiro_crew.apps.bridges import (
     snapshot_app_agent_configs,
 )
 from kiro_crew.apps.hooks_integration import stop_retained_startup_hooks
+
+# Aliased to keep `routes._run_lifecycle_script` patchable, which several tests rely on.
+from kiro_crew.apps.lifecycle_scripts import run_lifecycle_script as _run_lifecycle_script
 from kiro_crew.apps.manager import get_app
+from kiro_crew.apps.manifest import PlatformConfig
 from kiro_crew.apps.registry import install_from_registry
 from kiro_crew.apps.version import check_min_version as _check_min_version_str
 from kiro_crew.executors import subprocess_executor
@@ -417,3 +423,134 @@ async def _refuse_while_startup_hook_runs(name: str, *, action: str) -> web.Resp
         },
         status=409,
     )
+
+
+def _client_install_manifest(manifest: dict[str, Any]) -> PlatformConfig | None:
+    """The app's :class:`PlatformConfig` when it is a CLIENT-install app, else ``None``.
+
+    A ``client`` app's real payload is a desktop application the user installs on
+    their OWN machine; what the gateway holds is metadata plus a dashboard page.
+    So its lifecycle scripts address something that legitimately may not be on
+    this host, which is what makes them advisory rather than a health check:
+    see ``handle_enable_app``.
+
+    Never raises. ``PlatformConfig.from_dict`` iterates ``os`` and ``arch``
+    directly, so a hand-edited ``app.json`` carrying ``"os": null`` raises
+    ``TypeError`` there; this is the first place the enable path parses
+    ``platform`` at all, so an unguarded call would turn a malformed manifest into
+    a 500 on enable. A manifest this app cannot read is treated as "not a client
+    app", which keeps the strict rollback behavior rather than silently widening
+    the advisory path.
+    """
+    platform_raw = manifest.get("platform")
+    if not isinstance(platform_raw, dict):
+        return None
+    try:
+        platform_cfg = PlatformConfig.from_dict(platform_raw)
+    except (TypeError, ValueError) as exc:
+        logger.warning("Ignoring an unreadable platform block on app enable: %s", exc)
+        return None
+    return platform_cfg if platform_cfg.installMode == "client" else None
+
+
+async def _run_on_enable_script(
+    name: str, manifest: dict[str, Any]
+) -> tuple[dict[str, Any] | None, bool]:
+    """Run *name*'s ``setup.onEnable`` for an enable, or again after an update.
+
+    One runner for the enable route and every update of an enabled app, so the
+    timeout, the client-install rules and the redaction cannot drift between them.
+    Returns the response's ``onEnable`` block, ``None`` when *manifest* declares no
+    script, and whether the caller must take the app down: True only when the
+    script failed for an app that is not a ``platform.installMode: "client"`` app.
+    A client app's script is advisory and is skipped on a host its ``platform.os``
+    does not list (see ``handle_enable_app``). The timeout is
+    ``setup.onEnableTimeout`` clamped here, where the script runs, under the
+    caller's app lifecycle lock.
+    """
+    setup = manifest.get("setup") or {}
+    on_enable = setup.get("onEnable", "")
+    if not on_enable:
+        return None, False
+    client_platform = _client_install_manifest(manifest)
+    if client_platform is not None and not client_platform.supports_platform(sys.platform):
+        return {"output": "", "failed": False, "skipped": "unsupported_platform"}, False
+    # Local imports keep these helpers out of the names the routes facade serves.
+    from kiro_crew.apps.manifest import lifecycle_timeout_seconds
+    from kiro_crew.security import redact_credentials
+
+    timeout = lifecycle_timeout_seconds(
+        setup.get("onEnableTimeout"), app_name=name, field_name="onEnableTimeout"
+    )
+    script_output = await _run_lifecycle_script(
+        name, on_enable, timeout=timeout, action="on_enable"
+    )
+    cleaned, _ = redact_credentials(script_output.get("output", ""))
+    failed = bool(script_output.get("failed", False))
+    return {"output": cleaned, "failed": failed}, failed and client_platform is None
+
+
+async def _rerun_on_enable_after_update(request: web.Request, name: str) -> dict[str, Any]:
+    """Run an updated, still-enabled app's ``setup.onEnable`` again, as Enable runs it.
+
+    An update swaps in a fresh copy of the app's files, which never carries
+    ``node_modules`` or ``.venv``, and keeps the app enabled, so whatever the
+    script installed into the installed folder is gone until it runs again. Every
+    route that updates an installed app (both branches of ``handle_update_app``,
+    and a registry install over an installed app, which is how an adopted app
+    takes a catalog update) calls this once the app is re-registered and its
+    backend started, the order Enable uses, and only while the app may still run.
+    The script is the NEW version's, read from the live record.
+
+    Returns the fields the caller adds to its successful update's response: none
+    when the new version declares no script, else ``onEnable`` (the script's
+    redacted result), plus ``onEnableFailed`` (the reason) when the script failed.
+    A failure never takes the app down: an update must not turn a working enabled
+    app off, so the app stays enabled with its crons, agents and grants as the
+    update left them. The failure is logged and reaches the user as a bell note,
+    and the next enable or update runs the script again. A client-install app's
+    failure stays advisory, as on Enable, and reports nothing.
+    """
+    record = await _read_app_record(name) or {}
+    block, failed = await _run_on_enable_script(name, record.get("manifest") or {})
+    if block is None:
+        return {}
+    if not failed:
+        return {"onEnable": block}
+    reason = block["output"] or "the script exited with an error and printed nothing"
+    logger.warning(
+        "%s's setup.onEnable failed after its update; it stays enabled: %s", name, reason
+    )
+    _note_on_enable_failed_after_update(request, name, reason)
+    return {"onEnable": block, "onEnableFailed": reason}
+
+
+def _note_on_enable_failed_after_update(request: web.Request, name: str, reason: str) -> None:
+    """Bell-note that *name*'s re-run ``onEnable`` failed, on the app-update channel.
+
+    The same ``state.notify`` path and ``system.apps`` channel as the note that
+    announces an app update, so a user who mutes app notes mutes this too. Titled
+    by the app's NAME, as that note is. The script's output is app-authored text,
+    so the body states what the gateway did first and quotes the output after it,
+    labelled as the script's (the runner already kept only its last 20 lines).
+    Total: the update has landed, so a note that cannot be sent is logged and never
+    fails the route.
+    """
+    state = request.app.get("state")
+    if state is None:
+        return
+    # Local import keeps these names out of the ones the routes facade serves.
+    from kiro_crew.apps.update_notify import NOTE_CHANNEL, NOTE_KIND
+
+    try:
+        state.notify(
+            NOTE_KIND,
+            f"{name} updated, but its setup script failed",
+            "The app stays enabled. Enable or update it again to re-run its"
+            f" setup.onEnable script.\n\nThe script's output:\n{reason}",
+            meta={"app": name},
+            url=f"/apps/detail/{name}",
+            channel=NOTE_CHANNEL,
+        )
+    except Exception:  # noqa: BLE001 - the update has landed
+        logger.warning("could not deliver the onEnable failure note for %s", name, exc_info=True)
