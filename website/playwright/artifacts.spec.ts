@@ -123,6 +123,39 @@ test.describe('Artifact Detail Page — /artifacts/:slug', () => {
     expect(versions.versions).toContain(2)
   })
 
+  test("an SVG artifact's own stylesheet draws its shapes and leaves the page alone, on screen and in print", async ({ page, request }) => {
+    // Rules that reached the whole page when an SVG was drawn straight into it.
+    const content = '<' + 'svg xmlns="http://www.w3.org/2000/svg" width="40" height="40"><style>'
+      + '.st0 { fill: rgb(1, 2, 3) } '
+      + 'body, body * { color: rgb(255, 0, 0) !important } '
+      + ':host { display: block !important; position: fixed !important } '
+      + '@media print { body * { display: block !important } }'
+      + '</style><rect class="st0" width="40" height="40"/></svg>'
+    const { slug, name } = await seedArtifact(request, { kind: 'svg', content })
+
+    await page.goto(`/artifacts/${slug}`, { waitUntil: 'domcontentloaded' })
+    const shape = page.getByTestId('viewer-backdrop').locator('rect')
+    await expect(shape).toHaveCSS('fill', 'rgb(1, 2, 3)', { timeout: 10000 })
+    const title = page.getByText(name).first()
+    await expect(title).not.toHaveCSS('color', 'rgb(255, 0, 0)')
+
+    // Print the title alone, through the print preview's own markers
+    // (components/markdownPanelPrint.ts): the SVG must stay out of the print.
+    await title.evaluate(el => {
+      el.setAttribute('data-print-root', '')
+      document.documentElement.setAttribute('data-printing-preview', '')
+    })
+    await page.emulateMedia({ media: 'print' })
+    await expect(shape).toBeHidden()
+    await expect(title).toBeVisible()
+    await expect(title).not.toHaveCSS('color', 'rgb(255, 0, 0)')
+
+    await page.emulateMedia({ media: 'screen' })
+    await page.goto('/artifacts', { waitUntil: 'domcontentloaded' })
+    await page.getByPlaceholder('Filter by name, slug, description…').fill(slug)
+    await expect(page.locator('rect.st0')).toHaveCSS('fill', 'rgb(1, 2, 3)', { timeout: 10000 })
+  })
+
   test('404 page for non-existent slug', async ({ page }) => {
     await page.goto('/artifacts/non-existent-slug-xyz', { waitUntil: 'domcontentloaded' })
     // The detail page shows an error message containing the slug
