@@ -1297,6 +1297,7 @@ export default function ChatPane({
           // See ComposerDockView: the slot's RAW model, because `shownModel` substitutes
           // the served id and would hide every routed turn.
           modelIsJevRouted={jevRouteOn && isUnpinnedModel(paneSlot?.model)}
+          harnessBackend={selectionCapabilitiesQ.data?.models_backend}
           contextPct={contextPct ?? 0}
           contextUnknown={contextPct === undefined && contextTokens?.used == null}
           contextUsedTokens={contextTokens?.used}

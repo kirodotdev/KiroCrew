@@ -7067,6 +7067,7 @@
       "click_again_to_force_stop_resets_session": "Clique novamente para forçar a parada (reinicia a sessão; suas mensagens ficam, o agente mantém um trecho recente)",
       "esc_again_to_stop": "Pressione Esc de novo para parar",
       "model_inherited_default": "Esta sessão usa o modelo padrão ({{name}}). Não tem um modelo próprio, então muda se o padrão mudar. Clique para fixar um.",
+      "harness_mark": "Executa no {{harness}}",
       "model_switch_applies_next_turn": "Sua próxima mensagem usará o modelo que você escolher. Esta resposta termina com o modelo com que começou.",
       "terminal_attachments": "Remova os anexos antes de executar um comando de terminal.",
       "terminal_folder_attachments": "Remova as pastas anexadas antes de executar o comando. Ao remover uma pasta, a referência {{folderRef}} dela também é removida do comando.",
