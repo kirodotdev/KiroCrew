@@ -1254,6 +1254,18 @@ A `--local` dotted-leaf write keeps an overlay section's other keys; a whole-obj
 write replaces the section and prints a stderr hint naming the keys it dropped (same
 `config set` row in [cli](cli.md)).
 
+A base `config set` of a key `config.local.json` also sets still writes `config.json`
+and exits 0, then prints a stderr warning per overlay key that decides a written leaf
+(`_overlay_shadowing_keys` over `_written_leaf_paths`): a value at the leaf, or a
+non-object value at an ancestor, which the deep merge puts in place of the whole
+subtree. Paths are segment tuples, so a mapping key with a literal dot (a model id)
+stays one segment, and the warning names its parent, the deepest dotted key that can
+address it. The overlay is read as the loader reads it (`read_endorsed_config_text`),
+shared with the `config defaults --adopt` report through `_read_overlay`. The
+overlay's value is what loads, and the warning points at `config get` and
+`config set --local`. The overlay's value is not printed. For a shadowed `agent.bot_name` the "will load as" sanitizer warning is
+left out, since the typed name does not load at all (#32802).
+
 ### `config_local_path() -> Path`
 Returns `~/.kiro/crew/config.local.json` (or `$KIROCREW_HOME/config.local.json`).
 
