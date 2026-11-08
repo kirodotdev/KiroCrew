@@ -61,7 +61,7 @@ class TestRetargetClearsRepoScopedConfig:
             },
         )
         src = Path(routes.__file__).read_text(encoding="utf-8")
-        assert 'retargeted = str(current.get("target_url") or "") != url' in src
+        assert 'retargeted = str(current.get("target_url") or "") != target_url' in src
         assert 'for stale in ("branch", "scopeDiffBase")' in src
 
     def test_a_same_repo_setup_keeps_the_branch(self) -> None:
