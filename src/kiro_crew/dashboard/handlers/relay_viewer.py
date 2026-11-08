@@ -20,6 +20,7 @@ logged or put in an error. Every answer is ``Cache-Control: no-store``.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional, TypeVar
@@ -180,6 +181,25 @@ async def _with_sign_in(ref: str, call: Callable[[str, str], Awaitable[_T]]) -> 
     return await call(fresh, token_type)
 
 
+async def _sign_in_marker(ref: str) -> Optional[str]:
+    """A short, non-secret marker naming the Kiro sign-in, or ``None``.
+
+    The desktop app closes its relay Crew windows when it changes (an account
+    switch). Built only from the vault's identity fingerprint (allowlisted account
+    claims plus the sign-in generation, no token or secret), under a fixed prefix
+    so it can't be matched against that fingerprint. ``None`` with the test
+    credential or an empty fingerprint. Never logged.
+    """
+    if ref:
+        return None
+    from kiro_crew.auth.bridge import vault_identity_fingerprint
+
+    fingerprint = await asyncio.to_thread(vault_identity_fingerprint)
+    if not fingerprint:
+        return None
+    return hashlib.sha256(b"relay-viewer-sign-in\n" + fingerprint.encode()).hexdigest()[:16]
+
+
 def _entry(crew: cps.CrewEndpoint) -> dict[str, str]:
     return {
         "endpointId": crew.endpoint_id,
@@ -297,8 +317,18 @@ async def api_relay_viewer_token(request: web.Request) -> web.Response:
         )
         return crew, grant
 
+    # The marker is read before and after the whole sign-in and mint (the 401
+    # resend included). Every sign-in writes a new generation, so a switch at any
+    # point in between changes it, and the grant, minted under an account the
+    # marker can't name, is never sent.
+    before = await _sign_in_marker(ref)
     try:
         crew, grant = await _with_sign_in(ref, _list_then_mint)
+        marker = await _sign_in_marker(ref)
+        if marker != before:
+            raise cps.CpsRefused(
+                cps.UNREACHABLE, "your Kiro sign-in changed while this Crew was opening, try again"
+            )
     except cps.CpsRefused as exc:
         logger.info("relay viewer: mint %s -> %s", endpoint_id, exc.code)
         _audit(request, "denied", f"{endpoint_id} {exc.code}")
@@ -313,5 +343,6 @@ async def api_relay_viewer_token(request: web.Request) -> web.Response:
             "serverDate": grant.server_date,
             "crewUrl": crew.crew_url,
             "name": crew.name,
+            "signInMarker": marker,
         }
     )

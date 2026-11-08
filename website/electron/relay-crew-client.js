@@ -72,6 +72,8 @@ async function requestRelayCrewToken({
       },
       crewUrl: body.crewUrl,
       name: typeof body.name === "string" ? body.name : "",
+      // Names the sign-in (not a secret). Kept out of the grant, so renewal never sees it.
+      signInMarker: typeof body.signInMarker === "string" && body.signInMarker ? body.signInMarker : null,
     };
   }
   const code = body && typeof body.code === "string" ? body.code : "";

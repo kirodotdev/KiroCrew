@@ -149,7 +149,7 @@ test("renewal reads RELAY_VIEWER_OFF as a stop and UNAVAILABLE as a retry", asyn
       mints.push(await mint());
       return { ok: true };
     },
-    attach() {}, setHidden() {}, stop() {},
+    attach() {}, setHidden() {}, stop() {}, isStopped: () => false,
   });
   const s = setup({
     createRenewal,
@@ -432,4 +432,151 @@ test("a new open whose mint lands after everything closed opens nothing and stop
   assert.equal(made.length, 2);
   assert.ok(made.every((r) => r.isStopped()), "no renewal running");
   await assertReopensFresh(s, [ID, OTHER]);
+});
+
+const THIRD = "m1n2o3p4q5r6s7t8u9v0w1";
+const MARK_A = "aaaaaaaaaaaaaaaa";
+const MARK_B = "bbbbbbbbbbbbbbbb";
+const okAs = (token, signInMarker) => ({ ...okFor(token), signInMarker });
+const switchedLogs = (s) => s.logs.filter((l) => l.includes("closed (ACCOUNT_SWITCHED)"));
+
+test("a renewal whose marker changed closes every window as ACCOUNT_SWITCHED", async () => {
+  const { made, createRenewal } = recordedRenewals();
+  const s = setup({
+    createRenewal,
+    answers: [okAs(TOKEN, MARK_A), okAs(`${TOKEN}-b`, MARK_A), okAs(`${TOKEN}-2`, MARK_B)],
+  });
+  await s.opener.open(ID);
+  await s.opener.open(OTHER);
+  const [a, b] = s.win.opened;
+  a.cbs.status[0](401); // A mints again, now as another account
+  await settle();
+  assert.ok(a.closed && b.closed, "every window closed");
+  assert.ok(made.every((r) => r.isStopped()), "every renewal stopped");
+  assert.equal(a.opts.getToken(), null, "the new account's grant is never set on the old window");
+  assert.equal(b.opts.getToken(), null);
+  assert.deepEqual(switchedLogs(s), [
+    `relay crew ${ID}: open -> closed (ACCOUNT_SWITCHED)`,
+    `relay crew ${OTHER}: open -> closed (ACCOUNT_SWITCHED)`,
+  ]);
+  assert.equal(s.logs.some((l) => l.includes(MARK_A) || l.includes(MARK_B)), false, "no marker in a log line");
+  assertNoSecrets([...s.logs]);
+});
+
+test("a missing or unchanged marker closes nothing; the open that finds a switch answers UNAVAILABLE, the next opens", async () => {
+  const { made, createRenewal } = recordedRenewals();
+  const s = setup({
+    createRenewal,
+    answers: [
+      okAs(TOKEN, MARK_A), okAs(`${TOKEN}-b`, MARK_A),
+      okAs(`${TOKEN}-2`, null), okAs(`${TOKEN}-3`, MARK_A), okAs(`${TOKEN}-c`, MARK_B),
+    ],
+  });
+  await s.opener.open(ID);
+  await s.opener.open(OTHER);
+  const [a, b] = s.win.opened;
+  a.cbs.status[0](401); // no marker: ignored
+  await settle();
+  b.cbs.status[0](401); // the same marker
+  await settle();
+  assert.equal(a.closed || b.closed, false, "nothing closed");
+  assert.equal(a.opts.getToken(), `${TOKEN}-2`);
+
+  assert.deepEqual(await s.opener.open(THIRD), { ok: false, error: "UNAVAILABLE" }, "the open that finds the switch");
+  assert.ok(a.closed && b.closed, "the old account's windows closed");
+  assert.equal(s.win.opened.length, 2, "and no window opened for it");
+  assert.equal(switchedLogs(s).length, 2);
+  assert.deepEqual(await s.opener.open(THIRD), { ok: true }, "the next click opens as the new account");
+  assert.equal(s.win.opened[2].opts.getToken(), `${TOKEN}-c`);
+  assert.equal(switchedLogs(s).length, 2, "and closes nothing more");
+  s.win.opened[2].close();
+  assert.ok(made.every((r) => r.isStopped()));
+});
+
+test("a stale old-account answer after a switch closes nothing and keeps the new marker", async () => {
+  const { made, createRenewal } = recordedRenewals();
+  let releaseNew;
+  let releaseStale;
+  const newAnswer = new Promise((resolve) => { releaseNew = resolve; });
+  const staleAnswer = new Promise((resolve) => { releaseStale = resolve; });
+  const s = setup({
+    createRenewal,
+    answers: [
+      okAs(TOKEN, MARK_A), okAs(`${TOKEN}-b`, MARK_A), newAnswer, staleAnswer,
+      okAs(`${TOKEN}-c`, MARK_B),
+    ],
+  });
+  await s.opener.open(ID);
+  await s.opener.open(OTHER);
+  const [a, b] = s.win.opened;
+  a.cbs.status[0](401); // A's mint goes out
+  b.cbs.status[0](401); // B's mint goes out before the switch is seen
+  await settle();
+  releaseNew(okAs(`${TOKEN}-2`, MARK_B)); // A's answer: the new account
+  await settle();
+  assert.ok(a.closed && b.closed);
+  assert.equal(switchedLogs(s).length, 2, "one closeAll, two windows");
+
+  assert.deepEqual(await s.opener.open(THIRD), { ok: true }, "opened as the new account in between");
+  const c = s.win.opened[2];
+  releaseStale(okAs(`${TOKEN}-b2`, MARK_A)); // B's answer, minted before the switch
+  await settle();
+  assert.equal(c.closed, false, "the new account's window stays open");
+  assert.equal(switchedLogs(s).length, 2, "no second closeAll");
+
+  c.cbs.status[0](401); // a fresh new-account mint: the stored marker is still the new one
+  await settle();
+  assert.equal(c.closed, false);
+  assert.equal(c.opts.getToken(), `${TOKEN}-c`);
+  c.close();
+  assert.ok(made.every((r) => r.isStopped()));
+});
+
+test("with no window open, a new marker is adopted and the open goes ahead", async () => {
+  const { createRenewal } = recordedRenewals();
+  const s = setup({
+    createRenewal,
+    answers: [okAs(TOKEN, MARK_A), okAs(`${TOKEN}-b`, MARK_B), okAs(`${TOKEN}-b2`, MARK_B)],
+  });
+  await s.opener.open(ID);
+  s.win.opened[0].close(); // nothing open, stored marker A
+  assert.deepEqual(await s.opener.open(OTHER), { ok: true }, "opens normally");
+  const b = s.win.opened[1];
+  assert.equal(switchedLogs(s).length, 0);
+  b.cbs.status[0](401); // B again: the stored marker is now B
+  await settle();
+  assert.equal(b.closed, false);
+  assert.equal(b.opts.getToken(), `${TOKEN}-b2`);
+  b.close();
+});
+
+test("a late answer for a renewal stopped by a hand close leaves the new account's windows alone", async () => {
+  const { made, createRenewal } = recordedRenewals();
+  let release;
+  const late = new Promise((resolve) => { release = resolve; });
+  const s = setup({
+    createRenewal,
+    answers: [okAs(TOKEN, MARK_A), late, okAs(`${TOKEN}-b`, MARK_B), okAs(`${TOKEN}-b2`, MARK_B)],
+  });
+  await s.opener.open(ID);
+  const [a] = s.win.opened;
+  a.cbs.status[0](401); // A's renewal mint goes out and is held
+  await settle();
+  a.close(); // closed by hand: the renewal stops, the close counter doesn't move
+  assert.equal(made[0].isStopped(), true);
+
+  assert.deepEqual(await s.opener.open(OTHER), { ok: true }, "B opens and its marker is adopted");
+  const b = s.win.opened[1];
+  release(okAs(`${TOKEN}-2`, MARK_A)); // A's answer lands late
+  await settle();
+  assert.equal(b.closed, false, "B's window stays open");
+  assert.equal(switchedLogs(s).length, 0, "nothing closed as ACCOUNT_SWITCHED");
+  assert.equal(a.opts.getToken(), null, "the stale grant is never set");
+
+  b.cbs.status[0](401); // a later B renewal: the stored marker is still B
+  await settle();
+  assert.equal(b.closed, false);
+  assert.equal(b.opts.getToken(), `${TOKEN}-b2`);
+  assert.equal(switchedLogs(s).length, 0);
+  b.close();
 });

@@ -16,9 +16,11 @@
  * When any renewal stops on SIGNED_OUT (the gateway reads the Kiro sign-in on
  * every mint), every renewal stops and every relay Crew window closes. This is
  * noticed at the next renewal, not at the moment of sign-out.
- * shortcut: an account switch isn't caught, because the next mint succeeds as
- * the new person. A follow-up PR adds a non-secret per-sign-in marker to the
- * token answer and closes every window when it changes.
+ *
+ * An account switch is caught the same way: each grant carries the gateway's
+ * non-secret sign-in marker, and a mint whose marker differs from the one the
+ * open windows were opened under closes them all (ACCOUNT_SWITCHED). The open
+ * that finds a switch answers UNAVAILABLE; the next one opens as the new account.
  */
 
 // The relay's endpoint ID grammar has one definition, in the window module.
@@ -42,8 +44,15 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
   async function startRenewal(endpointId, holder, crew) {
     let firstCode = null;
     const mint = async () => {
+      const at = epoch;
       const answer = await requestToken(endpointId);
+      // Only a mint whose grant will be used may touch the shared marker: not
+      // after a closeAll (epoch, in noteMarker) and not after its renewal
+      // stopped (closed by hand, a failed open, a restart's old renewal). The
+      // renewal drops this answer as STOPPED.
+      if (renewal.isStopped()) return answer;
       if (answer && answer.ok) {
+        noteMarker(answer.signInMarker, at);
         crew.crewUrl = answer.crewUrl;
         crew.name = answer.name;
         return answer.grant;
@@ -76,6 +85,17 @@ function createRelayCrewOpener({ requestToken, openWindow, createRenewal, create
       try { entry.win.close(); } catch { /* already gone */ }
       say(endpointId, `closed (${reason})`);
     }
+  }
+
+  // The sign-in marker the open windows were opened under. A grant minted
+  // before a closeAll (epoch moved) says nothing about the sign-in now, and a
+  // grant with no marker is ignored. With no window open a new marker is just
+  // adopted, so the open that brought it isn't refused for nothing.
+  let marker = null;
+  function noteMarker(seen, at) {
+    if (!seen || epoch !== at) return;
+    if (marker && seen !== marker && windows.size > 0) closeAll("ACCOUNT_SWITCHED");
+    marker = seen;
   }
 
   function wire(entry) {

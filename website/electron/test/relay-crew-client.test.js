@@ -44,6 +44,7 @@ test("posts the endpoint ID with X-Local-Secret to the loopback token route, no 
     grant: { accessToken: TOKEN, expiresAt: 1000, renewInSeconds: 240, serverDate: 700 },
     crewUrl: CREW_URL,
     name: "Team Crew",
+    signInMarker: null,
   });
   assert.equal(f.calls.length, 1);
   const { url, init } = f.calls[0];
@@ -132,5 +133,15 @@ test("a network failure, timeout or refused redirect is UNAVAILABLE and carries 
     const r = await call(async () => { throw err; });
     assert.deepEqual(r, { ok: false, code: "UNAVAILABLE", retryAfter: null });
     assert.equal(JSON.stringify(r).includes(SECRET), false);
+  }
+});
+
+test("passes a string sign-in marker through outside the grant, and anything else as null", async () => {
+  const grant = { accessToken: TOKEN, expiresAt: 1000, crewUrl: CREW_URL, name: "Team Crew" };
+  const r = await call(fakeFetch(200, { ...grant, signInMarker: "0123456789abcdef" }).fetchFn);
+  assert.equal(r.signInMarker, "0123456789abcdef");
+  assert.equal("signInMarker" in r.grant, false, "renewal never sees it");
+  for (const bad of [undefined, null, "", 7, { x: 1 }]) {
+    assert.equal((await call(fakeFetch(200, { ...grant, signInMarker: bad }).fetchFn)).signInMarker, null, String(bad));
   }
 });

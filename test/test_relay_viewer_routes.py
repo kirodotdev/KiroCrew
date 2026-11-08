@@ -7,6 +7,7 @@ neither route is reachable through the relay, and every answer is ``no-store``.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -37,12 +38,20 @@ CREW = cps.CrewEndpoint(
     relay_connection_status="CONNECTED",
 )
 OWNER = RelayCaller(kiro_user_id="kiro-user.owner-0001", kind=RelayCallerKind.OWNER)
+FP_A = "fingerprint-of-account-a"
+FP_B = "fingerprint-of-account-b"
+
+
+def _marker(fingerprint: str) -> str:
+    return hashlib.sha256(b"relay-viewer-sign-in\n" + fingerprint.encode()).hexdigest()[:16]
 
 
 @pytest.fixture
 def viewer(monkeypatch):
     """The viewer on, CPS faked, the owner and host-process gates passing."""
-    state = SimpleNamespace(enabled=True, calls=[], owner=True, provenance=LocalOwnerProvenance())
+    state = SimpleNamespace(
+        enabled=True, calls=[], owner=True, provenance=LocalOwnerProvenance(), fingerprint=FP_A
+    )
     tunnel = SimpleNamespace(
         relay_viewer_cps_url="https://cps.example.test", relay_viewer_credential=""
     )
@@ -80,6 +89,10 @@ def viewer(monkeypatch):
         lambda _r: state.provenance,
     )
     monkeypatch.setattr("kiro_crew.sel.sel", lambda: MagicMock())
+    # Never the host's real vault.
+    monkeypatch.setattr(
+        "kiro_crew.auth.bridge.vault_identity_fingerprint", lambda: state.fingerprint
+    )
     return state
 
 
@@ -177,6 +190,7 @@ async def test_token_mints_for_main_with_the_local_secret(viewer, caplog) -> Non
         "serverDate": 1700.0,
         "crewUrl": CREW.crew_url,
         "name": "Build box",
+        "signInMarker": _marker(FP_A),
     }
     assert viewer.calls == [("list", BEARER), ("mint", EP)]
     assert ACCESS not in caplog.text and BEARER not in caplog.text
@@ -457,3 +471,124 @@ async def test_two_concurrent_401s_share_one_refresh_and_both_resend(monkeypatch
     ]
     assert refreshes == [1]
     assert sorted(sent) == sorted([BEARER, BEARER, FRESH, FRESH])
+
+
+@pytest.mark.asyncio
+async def test_the_sign_in_marker_follows_the_account_and_is_never_logged(viewer, caplog) -> None:
+    caplog.set_level(logging.DEBUG)
+    async with _client() as client:
+        first = await (await _mint(client)).json()
+        again = await (await _mint(client)).json()
+        viewer.fingerprint = FP_B
+        switched = await (await _mint(client)).json()
+        viewer.fingerprint = ""
+        unread = await (await _mint(client)).json()
+    assert first["signInMarker"] == again["signInMarker"] == _marker(FP_A)
+    assert len(first["signInMarker"]) == 16
+    assert switched["signInMarker"] == _marker(FP_B) != first["signInMarker"]
+    assert unread["signInMarker"] is None
+    for value in (_marker(FP_A), _marker(FP_B), FP_A, FP_B):
+        assert value not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_the_test_credential_has_no_sign_in_marker(monkeypatch) -> None:
+    read = []
+    monkeypatch.setattr(
+        "kiro_crew.auth.bridge.vault_identity_fingerprint", lambda: read.append(1) or FP_A
+    )
+    assert await rv._sign_in_marker("relay-viewer-test-credential") is None
+    assert read == []
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_carries_no_sign_in_marker(viewer, monkeypatch) -> None:
+    async def _refuse(url, bearer, endpoint_id, *, token_type=""):
+        raise cps.CpsRefused(cps.CREW_OFFLINE, "the Crew is offline")
+
+    monkeypatch.setattr(cps, "create_crew_access_token", _refuse)
+    async with _client() as client:
+        resp = await _mint(client)
+        body = await resp.json()
+    assert resp.status == 403
+    assert "signInMarker" not in body
+    assert _marker(FP_A) not in str(body)
+
+
+def _switching(viewer, monkeypatch, *, at_bearer=None, at_mint=None):
+    """Move the vault fingerprint during the bearer read and/or the mint."""
+
+    async def _bearer(ref, rejected=""):
+        if at_bearer is not None:
+            viewer.fingerprint = at_bearer
+        return BEARER, ""
+
+    async def _mint(url, bearer, endpoint_id, *, token_type=""):
+        viewer.calls.append(("mint", endpoint_id))
+        if at_mint is not None:
+            viewer.fingerprint = at_mint
+        return cps.CrewAccessToken(ACCESS, 2000.0, 240.0, 1700.0)
+
+    monkeypatch.setattr(rv, "_bearer", _bearer)
+    monkeypatch.setattr(cps, "create_crew_access_token", _mint)
+
+
+async def _assert_switch_refused(viewer, caplog, fingerprints) -> None:
+    caplog.set_level(logging.DEBUG)
+    async with _client() as client:
+        resp = await _mint(client)
+        body = await resp.json()
+    assert (resp.status, body["code"]) == (502, "UNREACHABLE")
+    assert "sign-in changed" in body["error"]
+    assert "accessToken" not in body and "signInMarker" not in body
+    assert ACCESS not in str(body) and ACCESS not in caplog.text
+    assert f"relay viewer: mint {EP} -> UNREACHABLE" in caplog.text
+    for fp in fingerprints:
+        assert fp not in caplog.text and _marker(fp) not in caplog.text
+        assert _marker(fp) not in str(body)
+
+
+@pytest.mark.asyncio
+async def test_a_switch_before_the_bearer_read_refuses_the_grant(viewer, monkeypatch, caplog):
+    _switching(viewer, monkeypatch, at_bearer=FP_B)
+    await _assert_switch_refused(viewer, caplog, (FP_A, FP_B))
+
+
+@pytest.mark.asyncio
+async def test_a_switch_after_the_mint_refuses_the_grant(viewer, monkeypatch, caplog):
+    _switching(viewer, monkeypatch, at_mint=FP_B)
+    await _assert_switch_refused(viewer, caplog, (FP_A, FP_B))
+    assert viewer.calls[-1] == ("mint", EP), "the grant was minted, then discarded"
+
+
+@pytest.mark.asyncio
+async def test_a_switch_away_and_back_still_refuses_the_grant(viewer, monkeypatch, caplog):
+    # A to B to A: every sign-in writes a new generation, so A's second sign-in
+    # does not fingerprint like its first.
+    from kiro_crew.auth.bridge import _identity_digest
+
+    account_a = SimpleNamespace(identity="social", provider="Google", profile_arn="arn:a")
+    account_b = SimpleNamespace(identity="social", provider="Google", profile_arn="arn:b")
+    a1 = _identity_digest(account_a, "generation-1")
+    b = _identity_digest(account_b, "generation-2")
+    a2 = _identity_digest(account_a, "generation-3")
+    assert a1 != a2
+    viewer.fingerprint = a1
+    _switching(viewer, monkeypatch, at_bearer=b, at_mint=a2)
+    await _assert_switch_refused(viewer, caplog, (a1, b, a2))
+
+
+@pytest.mark.asyncio
+async def test_a_forced_refresh_with_no_sign_in_change_still_answers_the_marker(
+    viewer, monkeypatch
+) -> None:
+    # A refresh saves no new generation (see test_kas_login_signout_generation's
+    # test_a_refresh_write_does_not_move_the_fingerprint), so the marker holds.
+    seen = _refusing_list(viewer, monkeypatch, [401])
+    async with _client() as client:
+        resp = await _mint(client)
+        body = await resp.json()
+    assert resp.status == 200
+    assert seen == ["", BEARER]
+    assert body["signInMarker"] == _marker(FP_A)
+    assert body["accessToken"] == ACCESS
