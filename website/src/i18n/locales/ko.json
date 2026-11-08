@@ -11490,6 +11490,7 @@
       "loading": "불러오는 중…",
       "local_changes_not_yet_published_to": "로컬 변경 내용이 아직 게시되지 않은 곳:",
       "move_to_folder": "폴더로 이동",
+      "folder_chip_unfiled": "폴더",
       "no_lifecycle_events_yet": "아직 수명 주기 이벤트가 없습니다.",
       "not_found": "찾을 수 없습니다.",
       "not_in_a_folder_click_to_file": "폴더에 없음 — 클릭하여 정리",

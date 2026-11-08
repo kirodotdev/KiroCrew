@@ -11490,6 +11490,7 @@
       "loading": "正在加载…",
       "local_changes_not_yet_published_to": "本地更改尚未发布到",
       "move_to_folder": "移动到文件夹",
+      "folder_chip_unfiled": "文件夹",
       "no_lifecycle_events_yet": "暂无生命周期事件。",
       "not_found": "未找到。",
       "not_in_a_folder_click_to_file": "不在任何文件夹中 — 点击归档",
