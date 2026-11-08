@@ -478,8 +478,12 @@ describe('pending-card script-validation verdict (issue #10861)', () => {
       expect(
         screen.getByText('Dismiss of “auto/evil-helper” failed (this candidate is no longer pending — approved or dismissed in another window or by your Kiro Crew agent).'),
       ).toBeInTheDocument()
-      expect(screen.getByRole('alert').textContent).not.toContain('already dismissed')
-      expect(screen.getByRole('alert').textContent).not.toContain('already approved')
+      // The failed list read has its own notice; no alert claims an outcome.
+      expect(await screen.findByTestId('skill-list-failure')).toHaveTextContent('boom')
+      for (const alert of screen.getAllByRole('alert')) {
+        expect(alert.textContent).not.toContain('already dismissed')
+        expect(alert.textContent).not.toContain('already approved')
+      }
     } finally {
       confirmSpy.mockRestore()
     }

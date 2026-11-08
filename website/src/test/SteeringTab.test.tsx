@@ -592,25 +592,45 @@ describe('SteeringTab', () => {
     await waitFor(() => expect(screen.getByTestId('md')).toHaveTextContent('# Personal body'))
   })
 
-  it('names the disabled refresh for the read in flight, then restores it', async () => {
-    // A disabled "Refresh steering files" reads as unavailable; while the refetch
-    // runs its name says it is busy instead.
+  it('names the inert refresh for the read in flight, keeps its focus, then restores it', async () => {
+    // An inert "Refresh steering files" reads as unavailable; while the refetch
+    // runs its name says it is busy instead. It stays focusable, so a keyboard
+    // user's focus is not dropped to the page for the whole refresh.
     renderTab()
     const idle = await screen.findByRole('button', { name: 'Refresh steering files' })
-    await waitFor(() => expect(idle).toBeEnabled())
+    await waitFor(() => expect(idle).not.toHaveAttribute('aria-disabled'))
 
     let release: (v: typeof FILES) => void = () => {}
     mockApi.steeringFiles.mockReturnValue(new Promise(resolve => { release = resolve }))
+    idle.focus()
     fireEvent.click(idle)
 
     const busy = await screen.findByRole('button', { name: 'Refreshing steering files…' })
-    expect(busy).toBeDisabled()
+    expect(busy).toHaveAttribute('aria-disabled', 'true')
+    expect(busy).toBeEnabled()
+    expect(busy).toHaveFocus()
     expect(screen.queryByRole('button', { name: 'Refresh steering files' })).toBeNull()
+    const calls = mockApi.steeringFiles.mock.calls.length
+    fireEvent.click(busy)
+    expect(mockApi.steeringFiles.mock.calls.length).toBe(calls)
 
     await act(async () => { release(FILES) })
 
     const back = await screen.findByRole('button', { name: 'Refresh steering files' })
-    await waitFor(() => expect(back).toBeEnabled())
+    await waitFor(() => expect(back).not.toHaveAttribute('aria-disabled'))
+  })
+
+  it('says a failed refresh failed instead of keeping the last list silently', async () => {
+    renderTab()
+    const idle = await screen.findByRole('button', { name: 'Refresh steering files' })
+    await waitFor(() => expect(idle).not.toHaveAttribute('aria-disabled'))
+    expect(screen.queryByTestId('steering-list-failure')).toBeNull()
+
+    mockApi.steeringFiles.mockRejectedValue(new Error('steering list unavailable'))
+    fireEvent.click(idle)
+
+    const notice = await screen.findByTestId('steering-list-failure')
+    expect(notice).toHaveTextContent('steering list unavailable')
   })
 
   it('shows an empty state naming both search roots when nothing is found', async () => {

@@ -94,27 +94,49 @@ describe('SkillsTab', () => {
     expect(screen.getByText(/Loaded by 2 agents/)).toBeInTheDocument()
   })
 
-  it('names the disabled refresh for the read in flight, then restores it', async () => {
-    // A disabled "Refresh skills" reads as unavailable; while the refetch runs its
-    // name says it is busy instead.
+  it('names the inert refresh for the read in flight, keeps its focus, then restores it', async () => {
+    // An inert "Refresh skills" reads as unavailable; while the refetch runs its
+    // name says it is busy instead. It stays focusable, so a keyboard user's
+    // focus is not dropped to the page for the whole refresh.
     const rows = [{ key: 'foo', name: 'foo', description: 'a foo skill', source: 'kirocrew', loaded_by_agents: [] }]
     mockApi.skills.mockResolvedValue(rows)
     renderWithQuery()
     const idle = await screen.findByRole('button', { name: 'Refresh skills' })
-    await waitFor(() => expect(idle).toBeEnabled())
+    await waitFor(() => expect(idle).not.toHaveAttribute('aria-disabled'))
 
     let release: (v: typeof rows) => void = () => {}
     mockApi.skills.mockReturnValue(new Promise(resolve => { release = resolve }))
+    idle.focus()
     fireEvent.click(idle)
 
     const busy = await screen.findByRole('button', { name: 'Refreshing skills…' })
-    expect(busy).toBeDisabled()
+    expect(busy).toHaveAttribute('aria-disabled', 'true')
+    expect(busy).toBeEnabled()
+    expect(busy).toHaveFocus()
     expect(screen.queryByRole('button', { name: 'Refresh skills' })).toBeNull()
+    const calls = mockApi.skills.mock.calls.length
+    fireEvent.click(busy)
+    expect(mockApi.skills.mock.calls.length).toBe(calls)
 
     await act(async () => { release(rows) })
 
     const back = await screen.findByRole('button', { name: 'Refresh skills' })
-    await waitFor(() => expect(back).toBeEnabled())
+    await waitFor(() => expect(back).not.toHaveAttribute('aria-disabled'))
+  })
+
+  it('says a failed refresh failed instead of keeping the last list silently', async () => {
+    const rows = [{ key: 'foo', name: 'foo', description: 'a foo skill', source: 'kirocrew', loaded_by_agents: [] }]
+    mockApi.skills.mockResolvedValue(rows)
+    renderWithQuery()
+    const idle = await screen.findByRole('button', { name: 'Refresh skills' })
+    expect(screen.queryByTestId('skill-list-failure')).toBeNull()
+
+    mockApi.skills.mockRejectedValue(new Error('skills list unavailable'))
+    fireEvent.click(idle)
+
+    const notice = await screen.findByTestId('skill-list-failure')
+    expect(notice).toHaveTextContent('skills list unavailable')
+    expect(screen.getByText('foo')).toBeInTheDocument()
   })
 
   it('shows singular form when exactly one agent loads the skill', async () => {
