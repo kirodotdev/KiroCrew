@@ -82,6 +82,7 @@ port, no tunnel, ``--no-crons``, and the refusal to bind the live port.
 from __future__ import annotations
 
 import contextlib
+import html
 import locale
 import os
 import subprocess
@@ -498,6 +499,40 @@ def write_task_script(cfg: PodConfig, name: str) -> Path:
     return dst
 
 
+#: Task Scheduler priority of a pod's task: 5 is NORMAL_PRIORITY_CLASS with a
+#: normal thread priority. ``schtasks /Create`` has no priority flag and leaves the
+#: default, 7, which is BELOW_NORMAL with low I/O and memory priority. Every process
+#: of the pod inherits it: the wrapper's cmd.exe, its console host, the boot and the
+#: gateway with its children. While other programs keep the CPUs busy at normal
+#: priority that tree barely runs, and `pod up` exhausts its readiness budget.
+TASK_PRIORITY = 5
+
+
+def render_task_xml(script: Path) -> str:
+    """The task definition :func:`start` registers for the wrapper at *script*.
+
+    It is the task ``schtasks /Create /SC ONCE /ST 00:00 /TR <script>`` makes,
+    plus :data:`TASK_PRIORITY`. No ``UserId`` and ``InteractiveToken``: Task
+    Scheduler registers it for the calling user, to run only while that user is
+    logged on, with no password. The trigger lies in the past, so the task never
+    fires on its own and runs only on ``/Run``.
+    """
+    # Element text: `&`, `<` and `>` are the only characters to escape there.
+    command = html.escape(str(script), quote=False)
+    return (
+        '<?xml version="1.0" encoding="UTF-16"?>\n'
+        '<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">\n'
+        '  <Principals><Principal id="Author">'
+        "<LogonType>InteractiveToken</LogonType></Principal></Principals>\n"
+        "  <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>"
+        f"<Priority>{TASK_PRIORITY}</Priority></Settings>\n"
+        "  <Triggers><TimeTrigger><StartBoundary>2000-01-01T00:00:00</StartBoundary>"
+        "</TimeTrigger></Triggers>\n"
+        f'  <Actions Context="Author"><Exec><Command>{command}</Command></Exec></Actions>\n'
+        "</Task>\n"
+    )
+
+
 # ------------------------------------------------------------------------- #
 # Talking to schtasks
 # ------------------------------------------------------------------------- #
@@ -699,18 +734,19 @@ def finish_boot(cfg: PodConfig, name: str, record: dict, code: int, *, certify: 
 def start(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
     """Create pod *name*'s task and run it now.
 
-    ``/SC ONCE /ST 00:00`` is a schedule Task Scheduler will not fire on its
-    own: the trigger time is already in the past when the task is created, and
-    Windows does not replay a missed trigger unless the task asks it to. That
-    keeps a pod TRANSIENT, matching the systemd path (``start``, never
-    ``enable``) and the launchd path's deliberate refusal to install under
-    ``~/Library/LaunchAgents``.
+    The task is registered from :func:`render_task_xml`, because only a task
+    definition can carry :data:`TASK_PRIORITY`. Its one-time trigger is in the
+    past, a schedule Task Scheduler will not fire on its own: Windows does not
+    replay a missed trigger unless the task asks it to. That keeps a pod
+    TRANSIENT, matching the systemd path (``start``, never ``enable``) and the
+    launchd path's deliberate refusal to install under ``~/Library/LaunchAgents``.
 
-    Neither ``/RU`` nor ``/RP`` is passed, which is the documented form for "run
-    as the current logged-on user" and the only one that never prompts for a
-    password: ``/RU`` without ``/RP`` asks for one on an interactive console and
-    fails outright without one. So the task runs as the user, unelevated, which
-    is the whole reason this backend is Task Scheduler and not ``sc.exe``.
+    Neither ``/RU`` nor ``/RP`` is passed and the definition names no user, which
+    is the form for "run as the current logged-on user" and the only one that
+    never prompts for a password: ``/RU`` without ``/RP`` asks for one on an
+    interactive console and fails outright without one. So the task runs as the
+    user, unelevated, which is the whole reason this backend is Task Scheduler
+    and not ``sc.exe``. The definition file is deleted once ``/Create`` returns.
     """
     try:
         prior = runs.read(cfg, name)
@@ -728,18 +764,14 @@ def start(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
         script = write_task_script(cfg, name)
         # Refuse before scheduling if readers could see an old failure result.
         result_path(cfg, name).unlink(missing_ok=True)
-        created = schtasks(
-            "/Create",
-            "/F",
-            "/SC",
-            "ONCE",
-            "/ST",
-            "00:00",
-            "/TN",
-            task_name(cfg, name),
-            "/TR",
-            f'"{script}"',
-        )
+        definition = script.with_suffix(".xml")
+        definition.write_bytes(render_task_xml(script).encode("utf-16"))
+        try:
+            created = schtasks(
+                "/Create", "/F", "/TN", task_name(cfg, name), "/XML", str(definition)
+            )
+        finally:
+            definition.unlink(missing_ok=True)
         if created.returncode != 0:
             raise WindowsTaskError(
                 f"schtasks /Create rc={created.returncode}: "

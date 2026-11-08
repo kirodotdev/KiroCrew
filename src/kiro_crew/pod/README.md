@@ -457,6 +457,11 @@ Task Scheduler, and `kiro_crew.pod.windows` states the five consequences:
   two backends serialise, then re-enters `kirocrew pod _run <name>`. Boot logic
   stays in Python; the wrapper is data. A pod-plane path containing a double
   quote or a newline is refused at `pod up`, because cmd.exe cannot express it.
+  The task is registered from a definition (`schtasks /Create /XML`), because
+  only a definition can set its priority: 5, normal. Task Scheduler's default,
+  7, is below normal with low I/O and memory priority, and every pod process
+  inherits it, so while other programs keep the CPUs busy the boot barely runs
+  and `pod up` runs out its readiness budget.
 - **No restart policy.** A crashed pod stays down, which removes launchd's
   restart-loop hazard entirely (a terminal refusal keeps its honest exit code —
   no exit-0 translation) but means the crash signal has to be recorded: the

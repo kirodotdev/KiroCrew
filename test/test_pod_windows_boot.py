@@ -518,17 +518,32 @@ def test_a_real_task_round_trips_through_create_run_and_delete(cfg):
     """End to end against the actual service manager, with a trivial action.
 
     Proves the four verbs the backend depends on, unelevated, in the pod plane's
-    own folder, without booting a gateway, which the boot test's job.
+    own folder, from the same task definition ``start`` registers, and that its
+    action runs at NORMAL priority. No gateway boots; that is the boot test's job.
     """
     name = f"probe{uuid.uuid4().hex[:8]}"
     marker = cfg.pods_dir / f"{name}.touched"
+    probe = cfg.pods_dir / f"{name}.py"
+    # The action records the priority class it ran at: the task definition is what
+    # keeps a pod off Task Scheduler's default BELOW_NORMAL.
+    probe.write_text(
+        "import ctypes, sys\n"
+        "k = ctypes.WinDLL('kernel32')\n"
+        "k.GetCurrentProcess.restype = ctypes.c_void_p\n"
+        "k.GetPriorityClass.argtypes = [ctypes.c_void_p]\n"
+        "k.GetPriorityClass.restype = ctypes.c_uint32\n"
+        "cls = k.GetPriorityClass(k.GetCurrentProcess())\n"
+        "open(sys.argv[1] + '.tmp', 'w').write('0x%x' % cls)\n"
+        "import os; os.replace(sys.argv[1] + '.tmp', sys.argv[1])\n",
+        encoding="utf-8",
+    )
     script = cfg.pods_dir / f"{name}.cmd"
-    script.write_text(f'@echo off\r\n> "{marker}" echo ok\r\n', newline="")
+    script.write_text(f'@echo off\r\n"{sys.executable}" "{probe}" "{marker}"\r\n', newline="")
+    definition = cfg.pods_dir / f"{name}.xml"
+    definition.write_bytes(win.render_task_xml(script).encode("utf-16"))
     tn = win.task_name(cfg, name)
     try:
-        created = win.schtasks(
-            "/Create", "/F", "/SC", "ONCE", "/ST", "00:00", "/TN", tn, "/TR", f'"{script}"'
-        )
+        created = win.schtasks("/Create", "/F", "/TN", tn, "/XML", str(definition))
         assert created.returncode == 0, created.stderr or created.stdout
         assert win.task_exists(cfg, name) is True
         assert win.schtasks("/Run", "/TN", tn).returncode == 0
@@ -536,3 +551,4 @@ def test_a_real_task_round_trips_through_create_run_and_delete(cfg):
     finally:
         win.schtasks("/Delete", "/TN", tn, "/F")
     assert win.task_exists(cfg, name) is False
+    assert marker.read_text() == f"0x{subprocess.NORMAL_PRIORITY_CLASS:x}"
