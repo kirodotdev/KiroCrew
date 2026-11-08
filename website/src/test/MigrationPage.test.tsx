@@ -61,6 +61,34 @@ describe('MigrationPage', () => {
     migrateCleanup.mockReset()
   })
 
+  it('shows only the error and Retry when the app info fails to load, not the migration story', async () => {
+    getApp.mockRejectedValue(new Error('gateway down'))
+    listApps.mockResolvedValue([])
+    listRegistry.mockResolvedValue({ apps: [] })
+    renderAt('retired-app')
+
+    expect(await screen.findByTestId('migration-page-error')).toHaveTextContent('gateway down')
+    expect(screen.getByRole('button', { name: /Retry/ })).toBeInTheDocument()
+    expect(screen.queryByText(i18nT('pages.migrationPage.your_data_has_been_preserved_and_will_be_availab'))).toBeNull()
+    expect(screen.queryByText(i18nT('pages.migrationPage.name_has_moved_to_a_standalone_app', { name: 'retired-app' }))).toBeNull()
+    expect(screen.queryByText(i18nT('pages.migrationPage.coming_soon_this_app_is_not_yet_available_in_app'))).toBeNull()
+  })
+
+  it('keeps the last good migration card when a Refresh fails', async () => {
+    getApp.mockResolvedValue({ name: 'retired-app', displayName: 'Retired App', version: '1.0.0', enabled: true, origin: 'builtin' })
+    listApps.mockResolvedValue([])
+    listRegistry.mockResolvedValue({ apps: [] })
+    renderAt('retired-app')
+    expect(await screen.findByText(i18nT('pages.migrationPage.coming_soon_this_app_is_not_yet_available_in_app'))).toBeInTheDocument()
+
+    getApp.mockRejectedValue(new Error('gateway down'))
+    fireEvent.click(screen.getByRole('button', { name: /Refresh/ }))
+
+    expect(await screen.findByTestId('migration-page-error')).toHaveTextContent('gateway down')
+    expect(screen.getByText(i18nT('pages.migrationPage.coming_soon_this_app_is_not_yet_available_in_app'))).toBeInTheDocument()
+    expect(screen.getByText('Retired App has moved to a standalone app')).toBeInTheDocument()
+  })
+
   it('does not claim a same-name successor is installed when only the stale record holds the slot', async () => {
     // The registry marks the row installed because the stale builtin record
     // shares its name; the successor itself was never installed.

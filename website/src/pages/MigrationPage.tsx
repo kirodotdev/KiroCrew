@@ -67,7 +67,9 @@ export default function MigrationPage() {
 
   const appInfo = migrationData?.appInfo || null
   const targetName = migrationData?.targetName || ''
-  const state: MigrationState = isLoading ? 'loading' : (queryError ? 'error' : (migrationData?.state || 'loading'))
+  // A failed refetch keeps the last good load, which is still true: only a
+  // load that never succeeded is an error with nothing to show.
+  const state: MigrationState = isLoading ? 'loading' : (migrationData?.state || (queryError ? 'error' : 'loading'))
   const displayError = queryError
     ? (queryError instanceof Error ? queryError.message : '') || i18nT('pages.migrationPage.failed_to_load_app_info')
     : error
@@ -150,6 +152,10 @@ export default function MigrationPage() {
           <Card>
             <ContentSkeleton rows={4} />
           </Card>
+        ) : state === 'error' ? (
+          // A failed load knows nothing about this app: not that it moved, nor
+          // that its data was kept. The error and its Retry above are the page.
+          null
         ) : (
           <>
             {/* Migration explanation */}
