@@ -61,10 +61,12 @@ export default function CommandBarOverlay({
   open,
   onClose,
   initialQuery = '',
+  opener = null,
 }: {
   open: boolean
   onClose: () => void
   initialQuery?: string
+  opener?: HTMLElement | null
 }) {
   const ime = useImeGuard()
   const vv = useVisualViewport()
@@ -197,7 +199,21 @@ export default function CommandBarOverlay({
   // the trap has to be real. Escape is owned by the dialog panel's own keydown
   // handler below, which needs it to pop a scope before it closes the bar (and
   // claims it through the IME latch first).
-  useDialogFocusTrap(dialogRef, onClose, { handleEscape: false })
+  //
+  // The trap does not restore focus: it would read the element to restore after
+  // mount, when the bar's own input already has it. The bar returns focus itself.
+  useDialogFocusTrap(dialogRef, onClose, { handleEscape: false, restoreFocus: false })
+  // A dismiss -- Escape, an outside click, the gesture toggling the bar shut, a
+  // pane switch -- gives focus back to the control the bar was opened from, read
+  // by the host at the gesture. A row that closes the bar ran an action, and that
+  // action owns focus: a session row's composer handoff, in split view too, where
+  // the opener can be another pane's composer. That is the shell palette's rule.
+  const restoreRef = useRef(opener)
+  const closeFromRow = useCallback(() => {
+    restoreRef.current = null
+    onClose()
+  }, [onClose])
+  useEffect(() => () => restoreRef.current?.focus({ preventScroll: true }), [])
   const {
     sessions,
     openSessionsKey,
@@ -318,7 +334,7 @@ export default function CommandBarOverlay({
   })
 
   const { seedNewSession, activateIndex } = useCommandBarOverlayActivation({
-    open, onClose, scope, setScope, query, setQuery, setDebounced, selected, setSelected, inputRef,
+    open, onClose: closeFromRow, scope, setScope, query, setQuery, setDebounced, selected, setSelected, inputRef,
     setUsage, setArgCommand, pendingRow, setPendingRow, setActionError, dialogRunRef,
     commandById, commandByIdRef, chatFoldersRef, dispatch, navigate, queryClient,
     slots, rowsAnswerTheQuery, scopeLoading, scopeFetching,
@@ -628,7 +644,10 @@ export default function CommandBarOverlay({
       // beats stopping propagation on the card, which would put a mouse handler on a
       // non-interactive dialog element for no behavioural gain.
       onMouseDown={e => {
-        if (e.target === e.currentTarget) onClose()
+        if (e.target !== e.currentTarget) return
+        // The press's own default action would clear the focus this close gives back.
+        e.preventDefault()
+        onClose()
       }}
     >
       {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- a dialog owns the keyboard dismissal of its own subtree; the handler below dismisses on Escape and keeps every other key from reaching the page's global shortcuts, and every gesture inside is on a real control */}
