@@ -54,7 +54,8 @@ from kiro_crew.config import loader
 #: Set in the environment of the exec'd image. Its presence means "this process
 #: is already the result of a live-target exec", which terminates the chain even
 #: if the pointer is somehow still satisfiable — the loop guard that does not
-#: depend on path comparison being correct.
+#: depend on path comparison being correct. The exec'd image removes it
+#: (:func:`maybe_reexec`).
 EXEC_MARKER = "KIROCREW_LIVE_EXECED"
 
 _FILENAME = "live_target.json"
@@ -386,7 +387,9 @@ def maybe_reexec(argv: list[str], *, log: object = None) -> None:
     previous exec having already happened in this chain. Only a successful
     ``execve`` does not return.
     """
-    if os.environ.get(EXEC_MARKER):
+    # Popped, not read: anything this gateway later starts (the replacement a
+    # restart spawns) is a new boot and must follow the pointer again.
+    if os.environ.pop(EXEC_MARKER, None):
         return
     target, reason = read_target_reason()
     if target is None:
