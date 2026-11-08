@@ -140,3 +140,81 @@ class TestBotNameWarning:
         assert "expected string" in err
         assert "\u26a0" not in err
         assert not (home / "config.local.json").exists()
+
+
+class TestBaseWriteShadowedByOverlay:
+    """A base ``config set`` of a key ``config.local.json`` also sets says so.
+
+    The overlay deep-merges over ``config.json`` at load, so the base value does
+    not apply; and the bot-name warning must not name a spelling that never loads.
+    """
+
+    def test_shadowed_key_warns_and_still_writes(self, home, capsys):
+        _set(home, "agent.log_level", "error", local=True)
+        capsys.readouterr()
+        _set(home, "agent.log_level", "warning")
+        captured = capsys.readouterr()
+        assert _read(home / "config.json")["agent"]["log_level"] == "WARNING"
+        assert "✅" in captured.out
+        assert "agent.log_level is also set in config.local.json" in captured.err
+
+    def test_shadowed_bot_name_drops_the_will_load_as_line(self, home, capsys):
+        _set(home, BOT_NAME, "Local", local=True)
+        capsys.readouterr()
+        _set(home, BOT_NAME, "Kiro{x}")
+        err = capsys.readouterr().err
+        assert _read(home / "config.json")["agent"]["bot_name"] == "Kiro{x}"
+        assert "agent.bot_name is also set in config.local.json" in err
+        assert "will load as" not in err
+
+    def test_unshadowed_key_warns_nothing_about_the_overlay(self, home, capsys):
+        _set(home, "agent.log_level", "error", local=True)
+        capsys.readouterr()
+        _set(home, BOT_NAME, "Kiro{x}")
+        err = capsys.readouterr().err
+        assert "config.local.json" not in err
+        assert '"Kirox"' in err
+
+    def test_non_object_overlay_ancestor_is_reported_as_the_owner(self, home):
+        # The deep merge puts a non-object overlay value in place of the whole
+        # base subtree, so a leaf written under it is decided by that ancestor.
+        from kiro_crew.cli_config import _overlay_shadowing_keys
+
+        (home / "config.local.json").write_text(
+            json.dumps({"workspaces": {"project": "/projects/old"}, "agent": {"model": "m"}}),
+            encoding="utf-8",
+        )
+        with patch(
+            "kiro_crew.cli_config.config_local_path", return_value=home / "config.local.json"
+        ):
+            found = _overlay_shadowing_keys(
+                [
+                    ("workspaces", "project", "dir"),
+                    ("agent", "model"),
+                    ("agent", "bot_name"),
+                ]
+            )
+        assert found == {("workspaces", "project"), ("agent", "model")}
+
+    def test_mapping_key_with_a_literal_dot_stays_one_segment(self, home):
+        # Model ids such as "custom.v1" key agent.model_context_tokens; split on
+        # the dot, the overlay entry would never be found.
+        from kiro_crew.cli_config import (
+            _addressable_key,
+            _overlay_shadowing_keys,
+            _written_leaf_paths,
+        )
+
+        (home / "config.local.json").write_text(
+            json.dumps({"agent": {"model_context_tokens": {"custom.v1": 8192}}}),
+            encoding="utf-8",
+        )
+        paths = _written_leaf_paths("agent.model_context_tokens", {"custom.v1": 4096})
+        assert paths == [("agent", "model_context_tokens", "custom.v1")]
+        with patch(
+            "kiro_crew.cli_config.config_local_path", return_value=home / "config.local.json"
+        ):
+            found = _overlay_shadowing_keys(paths)
+        assert found == {("agent", "model_context_tokens", "custom.v1")}
+        # The advice names the parent, the deepest key a dotted key can spell.
+        assert _addressable_key(found.pop()) == "agent.model_context_tokens"
