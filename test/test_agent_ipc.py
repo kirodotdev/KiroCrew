@@ -12,6 +12,7 @@ import gc
 import json
 import os
 import sys
+import threading
 import urllib.error
 import urllib.request
 
@@ -115,6 +116,33 @@ def test_pickups_die_with_their_owner() -> None:
     gc.collect()
     assert store.verify(cap, 502) == (None, agent_ipc.REFUSE_CAPABILITY)
     assert store.redeem(pickup, 502) == ("", agent_ipc.REFUSE_PICKUP_UNKNOWN)
+
+
+def test_an_owner_collected_while_the_store_lock_is_held_does_not_hang() -> None:
+    # The cyclic GC can run the owner's finalizer on a thread that already holds the
+    # store's lock (inside issue, or redeem's locked liveness check). The finalizer
+    # must not take that lock, and the next locked call drops the pickup.
+    store = _store()
+    issued: dict[str, str] = {}
+
+    def collect_under_the_lock() -> None:
+        owner = _Owner()
+        issued["pickup"] = store.issue(
+            server="kirocrew-core", session_token="tok", runtime_pid=lambda: 500, owner=owner
+        )
+        issued["cap"] = store.redeem(issued["pickup"], 502)[0]
+        with store._lock:
+            del owner
+            gc.collect()
+
+    worker = threading.Thread(target=collect_under_the_lock, daemon=True)
+    worker.start()
+    worker.join(timeout=default_timeout())
+    if worker.is_alive():
+        store._lock.release()  # unwind the hung finalizer so the thread can exit
+        pytest.fail("the owner's finalizer blocked on the store lock its own thread held")
+    assert store.verify(issued["cap"], 502) == (None, agent_ipc.REFUSE_CAPABILITY)
+    assert store.redeem(issued["pickup"], 502) == ("", agent_ipc.REFUSE_PICKUP_UNKNOWN)
 
 
 def test_the_store_keeps_digests_not_values() -> None:

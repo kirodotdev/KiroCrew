@@ -39,7 +39,7 @@ import logging
 import secrets
 import threading
 import weakref
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
@@ -148,6 +148,10 @@ class CapabilityStore:
         start_fn: Callable[[int], str] = pid_start_token,
     ) -> None:
         self._lock = threading.Lock()
+        # Keys whose owner was collected, waiting for the next locked call to drop
+        # them. The owner's finalizer only appends here: garbage collection can run it
+        # on a thread that already holds _lock, so it must never take the lock itself.
+        self._retired: deque[bytes] = deque()
         self._pickups: OrderedDict[bytes, _Pickup] = OrderedDict()
         self._caps: dict[bytes, bytes] = {}
         self._ppid = ppid_fn
@@ -171,6 +175,7 @@ class CapabilityStore:
         pickup = secrets.token_hex(32)
         key = _digest(pickup)
         with self._lock:
+            self._drop_retired()
             self._pickups[key] = _Pickup(server, session_token, runtime_pid)
             while len(self._pickups) > _MAX_PICKUPS:
                 _old_key, old = self._pickups.popitem(last=False)
@@ -181,8 +186,13 @@ class CapabilityStore:
         return pickup
 
     def _retire(self, key: bytes) -> None:
-        with self._lock:
-            entry = self._pickups.pop(key, None)
+        """The owner's finalizer: queue *key* for the next locked call, lock-free."""
+        self._retired.append(key)
+
+    def _drop_retired(self) -> None:
+        """Drop every queued retired pickup and its capability. Caller holds _lock."""
+        while self._retired:
+            entry = self._pickups.pop(self._retired.popleft(), None)
             if entry is not None and entry.holder is not None:
                 self._caps.pop(entry.holder.capability, None)
 
@@ -215,6 +225,7 @@ class CapabilityStore:
             return "", REFUSE_PICKUP_UNKNOWN
         key = _digest(pickup)
         with self._lock:
+            self._drop_retired()
             entry = self._pickups.get(key)
         if entry is None:
             return "", REFUSE_PICKUP_UNKNOWN
@@ -234,6 +245,7 @@ class CapabilityStore:
         cap_key = _digest(capability)
         with self._lock:
             # Re-read under the lock: a concurrent retire or redeem may have won.
+            self._drop_retired()
             entry = self._pickups.get(key)
             if entry is None:
                 return "", REFUSE_PICKUP_UNKNOWN
@@ -252,6 +264,7 @@ class CapabilityStore:
             return None, REFUSE_CAPABILITY
         cap_key = _digest(capability)
         with self._lock:
+            self._drop_retired()
             key = self._caps.get(cap_key)
             entry = self._pickups.get(key) if key is not None else None
             holder = entry.holder if entry is not None else None
