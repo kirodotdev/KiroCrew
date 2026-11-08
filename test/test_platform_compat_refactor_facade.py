@@ -179,7 +179,8 @@ _MOVED: dict[str, tuple[str, ...]] = {
         execv_target_available _POST_DRAIN_EXEC_FAILURE_EXIT _EXIT_FLUSH_DEADLINE_SECS
         exit_after_failed_restart_exec _drain_event_log_for_exit _WINDOWS_ARM_MACHINES
         is_windows_on_arm BUNDLED_BACKEND_DIST_DIRNAME is_bundled_interpreter
-        _PYTHON_OPTIONS_WITH_VALUES isolated_python_argv ensure_utf8_console
+        _PYTHON_OPTIONS_WITH_VALUES isolated_python_argv _soften_non_unicode_posix_streams
+        ensure_utf8_console
         ensure_line_buffered_stdout _is_windows_store_python_stub find_python_interpreter
         process_alarm_available arm_process_alarm boottime_now awake_now process_start_boot_secs
         process_age_secs strftime raise_nofile_soft_limit nofile_soft_limit python_launcher_hops
