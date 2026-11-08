@@ -90,6 +90,8 @@ _EXTRA_PATH_DIRS = (
 # resolution alone would exit rc=127. :func:`mcp_runtime_path` wraps
 # :func:`augmented_path` rather than altering it, and nothing is persisted.
 # Exception 2, the agent child (kiro-cli): see :func:`append_mcp_path_dirs`.
+# A script or command cron child gets the same PATH as the agent child
+# (``cron_script_child_env._clean_cron_env``).
 #
 # Liveness: resolution callers read the current snapshot on every call. The
 # daemon's PATH is fixed when ``manager._spawn_once`` spawns it, and an ADOPTED
