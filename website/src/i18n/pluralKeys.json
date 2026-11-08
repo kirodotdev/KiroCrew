@@ -122,6 +122,7 @@
   "apps.papyrus.workspace.word_count",
   "apps.pptxMaker.libraryPanel.layouts",
   "apps.pptxMaker.pptxMakerPage.slide_count",
+  "apps.projectScaffolder.projectScaffolderPage.n_possible_sub_folders_inside_packages_above",
   "apps.specBuilder.components.specDetail.pending_comment",
   "apps.specBuilder.components.taskList.done_of_total",
   "apps.workflows.workflowRunTree.agent",
