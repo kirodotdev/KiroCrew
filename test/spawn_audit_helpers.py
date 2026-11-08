@@ -26,6 +26,9 @@ BENIGN_PACKAGE_SPAWNS: frozenset[str] = frozenset(
         # Consolidation write child: this interpreter, -P, a fixed module; jobs travel
         # on its pipes as data, never as argv. No agent input reaches the spawn.
         "consolidation_write_child.py::_spawn",
+        # Pin scan child: this interpreter, -P, a fixed module and a fixed scan kind;
+        # the reply is one JSON line on stdout. No agent input reaches the spawn.
+        "sandbox_pin_scan_child.py::scan_in_child",
         # Recall pool child: this interpreter, -P, a fixed module; jobs travel on its
         # pipes as data, never as argv. No agent input reaches the spawn.
         "recall_pool.py::_spawn",
