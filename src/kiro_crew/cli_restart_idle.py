@@ -213,6 +213,28 @@ def _refuse(reason: str) -> NoReturn:
     sys.exit(EXIT_GATE_REFUSED)
 
 
+def _refuse_as_restart_would(cli_port: int | None, port: int) -> None:
+    """Exit 1 with :func:`_restart`'s own refusal when it would refuse this restart.
+
+    The two refusals it reaches after the gate has said idle: our service name
+    is an alias of another unit, or the desktop app supervises the gateway.
+    Run before the gate, whose idle answer keeps turns paused for a restart
+    that would then never come. Same helpers, message, audit record and exit
+    status as ``_restart``, so a remote caller reads a failed restart, not an
+    idle check that a forced restart could get past.
+    """
+    from kiro_crew.cli_server_stop import _refuse_desktop_supervised, _refuse_service_alias
+
+    if cli_port is None and _service_active():
+        # ``_restart`` restarts the running service and returns before either
+        # refusal, which guard only its foreground path.
+        return
+    if cli_port is None and _refuse_service_alias("gateway_restart", port):
+        sys.exit(1)
+    if _refuse_desktop_supervised("gateway_restart", port, explicit_port=cli_port is not None):
+        sys.exit(1)
+
+
 def _describe(verdict: _Verdict) -> str:
     return f"{verdict.turns} chat turn(s) and {verdict.background} background task(s)"
 
@@ -234,6 +256,7 @@ def _restart_when_idle(cli_port: int | None, *, max_wait_secs: float | None = No
             f"--when-idle can check only one gateway (port {port}). Restart one with "
             "--port, or run `kirocrew restart` to restart both now."
         )
+    _refuse_as_restart_would(cli_port, port)
     wait = DEFAULT_MAX_WAIT_SECS if max_wait_secs is None else max(0.0, max_wait_secs)
     deadline = _now() + wait
     while True:
