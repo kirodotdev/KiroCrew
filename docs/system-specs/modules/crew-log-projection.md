@@ -517,7 +517,12 @@ gateway, the one writer of every log:
   wake queued before it (one decider at a time), so a copy is never dropped or written
   ahead of an earlier one. `emit.flush()` returns True only after one round finds the
   writer quiet, the relay idle and no wake noted since the round began (`timeout=None`
-  waits with no deadline). `drain_for_shutdown` alternates the relay's decisions and the
+  waits with no deadline). Both look the relay module up only once a job has loaded it,
+  and through `importlib.import_module` (`emit_runtime._relay_feed`), so a lookup that
+  lands while another thread is still importing it waits for that import rather than
+  reading a module whose functions are not defined yet. The eager barrier
+  (`eager.drain`) reads `slot_prime`, which its worker imports lazily, the same way.
+  `drain_for_shutdown` alternates the relay's decisions and the
   writer's shutdown drain, so a copy a nested board's drained copy relays up is written
   too; it stops when a round queues nothing new, and answers False with a WARNING naming
   what is left when its budget or its 16 rounds run out. With no consumer thread to start

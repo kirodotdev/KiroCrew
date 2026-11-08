@@ -527,3 +527,72 @@ def test_flush_without_a_deadline_waits_for_the_relayed_copy(_live_crew_log):
     _emit_closer(1, 1.0)
     assert crew_log_emit.flush(timeout=None)
     assert _charges() == [1.0]
+
+
+def _mid_import(
+    patch: pytest.MonkeyPatch,
+    reader: Any = None,
+    name: str = "kiro_crew.crew_log.work_relay_feed",
+) -> list[str]:
+    """List *name* as another thread's import leaves it before its body ran.
+
+    ``import_module`` is what waits for that import; it is stood in for here on
+    *reader* (the module that looks *name* up), returning the finished module, so the
+    test needs no second thread racing the first import.
+    """
+    import importlib
+    import sys
+    import types
+
+    from kiro_crew.crew_log import emit_runtime
+
+    finished = types.SimpleNamespace(generation=lambda: 0, drain=lambda _t: True, idle=lambda: True)
+    asked: list[str] = []
+
+    def _import(target: str) -> Any:
+        asked.append(target)
+        return finished if target == name else importlib.import_module(target)
+
+    patch.setitem(sys.modules, name, types.ModuleType(name))
+    stand_in = types.SimpleNamespace(import_module=_import)
+    patch.setattr(reader or emit_runtime, "importlib", stand_in, raising=False)
+    return asked
+
+
+def test_a_flush_waits_for_the_relay_module_another_thread_is_importing():
+    """A half-imported relay module has no ``generation`` yet; reading it raised."""
+    from kiro_crew.crew_log import emit_runtime
+
+    emit_runtime._writer()
+    # Undone before the fixture's own teardown flush, which must see the real module.
+    with pytest.MonkeyPatch.context() as patch:
+        asked = _mid_import(patch)
+        flushed = crew_log_emit.flush(timeout=default_timeout())
+
+    assert flushed
+    assert "kiro_crew.crew_log.work_relay_feed" in asked
+
+
+def test_the_shutdown_drain_waits_for_the_relay_module_another_thread_is_importing():
+    import time
+
+    from kiro_crew.crew_log import emit_runtime
+
+    writer = emit_runtime._writer()
+    with pytest.MonkeyPatch.context() as patch:
+        asked = _mid_import(patch)
+        drained = emit_runtime._drain_writer_and_relay(writer, time.monotonic(), default_timeout())
+
+    assert drained
+    assert "kiro_crew.crew_log.work_relay_feed" in asked
+
+
+def test_the_eager_barrier_waits_for_the_prime_module_its_worker_is_importing():
+    """The same gap on ``slot_prime``, which the eager worker imports lazily."""
+    name = "kiro_crew.crew_log.slot_prime"
+    with pytest.MonkeyPatch.context() as patch:
+        asked = _mid_import(patch, crew_log_eager, name)
+        drained = crew_log_eager.drain(timeout=default_timeout())
+
+    assert drained
+    assert name in asked
