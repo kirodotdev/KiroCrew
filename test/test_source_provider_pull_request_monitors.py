@@ -698,6 +698,7 @@ def test_bitbucket_unresolved_task_is_actionable_and_payload_is_bounded():
         },
         "tasks": {"values": [{"state": "OPEN"}], "next": None},
         "conflicts": {"values": []},
+        "comments": {"values": [], "next": None},
     }
     provider = BitbucketPullRequestProvider(fetch=lambda _target, resource: payloads[resource])
 
@@ -720,6 +721,7 @@ def test_bitbucket_non_reviewer_participant_does_not_require_a_review():
         "statuses": {"values": [], "next": None},
         "tasks": {"values": [], "next": None},
         "conflicts": {"values": [], "next": None},
+        "comments": {"values": [], "next": None},
     }
     provider = BitbucketPullRequestProvider(fetch=lambda _target, resource: payloads[resource])
 
@@ -746,6 +748,7 @@ def test_bitbucket_loads_one_non_propagating_credential_snapshot(monkeypatch):
         "statuses": {"values": [], "next": None},
         "tasks": {"values": [], "next": None},
         "conflicts": {"values": [], "next": None},
+        "comments": {"values": [], "next": None},
     }
 
     def load_credentials(*, propagate=True):
@@ -769,7 +772,7 @@ def test_bitbucket_loads_one_non_propagating_credential_snapshot(monkeypatch):
 
     assert result.observation.status is MonitorObservationStatus.SUCCESS
     assert credential_calls == [False]
-    assert fetch_credentials == [credentials] * 4
+    assert fetch_credentials == [credentials] * 5
 
 
 def test_bitbucket_channel_probe_does_not_load_owner_credentials(monkeypatch):
@@ -784,6 +787,7 @@ def test_bitbucket_channel_probe_does_not_load_owner_credentials(monkeypatch):
         "statuses": {"values": [], "next": None},
         "tasks": {"values": [], "next": None},
         "conflicts": {"values": [], "next": None},
+        "comments": {"values": [], "next": None},
     }
 
     def fail_load():
@@ -807,7 +811,7 @@ def test_bitbucket_channel_probe_does_not_load_owner_credentials(monkeypatch):
     )
 
     assert result.observation.status is MonitorObservationStatus.SUCCESS
-    assert supplied_credentials == [{}] * 4
+    assert supplied_credentials == [{}] * 5
 
 
 def test_bitbucket_missing_source_commit_stays_pending():
@@ -821,6 +825,7 @@ def test_bitbucket_missing_source_commit_stays_pending():
         "statuses": {"values": [], "next": None},
         "tasks": {"values": [], "next": None},
         "conflicts": {"values": [], "next": None},
+        "comments": {"values": [], "next": None},
     }
     provider = BitbucketPullRequestProvider(fetch=lambda _target, resource: payloads[resource])
 
@@ -939,6 +944,7 @@ def test_bitbucket_incomplete_pages_cannot_report_review_ready(statuses_complete
         },
         "tasks": {"values": [], "next": "https://api.bitbucket.org/next-tasks"},
         "conflicts": {"values": [], "next": None},
+        "comments": {"values": [], "next": None},
     }
     provider = BitbucketPullRequestProvider(fetch=lambda _target, resource: payloads[resource])
 
