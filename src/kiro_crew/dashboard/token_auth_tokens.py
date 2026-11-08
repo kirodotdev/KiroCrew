@@ -150,7 +150,7 @@ class RevokedNonceStore:
                     # Security-sensitive state (revoked session nonces). A
                     # lockdown failure must be observable, matching token_secret.py.
                     logger.warning(
-                        "could not restrict revoked-nonce store %s to its owner; "
+                        "SECURITY: could not restrict revoked-nonce store %s to its owner; "
                         "file may be readable by other users",
                         tmp,
                         exc_info=True,
