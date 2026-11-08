@@ -534,6 +534,56 @@ def test_auto_entries_come_last_marked_and_one_word_ones_are_counted_out(tmp_pat
         assert all(e["id"] != "auto:page.chat:k.t.back" for e in d["entries"])
 
 
+def _settings_tab_auto_file(tmp_path: Path) -> Path:
+    """A build-time auto tier against the REAL committed index: one one-word
+    auto control ("Save") on the Settings > Chat tab."""
+    real = json.loads(ui_index.INDEX_PATH.read_text(encoding="utf-8"))
+    labels = {"k.t.save": "Save"}
+    auto = {
+        "schema_version": 1,
+        "artifact": "auto",
+        "base_input_digest": real["input_digest"],
+        "input_digest": "sha256:t",
+        "coverage": {"scope": "test auto"},
+        "locales": real["locales"],
+        "locations": [
+            {
+                "id": "auto:settings.tab.chat:k.t.save",
+                "kind": "button",
+                "tier": "auto",
+                "conditions_unknown": True,
+                "label_key": "k.t.save",
+                "placements": [
+                    {
+                        "surface_id": "settings",
+                        "route": "/settings/chat",
+                        "parent_ids": ["page.settings", "settings.tab.chat"],
+                        "entry_kind": "content",
+                        "requires": [],
+                    }
+                ],
+            }
+        ],
+        "labels": {loc: labels for loc in real["locales"]},
+    }
+    out = tmp_path / "auto.json"
+    out.write_text(json.dumps(auto), encoding="utf-8")
+    return out
+
+
+def test_settings_counts_only_the_one_word_auto_entries_its_own_listing_left_out(
+    tmp_path: Path,
+) -> None:
+    auto = _settings_tab_auto_file(tmp_path)
+    tab = ui_index.browse_ui("settings.chat", "en", path=ui_index.INDEX_PATH, auto_path=auto)
+    assert tab["auto_tier"] == "available", tab
+    # The Chat tab's listing leaves "Save" out and counts it.
+    assert tab["omitted_one_word_auto"] == 1
+    top = ui_index.browse_ui("settings", "en", path=ui_index.INDEX_PATH, auto_path=auto)
+    # "settings" lists only what no sub-area holds, and settings.chat holds "Save".
+    assert top["omitted_one_word_auto"] == 0
+
+
 # ------------------------------------------------------------ inputs and wiring
 
 
