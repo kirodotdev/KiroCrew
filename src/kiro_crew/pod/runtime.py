@@ -308,7 +308,24 @@ def read_env_file(cfg: PodConfig, name: str) -> dict[str, str]:
             f"pod env file {path} is saved with a {exc.reason}; save it as UTF-8"
         ) from exc
     except UnicodeDecodeError:
-        text = decode_env_bytes(raw)
+        # Name the ANSI code page explicitly rather than letting
+        # decode_env_bytes fall to locale.getpreferredencoding: the gateway
+        # launches its children under UTF-8 mode (PYTHONUTF8=1), in which
+        # getpreferredencoding answers "utf-8", so the bare fallback would re-run
+        # the UTF-8 decode that just failed. locale.getencoding (3.11+) ignores
+        # UTF-8 mode and returns the real code page the pod's own boot reads such
+        # a file with. A file neither decoder can read raises PodError naming the
+        # file, like the wide-encoding arm above, instead of a bare
+        # UnicodeDecodeError with no handler.
+        import locale
+
+        try:
+            text = decode_env_bytes(raw, locale.getencoding())
+        except UnicodeDecodeError as exc:
+            raise PodError(
+                f"pod env file {path} is not valid UTF-8 or {locale.getencoding()} "
+                f"({exc.reason}); save it as UTF-8"
+            ) from exc
     return _parse_env_text(text)
 
 
