@@ -47,6 +47,7 @@ from kiro_crew.llm_helpers import _extract_json_of_type, run_bg_oneliner
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.security.redaction import redact_credentials_with_records
 from kiro_crew.session_summary import _is_injected
+from kiro_crew.shared_crew.collaborators import broadcast_to_collaborators
 
 logger = logging.getLogger(__name__)
 
@@ -955,7 +956,7 @@ class CardLifecycle:
             # refreshed with the numbers of the conversation it replaced.
             self._derived_pending.discard(key)
             self._card_workers.pop(key, None)
-        self.state.broadcast_ws_owners("dashboard_card", {"slot": key, "removed": removed})
+        broadcast_to_collaborators(self.state, "dashboard_card", {"slot": key, "removed": removed})
 
     def notify(self, slot: Any, reason: str) -> None:
         if not self.enabled:
@@ -1408,7 +1409,9 @@ class CardLifecycle:
         # publish through it announces the card as REMOVED, and the client answers a
         # removal by resetting the card query it was just handed. This says what happened.
         if not unchanged:
-            self.state.broadcast_ws_owners("dashboard_card", {"slot": slot.key, "removed": False})
+            broadcast_to_collaborators(
+                self.state, "dashboard_card", {"slot": slot.key, "removed": False}
+            )
         return True
 
     def forget_derived(self, key: str) -> None:

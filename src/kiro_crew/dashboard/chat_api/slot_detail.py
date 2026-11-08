@@ -59,7 +59,7 @@ async def api_chat_slots(request: web.Request) -> web.Response:
     # source links but neither cached status nor provider work.
     from kiro_crew.dashboard.handlers.source_providers import (
         ensure_gitlab_hosts_loaded,
-        is_owner_dashboard_request,
+        is_host_owner_dashboard_request,
         schedule_visibility_refresh,
     )
     from kiro_crew.dashboard.source_providers.chip_refresh import schedule_tiered_check_refresh
@@ -72,7 +72,7 @@ async def api_chat_slots(request: web.Request) -> web.Response:
     except Exception:
         logger.debug("GitLab allowlist warm-up failed; chips may lag one round", exc_info=True)
 
-    include_check_status = is_owner_dashboard_request(request)
+    include_check_status = is_host_owner_dashboard_request(request)
     is_dashboard_user = bool(request.get("is_dashboard_user"))
     payloads = state.serialize_slots(
         include_check_status=include_check_status, dashboard_user=is_dashboard_user
@@ -687,13 +687,13 @@ def _note_owner_focus(request: web.Request, state: "DashboardState", key: str) -
     best-effort: it must never fail the transcript read it rides on.
     """
     from kiro_crew.dashboard.handlers.source_providers import (
-        is_owner_dashboard_request,
+        is_host_owner_dashboard_request,
         schedule_check_refresh,
         schedule_visibility_refresh,
     )
 
     try:
-        if not is_owner_dashboard_request(request):
+        if not is_host_owner_dashboard_request(request):
             return
         state.note_source_activity(key)
         urls = state.source_link_urls_for_slot(key)

@@ -3583,7 +3583,7 @@ agent process dies — so the reference outlives the bytes and the transcript
 renders a missing-file chip.
 
 At each write boundary the referenced image is copied into
-`<sessions dir>/<transcript stem>.attachments/<sha256[:16]>-<basename>` and the
+`<sessions dir>/<transcript stem>.attachments/<sha256[:16]><sep><basename>` and the
 **persisted** destination is rewritten to point there. Two boundaries share the
 one helper, `persist_inline_images`:
 
@@ -3601,6 +3601,23 @@ Contract:
   reclaimed, overwrite the good persisted path with the dead one. The live UI
   reads the image from disk at view time either way.
 - **Content-addressed**, so one image referenced by many messages is stored once.
+- **The name records the origin.** `<sep>` is `_` when the bytes were read through a
+  descriptor pinned inside a Crew-owned root (`chat_attachments.read_with_origin`):
+  a file directly inside the upload directory (the same `_upload_dir` the guest
+  reader uses, at the one depth it serves), or a `<stem>.attachments` copy that is
+  itself `_`. The upload directory is matched as configured and with its parent
+  resolved, and the read then judges the opened descriptor, so a link inside a root
+  that resolves outside it is read again unpinned for the owner and named `-`.
+  `store_image_file` (a picture the gateway downloaded) is `_` too. Every other copy,
+  and every copy an earlier build made, is `-`. A copy keeps its origin when another
+  session names it: `-` stays `-`. A Shared Crew guest reads only `_` copies
+  ([shared-crew](shared-crew.md#guest-scope)); the owner reads both. The separator is
+  the character after the fixed-length lowercase-hex digest, and `_safe_name` never
+  starts a name with `_`, so no basename can forge it. `same_text_modulo_images`
+  accepts both forms. The scratch tree is not a root (it holds every runtime's
+  allocation, and each agent sees only its own), so a picture an agent wrote there
+  is copied as `-`; neither are the browser-tool and computer-use screenshot
+  folders.
 - **Idempotent**: a destination already inside the attachments directory is left
   alone, which lets the two boundaries compose and lets the slot save
   re-serialize its window on every flush without re-copying.

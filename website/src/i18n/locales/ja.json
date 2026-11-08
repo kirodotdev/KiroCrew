@@ -7072,7 +7072,9 @@
       "sessions": "セッション"
     },
     "errorBoundary": {
+      "back_to_chat": "チャットに戻る",
       "lazy_page_load_failed": "このページを読み込めませんでした。ゲートウェイへの接続を確認して、もう一度お試しください。",
+      "owner_only": "オーナー専用",
       "reload_page": "ページを再読み込み",
       "something_went_wrong": "問題が発生しました",
       "try_again": "もう一度試す"
@@ -17333,6 +17335,7 @@
     },
     "schedulePage": {
       "actions": "アクション",
+      "guest": "ゲスト",
       "owning_session_help": "所有セッションのないジョブはチャットの cron_list に表示されず、このページまたは CLI から管理します。",
       "owning_session_tooltip": "所有セッション：{{key}}",
       "view_calendar": "カレンダー",
@@ -22309,6 +22312,8 @@
     "invite_alias_label": "表示名（任意）",
     "filter_empty": "このフィルターに一致するセッションはありません。",
     "invite_err_generic": "うまくいきませんでした。もう一度試してください。",
+    "invite_err_schedules_not_paused": "アクセスは削除されましたが、一部のスケジュールがまだオンのままです。スケジュールページで一時停止してください。",
+    "identity_check_failed": "アクセス権を確認できなかったため、使用できないコントロールが表示されることがあります。",
     "source_observed": "接続を確認",
     "rejected_by_person": "{{name}} が拒否しました",
     "send_race_send_now": "{{name}} さんのメッセージの後に送信",

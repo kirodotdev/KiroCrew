@@ -289,6 +289,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.sel import sel  # noqa: F401
     from kiro_crew.session_ledger import _APPEND_FLUSH_SECONDS  # noqa: F401
+    from kiro_crew.shared_crew.collaborators import (  # noqa: F401
+        broadcast_to_collaborators,
+    )
     from kiro_crew.validation import (  # noqa: F401
         DASHBOARD_SAVE_SCHEMA,
         DASHBOARD_WRITE_SCHEMA,

@@ -67,8 +67,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _MAX_CRON_BODY_BYTES,
         _T,
         _ChatFolderGone,
+        _guest_channel_refusal,
         _invalid_new_chat_per_run,
         _member_store,
+        _pause_after_revoke,
         _persist_holding_folder,
         _refuse_mate_home_chat_folder,
         _resolve_chat_folder_id,
@@ -137,13 +139,16 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _CRON_BUSY_BODY,
         _CRON_BUSY_STATUS,
         _app_caller,
+        _attended_revision,
         _audit_app_cron,
         _audit_unavailable_response,
         _cron_unreadable_response,
+        _guest_unattended_response,
         _invalid_path_id_response,
         _redacted_grant_map,
         _refuse_foreign_app_job,
         _sel,
+        guest_unattended_refusal,
     )
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew import (  # noqa: F401
@@ -181,6 +186,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.cron_service.model import (  # noqa: F401
         validate_alert_after_failures,
         validate_auto_pause_after_failures,
+    )
+    from kiro_crew.cron_service.service.job_writes import (  # noqa: F401
+        ACK_SUMMARY_MAX_CHARS,
     )
     from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
         _restore_dismissed_source_links,
@@ -220,7 +228,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         resolve_lesson_memory_store,
     )
     from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
-        is_owner_dashboard_request,
+        is_host_owner_dashboard_request,
     )
     from kiro_crew.dashboard.slot_ownership import (  # noqa: F401
         app_holds_gateway_key,
@@ -279,6 +287,13 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.security import (  # noqa: F401
         redact_credentials,
         redact_exfiltration_urls,
+    )
+    from kiro_crew.shared_crew.guest_scope import (  # noqa: F401
+        guest_created_by,
+        guest_creator_name,
+        guest_posture_refusal,
+        guest_recently_revoked,
+        is_guest_session,
     )
     from kiro_crew.validation import (  # noqa: F401
         _MODEL_NAME_RE,

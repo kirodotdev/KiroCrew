@@ -72,6 +72,7 @@ if TYPE_CHECKING:
         _run_chat,
         append_and_surface,
         effective_session_key,
+        guest_prompt_origin,
         logger,
         redact_credentials,
         redact_exfiltration_urls,
@@ -1512,12 +1513,18 @@ async def _start_next_queued_turn(
     # this turn's own call, so it ends with this dispatch (``turn_entry`` adopts
     # it only for a user-sent opener).
     _run_kwargs["_directive_owner_origin"] = directive_owner_origin
-    with independent_turn(), initiated_by(queued_initiator(consumed)), queued_work(consumed):
-        task = spawn_guarded_turn(
-            state,
-            slot,
-            _run_chat(state, slot, next_msg, **_run_kwargs),
-        )
+    # The image builder reads a guest's text only through the attachment stores; the
+    # turn's task copies this binding when it is created, whoever's request is running.
+    _guest_token = guest_prompt_origin.bind(guest_prompt_origin.marked(consumed))
+    try:
+        with independent_turn(), initiated_by(queued_initiator(consumed)), queued_work(consumed):
+            task = spawn_guarded_turn(
+                state,
+                slot,
+                _run_chat(state, slot, next_msg, **_run_kwargs),
+            )
+    finally:
+        guest_prompt_origin.reset(_guest_token)
     slot.task = task
     if _run_kwargs.get("_turn_start_background"):
         BACKGROUND_START_TASKS.add(task)

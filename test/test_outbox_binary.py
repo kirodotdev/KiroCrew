@@ -401,7 +401,7 @@ class TestOwnerFacingGatesAndBinaryContent:
         png = outbox / "shot.png"
         png.write_bytes(_synth_flagged_png())
         with patch(
-            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            "kiro_crew.dashboard.handlers.source_providers.is_host_owner_dashboard_request",
             return_value=False,
         ):
             async with TestClient(TestServer(_make_app())) as client:
@@ -414,7 +414,7 @@ class TestOwnerFacingGatesAndBinaryContent:
         raw = _synth_flagged_png()
         png.write_bytes(raw)
         with patch(
-            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            "kiro_crew.dashboard.handlers.source_providers.is_host_owner_dashboard_request",
             return_value=True,
         ):
             async with TestClient(TestServer(_make_app())) as client:

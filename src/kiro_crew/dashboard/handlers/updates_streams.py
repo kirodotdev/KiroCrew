@@ -252,7 +252,34 @@ async def api_logs(request: web.Request) -> web.StreamResponse:
 
     On connect, replays the last *lines* log entries from the ring buffer
     so the client sees history even if the Logs page wasn't open.
+
+    The gateway log stream is the host owner's: a Shared Crew guest is refused, the
+    rule the ``subscribe_logs`` socket frame applies. Other dashboard users read it
+    as before.
     """
+    if request.get("is_dashboard_user") is True:
+        from kiro_crew.dashboard.handlers.source_providers import stale_owner_session_response
+        from kiro_crew.shared_crew.guest_scope import is_guest_session
+
+        if is_guest_session(request):
+            from kiro_crew.sel import sel
+
+            # Audited like the socket's refusal (``subscribe_logs``): a read the SEL
+            # middleware does not record on its own.
+            sel().log_api_access(
+                caller=str(request.get("user") or "dashboard"),
+                operation="logs.stream",
+                outcome="denied",
+                source="dashboard",
+                resources=request.path,
+                error="not_owner",
+            )
+            stale = stale_owner_session_response(request)
+            if stale is not None:
+                return stale
+            return web.json_response(
+                {"error": "owner authorization required", "code": "owner_only"}, status=403
+            )
     try:
         lines_cap = min(max(int(request.query.get("lines", "200")), 1), _LOG_RING_SIZE)
     except (TypeError, ValueError):

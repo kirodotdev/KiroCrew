@@ -40,6 +40,7 @@ from kiro_crew.dashboard.handlers.members import _member_names_for_slug
 from kiro_crew.dashboard.handlers.session_ledger import _session_unit
 from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key
 from kiro_crew.session_ledger import _APPEND_FLUSH_SECONDS
+from kiro_crew.shared_crew.collaborators import broadcast_to_collaborators
 from kiro_crew.validation import (
     DASHBOARD_SAVE_SCHEMA,
     DASHBOARD_WRITE_SCHEMA,
@@ -571,7 +572,7 @@ def _broadcast_changed(
     if crew_name:
         state.broadcast_ws(msg_type, {"slug": slug})
     else:
-        state.broadcast_ws_owners(msg_type, {"slot": slot})
+        broadcast_to_collaborators(state, msg_type, {"slot": slot})
 
 
 # --------------------------------------------------------------------------- #

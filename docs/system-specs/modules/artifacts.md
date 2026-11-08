@@ -2634,6 +2634,7 @@ opens, and each consumer degrades gracefully.
 | `sha256` | string | Hex digest of the bytes. |
 | `original_filename` | string | Basename of the source file; names the download. **LLM-derived** → redacted in `_serialize`. |
 | `alt` | string | Accessible description, from the markdown alt text. **LLM-derived** → redacted in `_serialize`. |
+| `crew_origin` | bool | `true` when the bytes were read from a Crew-owned root (`chat_attachments.read_with_origin`, the rule the session copies follow: [history](history.md#inline-image-attachments-chat_attachmentspy)). Only a literal `true` counts, so a record without the key is `false`. A Shared Crew guest gets the asset only when it is `true`. |
 
 ### Asset endpoint
 
@@ -2649,7 +2650,9 @@ JSON never carries base64.
   bytes are behind token auth and a shared proxy must never serve a cached copy
   to an unauthenticated requester.
 - 404 when the slug does not resolve, is not an image artifact, its sidecar is
-  missing, or its mime is not in the allowlist.
+  missing, or its mime is not in the allowlist, and for a Shared Crew guest also
+  when `crew_origin` is not `true` (`read_image_bytes(crew_origin_only=True)`), so a
+  host picture an assistant reply named stays the owner's.
 - The read is offloaded with `asyncio.to_thread`: the sidecar may be up to
   `MAX_CONTENT_BYTES` and a synchronous read would stall every other gateway
   task, the liveness heartbeat included.
@@ -2712,6 +2715,8 @@ cannot strip them.
 - **Skipped:** remote/`data:`/protocol-relative URLs (never fetched), relative
   paths, unsupported extensions, sensitive paths, and restricted/incognito
   sessions.
+- **Origin.** The read goes through `chat_attachments.read_with_origin`, the same
+  decision the session copy makes, and its answer is stored as `crew_origin`.
 - **Budgets (per message):** at most `MAX_IMAGES_PER_MESSAGE` (12) images and
   `MAX_IMAGE_BYTES_PER_MESSAGE` (64 MiB) of copied bytes. Counted over
   *eligible* images rather than successful writes, so a replay cannot walk past

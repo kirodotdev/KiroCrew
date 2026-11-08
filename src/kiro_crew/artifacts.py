@@ -425,18 +425,22 @@ class ArtifactStore:
     settle_blank = _artifacts_writes.settle_blank
     _write_settled_draft = _artifacts_writes._write_settled_draft
 
-    def read_image_bytes(self, slug: str) -> tuple[bytes, str]:
+    def read_image_bytes(self, slug: str, *, crew_origin_only: bool = False) -> tuple[bytes, str]:
         """Return ``(bytes, mime)`` for an image artifact's stored asset.
 
         Raises :class:`ArtifactNotFoundError` when the slug does not resolve,
         is not an image artifact, or its asset sidecar is missing. The read is
         routed through the gated :meth:`_read_bytes` so the sensitive-path
-        denylist fires here as on every other store read.
+        denylist fires here as on every other store read. *crew_origin_only*
+        (a Shared Crew guest's read) also refuses an image whose bytes did not
+        come from a Crew-owned root (:attr:`ImageMetadata.crew_origin`).
         """
         slug = _validate_slug(slug)
         with self._lock:
             meta = self._load_meta(slug)
             if meta.kind != "image" or meta.image is None:
+                raise ArtifactNotFoundError(f"artifact {slug!r} has no image asset")
+            if crew_origin_only and not meta.image.crew_origin:
                 raise ArtifactNotFoundError(f"artifact {slug!r} has no image asset")
             # Re-validate on READ, and derive the extension from the allowlist
             # rather than trusting the stored ``ext``. ``create_image`` already

@@ -10035,6 +10035,7 @@
     },
     "schedulePage": {
       "actions": "Actions",
+      "guest": "Guest",
       "owning_session_help": "A job without an owning session is invisible to cron_list in chat and is managed from this page or the CLI.",
       "owning_session_tooltip": "Owning session: {{key}}",
       "view_calendar": "Calendar",
@@ -11962,6 +11963,8 @@
     "invite_err_avatar_type": "Use a PNG, JPEG, GIF or WebP picture.",
     "invite_err_owner": "Only the owner of this Crew can invite people.",
     "invite_err_generic": "That did not work. Try again.",
+    "invite_err_schedules_not_paused": "Access is removed, but some of their schedules are still on. Pause them on the Schedule page.",
+    "identity_check_failed": "Couldn't check your access, so some controls may appear that you can't use.",
     "direct_link_title": "Tailscale link",
     "direct_link_label": "Tailscale link to this Crew",
     "direct_link_copy": "Copy",

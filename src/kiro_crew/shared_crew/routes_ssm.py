@@ -17,9 +17,16 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.shared_crew import access_set, ssm, ssm_invites
-from kiro_crew.shared_crew.identity import PROVIDER_SSM
+from kiro_crew.shared_crew.identity import PROVIDER_SSM, ssm_principal
 from kiro_crew.shared_crew.preview import preview_only
-from kiro_crew.shared_crew.routes_invites import WS_ACTOR_KEY, _actor, _error, _json, _owner_refusal
+from kiro_crew.shared_crew.routes_invites import (
+    WS_ACTOR_KEY,
+    _actor,
+    _error,
+    _json,
+    _owner_refusal,
+    pause_revoked_schedules,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +180,12 @@ async def api_revoke(request: web.Request) -> web.Response:
         return _error(404, "not_found")
     await asyncio.to_thread(_audit, "revoke", "ok", _actor(request), invite_id)
     closed = await close_revoked_sockets(request.app, invite_id)
+    unpaused: list[str] = []
+    await pause_revoked_schedules(request.app, [ssm_principal(invite_id).id], unpaused)
+    if unpaused:
+        # The invite is withdrawn but a schedule the person made may still be running
+        # with the owner's approvals: the same answer the Tailscale revoke gives.
+        return _error(503, "schedules_not_paused")
     return web.json_response({"revoked": True, "closed_connections": closed})
 
 

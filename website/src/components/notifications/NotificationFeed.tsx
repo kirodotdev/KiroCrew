@@ -31,6 +31,7 @@ import { Trans } from 'react-i18next'
 import { i18nT } from '../../i18n/t'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import { uiLocation } from '../../uiLocations/uiLocation'
+import { useIsGuest } from '../../hooks/sharedCrew/useSharedCrew'
 /** localStorage key for app channels the user has already decided on (keep or
  *  mute) via the first-notification prompt. System channels never prompt. */
 export const SEEN_CHANNELS_STORAGE_KEY = 'mc:notif:seenChannels'
@@ -108,6 +109,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
   // instead of being left with a loud channel and no prompt.
   // Both are per channel: one channel's save or failure never unlocks or
   // clears another's.
+  const isGuest = useIsGuest()
   const [mutingChannels, setMutingChannels] = useState<ReadonlySet<string>>(() => new Set())
   const [muteFailedChannels, setMuteFailedChannels] = useState<ReadonlySet<string>>(() => new Set())
   const muteChannel = useCallback((channel: string) => {
@@ -156,8 +158,11 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
   // already decided on (or already muted server-side) doesn't either. A
   // channel whose mute is saving or failed keeps its prompt on its own newest
   // row, so a note from another new channel cannot hide that save or its error.
+  // Keeping or muting a channel is the host owner's installation-wide setting, so a
+  // Shared Crew guest is not asked: the guest's feed shows the notes with no prompt.
   const promptTsSet = useMemo(() => {
     const out = new Set<string>()
+    if (isGuest) return out
     const prompted = new Set<string>()
     let freshShown = false
     for (const n of filtered) {
@@ -170,7 +175,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
       prompted.add(n.channel)
     }
     return out
-  }, [filtered, seenChannels, mutingChannels, muteFailedChannels])
+  }, [filtered, seenChannels, mutingChannels, muteFailedChannels, isGuest])
 
   const groups = useMemo(() => {
     const map = new Map<string, Notification[]>()

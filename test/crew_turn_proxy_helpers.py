@@ -199,6 +199,7 @@ def _wire_handler(
 
     monkeypatch.setattr(hi, "_guard", lambda request, operation: denied)
     monkeypatch.setattr(sp, "is_owner_dashboard_request", lambda request: owner)
+    monkeypatch.setattr(sp, "is_host_owner_dashboard_request", lambda request: owner)
     monkeypatch.setattr(
         sh,
         "_owner_denial_response",

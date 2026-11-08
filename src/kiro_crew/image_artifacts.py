@@ -50,6 +50,8 @@ from kiro_crew.artifacts import (
     ArtifactValidationError,
     get_default_store,
 )
+from kiro_crew.chat_attachments import read_with_origin
+from kiro_crew.config.paths import config_dir
 from kiro_crew.hooks import (
     FileTooLargeError,
     safe_read_file_bytes_nolink,
@@ -221,18 +223,26 @@ def register_images(text: str, message_ts: str, session_key: str) -> list[str]:
         # Bounded, O_NOFOLLOW read validated against the inode actually opened:
         # reading the whole file first would allocate an unbounded amount before
         # the store's size check, and an lstat-then-open split leaves a window
-        # where the file is swapped for a link to a sensitive one.
+        # where the file is swapped for a link to a sensitive one. The same origin
+        # decision as the session copy: only bytes read from a Crew-owned root are
+        # ever served to a Shared Crew guest (``ImageMetadata.crew_origin``).
         try:
-            data = safe_read_file_bytes_nolink(str(path), max_bytes=MAX_CONTENT_BYTES)
+            read = read_with_origin(
+                path,
+                sessions_dir=config_dir() / "sessions",
+                max_bytes=MAX_CONTENT_BYTES,
+                read=safe_read_file_bytes_nolink,
+            )
         except FileTooLargeError:
             logger.warning("auto-register image %s exceeds the size cap; skipped", path)
             continue
         except OSError as exc:
             logger.warning("auto-register image read failed for %s: %s", path, exc)
             continue
-        if data is None:
+        if read is None:
             # Rejected: unreadable, hardlinked, non-regular, or sensitive.
             continue
+        data, crew_origin = read
         if copied_bytes + len(data) > MAX_IMAGE_BYTES_PER_MESSAGE:
             # Checked BEFORE the copy, so the budget bounds bytes written rather
             # than reporting after the fact.
@@ -254,6 +264,7 @@ def register_images(text: str, message_ts: str, session_key: str) -> list[str]:
                 auto_registered=True,
                 alt=alt,
                 original_filename=path.name,
+                crew_origin=crew_origin,
             )
         except ArtifactAlreadyExistsError:
             # Already registered (message re-finalized, or the user starred it

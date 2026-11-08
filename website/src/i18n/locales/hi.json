@@ -7265,7 +7265,9 @@
       "sessions": "सेशन"
     },
     "errorBoundary": {
+      "back_to_chat": "चैट पर वापस जाओ",
       "lazy_page_load_failed": "यह पेज लोड नहीं हो सका। गेटवे का कनेक्शन जाँचें, फिर दोबारा कोशिश करें।",
+      "owner_only": "केवल स्वामी के लिए",
       "reload_page": "पेज फिर से लोड करें",
       "something_went_wrong": "कुछ गलत हो गया",
       "try_again": "फिर से कोशिश करें"
@@ -17792,6 +17794,7 @@
     },
     "schedulePage": {
       "actions": "कार्रवाई",
+      "guest": "अतिथि",
       "owning_session_help": "बिना स्वामी सत्र वाला जॉब चैट में cron_list को दिखाई नहीं देता और इसे इस पेज या CLI से प्रबंधित किया जाता है।",
       "owning_session_tooltip": "स्वामी सत्र: {{key}}",
       "view_calendar": "कैलेंडर",
@@ -22845,6 +22848,8 @@
     "invite_alias_label": "दिखने वाला नाम (वैकल्पिक)",
     "filter_empty": "कोई सत्र इस फ़िल्टर से मेल नहीं खाता।",
     "invite_err_generic": "यह नहीं हुआ। फिर कोशिश करो।",
+    "invite_err_schedules_not_paused": "पहुंच हटा दी गई है, लेकिन उनके कुछ शेड्यूल अभी भी चालू हैं। उन्हें शेड्यूल पेज पर रोको।",
+    "identity_check_failed": "तुम्हारी पहुंच की जांच नहीं हो सकी, इसलिए कुछ ऐसे नियंत्रण दिख सकते हैं जिनका तुम उपयोग नहीं कर सकते।",
     "source_observed": "जुड़ते देखा गया",
     "rejected_by_person": "{{name}} ने अस्वीकार किया",
     "send_race_send_now": "{{name}} के संदेश के बाद भेजें",

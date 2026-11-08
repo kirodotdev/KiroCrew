@@ -150,7 +150,7 @@ def bare_approval_decide_allowed(request: web.Request) -> bool:
     The bare form is accepted only from the dashboard user's own browser
     session: the auth middleware sets a PRESENT, empty ``app`` claim for a
     validated dashboard session token (the same positive proof
-    ``is_owner_dashboard_request`` reads), and ``internal_auth`` marks a loopback
+    ``is_host_owner_dashboard_request`` reads), and ``internal_auth`` marks a loopback
     ``X-Internal-Secret`` caller (an agent, MCP tool or cron), which is not a
     person looking at a card. Every other caller (internal secret, or any
     request the middleware left without a dashboard-user claim) must send an
@@ -288,6 +288,10 @@ async def api_chat_mode(request: web.Request) -> web.Response:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     mode = body.get("mode", "normal")
+    from kiro_crew.shared_crew.guest_scope import guest_posture_refusal
+
+    if (guest_denied := guest_posture_refusal(request, mode)) is not None:
+        return guest_denied
     # A cron is held to ``trust`` / ``trust_reads`` on one named slot, before the
     # mode reaches governance or the override: its ``yolo`` is refused as a cron's,
     # whatever the policy says, and its unnamed slot is never the all-slots request.
@@ -963,7 +967,7 @@ def _deny_override_answer_refusal(
     connection is replaced, and a stale card must not approve the command a
     newer card under the same id shows.
     """
-    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+    from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 
     live = isinstance(request_id, str) and bool(request_id) and fut is not None and not fut.done()
     override_card = live and _is_deny_override_card(owner, request_id)
@@ -979,7 +983,7 @@ def _deny_override_answer_refusal(
         from_app
         or delegated
         or request.get("internal_auth") is True
-        or not is_owner_dashboard_request(request)
+        or not is_host_owner_dashboard_request(request)
     ):
         code = "deny_override_owner_only"
     elif wants_override and not strict_native:
@@ -1070,6 +1074,10 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         )
     if request_app and original_action == "yolo":
         return _deny_app_yolo(request_app, "tool_approval:yolo")
+    from kiro_crew.shared_crew.guest_scope import guest_posture_refusal
+
+    if (guest_denied := guest_posture_refusal(request, original_action)) is not None:
+        return guest_denied
     # A FRESH grant read: the body upload above can take long enough for the
     # flag to have been removed from the manifest since the checkpoint read it.
     denied = await deny_app_session_control(

@@ -11,6 +11,8 @@ from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew import guest_prompt_origin
+
 if TYPE_CHECKING:
     from kiro_crew.subagent import SubagentDelivery
 
@@ -976,6 +978,8 @@ class SlotQueueRepository:
             if isinstance(meta, dict):
                 meta.pop(AUTOMATION_STEER_META, None)
                 meta.pop("relay", None)
+                meta.pop(guest_prompt_origin.GUEST_ORIGIN_META, None)
+                guest_prompt_origin.mark(meta)
                 # The label summarized the old text; an edited row shows its own.
                 if previous != item["content"]:
                     meta.pop("banner", None)

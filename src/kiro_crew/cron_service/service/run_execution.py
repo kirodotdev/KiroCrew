@@ -50,7 +50,12 @@ async def _run_job_isolated(self: CronService, job: CronJob, claim: _RunClaim) -
     this run's, and the run would be filed as a failure beside the cancelled row.
     """
     from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
+    from kiro_crew import guest_prompt_origin
 
+    # The run's prompt belongs to the job, not to whichever request armed the shared timer
+    # or started this task: a guest's request must not leak its image restriction into
+    # the owner's schedules. A guest-written prompt names no host image (checkpoint).
+    guest_prompt_origin.bind(False)
     if not self._runs.holds(job.id, claim):
         # cancel() took the claim and wrote the terminal row before this
         # first step. Run nothing, or the finally would write a second row.

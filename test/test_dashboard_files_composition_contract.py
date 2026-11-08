@@ -442,7 +442,7 @@ _IMPORTED_BY_NAME = {
     "_get_config_lock": "kiro_crew.dashboard.handlers.agents",
     "browse_denied_async": "kiro_crew.browser_harness.governance",
     "denied_sides": "kiro_crew.decisions.capability",
-    "is_owner_dashboard_request": "kiro_crew.dashboard.handlers.source_providers",
+    "is_host_owner_dashboard_request": "kiro_crew.dashboard.handlers.source_providers",
     "owner_view_for_request": "kiro_crew.dashboard.handlers.source_providers",
     "publish_session_card_chips_now": "kiro_crew.dashboard.handlers.source_providers",
     "is_tracked_channel": "kiro_crew.slack.handler",

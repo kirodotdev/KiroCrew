@@ -7458,7 +7458,9 @@
       "sessions": "Sessions"
     },
     "errorBoundary": {
+      "back_to_chat": "Retour au chat",
       "lazy_page_load_failed": "Impossible de charger cette page. Vérifie la connexion à la passerelle, puis réessaie.",
+      "owner_only": "Réservé au propriétaire",
       "reload_page": "Recharger la page",
       "something_went_wrong": "Une erreur s'est produite",
       "try_again": "Réessayer"
@@ -18251,6 +18253,7 @@
     },
     "schedulePage": {
       "actions": "Actions",
+      "guest": "Invité",
       "owning_session_help": "Une tâche sans session propriétaire est invisible pour cron_list dans le chat et se gère depuis cette page ou la CLI.",
       "owning_session_tooltip": "Session propriétaire : {{key}}",
       "view_calendar": "Calendrier",
@@ -23381,6 +23384,8 @@
     "invite_alias_label": "Nom affiché (facultatif)",
     "filter_empty": "Aucune session ne correspond à ce filtre.",
     "invite_err_generic": "Cela n’a pas marché. Réessaie.",
+    "invite_err_schedules_not_paused": "L’accès est retiré, mais certaines de ses planifications sont toujours actives. Mets-les en pause sur la page Planifications.",
+    "identity_check_failed": "Impossible de vérifier ton accès : certaines commandes que tu ne peux pas utiliser peuvent s’afficher.",
     "source_observed": "Vu à la connexion",
     "rejected_by_person": "{{name}} a refusé",
     "send_race_send_now": "Envoyer après le message de {{name}}",

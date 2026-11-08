@@ -26,10 +26,11 @@ from kiro_crew.dashboard.handlers.cron_shared import (
     _invalid_path_id_response,
     _redacted_grant_map,
 )
-from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.shared_crew.guest_scope import guest_creator_name
 from kiro_crew.validation import MAX_SHORT_STRING
 
 from ._shared import guard_owner_surface_routes, read_bounded_json
@@ -126,7 +127,7 @@ async def api_crons(request: web.Request) -> web.Response:
     # and no secret VALUE is ever serialized here (names only). Every
     # privileged grant MUTATION (request, approve, deny, revoke, and both
     # denial branches) writes its own SEL event.
-    _owner_view = is_owner_dashboard_request(request)
+    _owner_view = is_host_owner_dashboard_request(request)
     # The run claims and the slot registry belong to the loop, so they are read
     # here; everything else is built in a worker thread below. Building every
     # row (each free-text field through both redaction passes) and encoding the
@@ -163,6 +164,10 @@ async def api_crons(request: web.Request) -> web.Response:
                 # only one a consumer here wants. Host-written at creation, so an
                 # app cannot claim another app's jobs by supplying it.
                 "app": app_owner_name(j.created_by) or None,
+                # The guest who created the job, as a display name ("" when no one
+                # has a name for them), or None for any other creator. The stamp
+                # holds a principal id and is never serialized.
+                "creator": guest_creator_name(j.created_by),
                 # Whether the USER paused this job, as opposed to execution pausing
                 # it after repeated failures. Both land as `enabled=False`, so
                 # `enabled` alone cannot tell them apart -- and the difference is the

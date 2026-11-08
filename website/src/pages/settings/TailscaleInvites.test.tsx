@@ -7,7 +7,9 @@ import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import type { TailscaleInvite, TailscaleInvitesStatus } from '../../api/sharedCrewInvites'
 import { parseEmails, looksLikeApiKey } from '../../api/sharedCrewInvites'
-import { InviteEntry, InviteRow, inviteErrorText, tailscaleInvitesKey } from './TailscaleInvites'
+import { InviteEntry, InviteRow, RevokeUnpausedNotice, inviteErrorText, tailscaleInvitesKey } from './TailscaleInvites'
+import { MemoryRouter } from 'react-router-dom'
+import { sharedCrewKeys } from '../../hooks/sharedCrew/sharedCrewSocket'
 
 vi.mock('../../api/client', () => ({
   api: {
@@ -438,6 +440,40 @@ describe('an invite row', () => {
     expect(screen.queryByTestId('invite-resend')).toBeNull()
     fireEvent.click(screen.getByTestId('invite-revoke-confirm'))
     await waitFor(() => expect(revoke).toHaveBeenCalledWith('9'))
+  })
+
+  it('raises the schedules-left-on notice above the list, where the removed row cannot take it away, until dismissed', async () => {
+    revoke.mockRejectedValue(Object.assign(new ApiError(503, 'schedules_not_paused'), {
+      body: JSON.stringify({ error: 'schedules_not_paused', code: 'schedules_not_paused' }),
+    }))
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+    const invalidate = vi.spyOn(qc, 'invalidateQueries')
+    const page = (row: boolean) => (
+      <MemoryRouter>
+        <QueryClientProvider client={qc}>
+          <RevokeUnpausedNotice />
+          <ul>{row && <InviteRow invite={invite({ id: '9', email: 'sam@example.com' })} />}</ul>
+        </QueryClientProvider>
+      </MemoryRouter>
+    )
+    const { rerender } = render(page(true))
+    fireEvent.click(screen.getByTestId('invite-revoke'))
+    fireEvent.click(screen.getByTestId('invite-revoke-confirm'))
+    const notice = await screen.findByTestId('revoke-unpaused-notice')
+    expect(notice).toHaveTextContent(i18nT('sharedCrew.invite_err_schedules_not_paused'))
+    expect(screen.queryByTestId('invite-revoke-error')).toBeNull()
+    // The share is already gone, so the invite and People lists are read again...
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: tailscaleInvitesKey })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: sharedCrewKeys.people })
+    // ...and the person's row leaves; the notice stays, with the way to the Schedule page.
+    rerender(page(false))
+    expect(screen.getByTestId('revoke-unpaused-notice')).toBeInTheDocument()
+    expect(screen.getByTestId('revoke-unpaused-schedule-link').getAttribute('href')).toBe('/schedule')
+    // Another invalidation does not clear it; only the owner's dismissal does.
+    await act(async () => { await qc.invalidateQueries() })
+    expect(screen.getByTestId('revoke-unpaused-notice')).toBeInTheDocument()
+    fireEvent.click(within(screen.getByTestId('revoke-unpaused-notice')).getByRole('button', { name: i18nT('components.errorNotice.dismiss') }))
+    await waitFor(() => expect(screen.queryByTestId('revoke-unpaused-notice')).toBeNull(), { timeout: CHAIN_TIMEOUT_MS })
   })
 
   it('fades only the text of the row, so Resend and Remove read as live', () => {

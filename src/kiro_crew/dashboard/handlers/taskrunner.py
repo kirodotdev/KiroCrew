@@ -195,10 +195,14 @@ async def _gate_auto_approve(
     ``claimed_source=None`` means the endpoint carries no source claim (e.g.
     ``/execute`` operates on an existing run) — only the app-context check applies.
     """
+    from kiro_crew.shared_crew.guest_scope import is_guest_session
+
     request_app = request.get("app", "")
     granted = requested
     if requested and (
-        request_app != "" or (claimed_source is not None and claimed_source != "dashboard")
+        request_app != ""
+        or (claimed_source is not None and claimed_source != "dashboard")
+        or is_guest_session(request)
     ):
         granted = False
     if requested:
@@ -759,6 +763,27 @@ async def api_taskrunner_rename(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "name": name})
 
 
+def _refuse_guest_plan_write(request: web.Request) -> web.Response | None:
+    """403 ``owner_only`` when a Shared Crew guest rewrites an existing run's plan.
+
+    An owner's auto-approved run executes its plan under a standing grant, so the
+    steps are the owner's to change. ``api_taskrunner_from_chat`` calls this when the
+    body names an existing ``task_id`` (a guest still creates a new plan); the other
+    plan rewrites are owner-only by path (``guest_scope.OWNER_ONLY_WRITE_PATTERNS``).
+
+    ``test_every_task_plan_rewrite_refuses_a_guest`` runs each rewrite as a guest, and
+    ``test_every_task_plan_rewrite_checks_for_a_guest`` fails when from-chat stops calling
+    this.
+    """
+    from kiro_crew.shared_crew.guest_scope import is_guest_session
+
+    if not is_guest_session(request):
+        return None
+    return web.json_response(
+        {"error": "editing an existing plan is owner-only", "code": "owner_only"}, status=403
+    )
+
+
 async def api_taskrunner_update_task(request: web.Request) -> web.Response:
     """PATCH /api/taskrunner/{task_id}/tasks/{index} — edit a pending task in-place."""
     owner_denied = await _require_taskrunner_owner(request, "taskrunner.update_task")
@@ -931,6 +956,19 @@ async def api_taskrunner_export_yaml(request: web.Request) -> web.Response:
     )
 
 
+def _plan_chat_task(run: Any, turn: Any) -> asyncio.Task:  # type: ignore[type-arg]
+    """Start the chat turn that carries *run*'s text, as the guest's when a guest wrote it.
+
+    The summary is cut from the plan's stored text, so the turn reads images through the
+    attachment stores whoever opens it (``Project.guest_origin``).
+    """
+    from kiro_crew import guest_prompt_origin
+
+    # ``create_task`` copies the context it is called in, so the turn keeps the mark.
+    with guest_prompt_origin.binding(bool(getattr(run, "guest_origin", False))):
+        return asyncio.create_task(turn)
+
+
 async def api_taskrunner_to_chat(request: web.Request) -> web.Response:
     """POST /api/taskrunner/{task_id}/to-chat — open task results in a chat slot."""
     owner_denied = await _require_taskrunner_owner(request, "taskrunner.to_chat")
@@ -956,8 +994,9 @@ async def api_taskrunner_to_chat(request: web.Request) -> web.Response:
 
         # The summary is composed by the task runner, not typed by anyone, so the
         # session ledger records the gateway as the actor rather than the user.
-        task = asyncio.create_task(
-            _run_chat(state, slot, summary, _directive_user_origin=False, _turn_actor="gateway")
+        task = _plan_chat_task(
+            run,
+            _run_chat(state, slot, summary, _directive_user_origin=False, _turn_actor="gateway"),
         )
         slot.task = task
         state._background_tasks.add(task)
@@ -1033,8 +1072,8 @@ async def api_taskrunner_to_chat(request: web.Request) -> web.Response:
     from kiro_crew.dashboard.chat import _run_chat  # noqa: F811
 
     # Runner-composed text, so the ledger records the gateway rather than a user.
-    task = asyncio.create_task(
-        _run_chat(state, slot, summary, _directive_user_origin=False, _turn_actor="gateway")
+    task = _plan_chat_task(
+        run, _run_chat(state, slot, summary, _directive_user_origin=False, _turn_actor="gateway")
     )
     slot.task = task
     state._background_tasks.add(task)
@@ -1302,6 +1341,8 @@ async def api_taskrunner_from_chat(request: web.Request) -> web.Response:
     task_id = body.get("task_id", "")
     if not steps or not isinstance(steps, list):
         return web.json_response({"error": "steps array required"}, status=400)
+    if task_id and (guest_denied := _refuse_guest_plan_write(request)) is not None:
+        return guest_denied
     try:
         # This path allocates its own placeholder before calling update_plan.
         state.task_runner._require_workflow_ready()

@@ -3943,7 +3943,9 @@
       "prompt_lead": "This error just came up in the {{productName}} dashboard. Diagnose the root cause and fix it."
     },
     "errorBoundary": {
-      "lazy_page_load_failed": "This page couldn't load. Check the connection to the gateway, then try again."
+      "back_to_chat": "Back to chat",
+      "lazy_page_load_failed": "This page couldn't load. Check the connection to the gateway, then try again.",
+      "owner_only": "Owner only"
     },
     "errorNotice": {
       "dismiss": "Dismiss",

@@ -258,6 +258,10 @@ class ImageMetadata:
     original_filename: str = ""
     #: Alt text for accessibility, carried from the markdown ``![alt](...)``.
     alt: str = ""
+    #: Whether the bytes were read from a Crew-owned root (``chat_attachments.
+    #: read_with_origin``). Only such an image's bytes are served to a Shared Crew
+    #: guest; ``False`` for a host image and for every record written before the flag.
+    crew_origin: bool = False
 
 
 @dataclass

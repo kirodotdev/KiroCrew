@@ -222,9 +222,9 @@ async def create_admission(
     Otherwise the snapshot to put on the reply, and a ``crew_busy`` refusal when
     the body carries a ``work_item`` and a resource is short.
     """
-    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+    from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 
-    if not is_owner_dashboard_request(request):
+    if not is_host_owner_dashboard_request(request):
         return None, None
     settings = await asyncio.to_thread(remote_dispatch_settings)
     if not settings.enabled:

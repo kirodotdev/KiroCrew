@@ -7072,7 +7072,9 @@
       "sessions": "会话"
     },
     "errorBoundary": {
+      "back_to_chat": "返回聊天",
       "lazy_page_load_failed": "无法加载此页面。请检查与网关的连接，然后重试。",
+      "owner_only": "仅限所有者",
       "reload_page": "重新加载页面",
       "something_went_wrong": "出现问题",
       "try_again": "重试"
@@ -17333,6 +17335,7 @@
     },
     "schedulePage": {
       "actions": "操作",
+      "guest": "访客",
       "owning_session_help": "没有所属会话的任务对聊天中的 cron_list 不可见，只能在本页面或 CLI 中管理。",
       "owning_session_tooltip": "所属会话：{{key}}",
       "view_calendar": "日历",
@@ -22309,6 +22312,8 @@
     "invite_alias_label": "显示名称（可选）",
     "filter_empty": "没有符合此筛选的会话。",
     "invite_err_generic": "操作未成功，请重试。",
+    "invite_err_schedules_not_paused": "访问权限已移除，但其部分定时任务仍处于开启状态。请在“定时任务”页面暂停它们。",
+    "identity_check_failed": "无法检查你的访问权限，因此可能会显示一些你无法使用的控件。",
     "source_observed": "出现过连接",
     "rejected_by_person": "{{name}} 已拒绝",
     "send_race_send_now": "在 {{name}} 的消息之后发送",

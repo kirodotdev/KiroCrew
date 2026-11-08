@@ -14,6 +14,10 @@ vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page
 vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {} }) }))
 vi.mock('../hooks/useAgents', () => ({ useAgents: vi.fn(() => ({ agents: [{ name: 'kirocrew' }], defaultAgent: 'kirocrew' })) }))
 vi.mock('../providers/context', () => ({ useProvider: () => ({ id: 'acp' }) }))
+vi.mock('../hooks/sharedCrew/useSharedCrew', async importOriginal => ({
+  ...(await importOriginal<typeof import('../hooks/sharedCrew/useSharedCrew')>()),
+  useIsGuest: () => false,
+}))
 
 const { pending } = vi.hoisted(() => ({ pending: { count: 0 } }))
 

@@ -21,6 +21,7 @@
  *  on; the SSM tab and its rows live in `SsmInvite.tsx`. */
 import { useCallback, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
 import { Check, Copy, ExternalLink, Link2, Mail, RefreshCw, Trash2, UserPlus } from 'lucide-react'
 import { api } from '../../api/client'
 import {
@@ -192,6 +193,8 @@ export function inviteErrorText(code: string): string {
     case 'avatar_too_large': return i18nT('sharedCrew.invite_err_avatar_size')
     case 'avatar_type': return i18nT('sharedCrew.invite_err_avatar_type')
     case 'owner_only': return i18nT('sharedCrew.invite_err_owner')
+    // A revoke that withdrew the share but left one of the person's schedules on.
+    case 'schedules_not_paused': return i18nT('sharedCrew.invite_err_schedules_not_paused')
     default: return i18nT('sharedCrew.invite_err_generic')
   }
 }
@@ -465,17 +468,51 @@ const REVOKE_BODY: Record<RevokeState, string> = {
   member: 'sharedCrew.person_revoke_body',
 }
 
+/** Set when a revoke withdrew a share but left one of the person's schedules on. */
+export const revokeUnpausedKey = ['shared-crew', 'revoke-unpaused'] as const
+
+/** The schedules-still-on notice, above the People list, until the owner dismisses it. */
+export function RevokeUnpausedNotice() {
+  const qc = useQueryClient()
+  // The query only holds the flag: its fn returns what is cached, so an invalidation keeps it.
+  const { data: raised } = useQuery({
+    queryKey: revokeUnpausedKey,
+    queryFn: () => qc.getQueryData<boolean>(revokeUnpausedKey) ?? false,
+    initialData: false,
+    staleTime: Infinity,
+  })
+  if (!raised) return null
+  return (
+    // No hand-off: the People page beside it holds unsaved invite emails, name, picture and API key.
+    <ErrorNotice
+      message={i18nT('sharedCrew.invite_err_schedules_not_paused')}
+      onDismiss={() => qc.setQueryData(revokeUnpausedKey, false)}
+      footer={<Link to="/schedule" className="underline" data-testid="revoke-unpaused-schedule-link">{i18nT('components.crewWakeSection.open_schedule')}</Link>}
+      className="mb-4"
+      testId="revoke-unpaused-notice"
+    />
+  )
+}
+
 export function RevokeControl({ inviteId, name, link = false, state = 'sent', children, transport = 'tailscale' }: { inviteId: string; name: string; link?: boolean; state?: RevokeState; children?: ReactNode; transport?: InviteTransport }) {
   const qc = useQueryClient()
   const [confirming, setConfirming] = useState(false)
+  const refetchAccess = () => {
+    void qc.invalidateQueries({ queryKey: transport === 'ssm' ? ssmStatusKey : tailscaleInvitesKey })
+    void qc.invalidateQueries({ queryKey: sharedCrewKeys.people })
+  }
   const revoke = useMutation({
     mutationFn: async (): Promise<void> => {
       if (transport === 'ssm') await api.sharedCrewSsmRevokeInvite(inviteId)
       else await api.tailscaleRevokeInvite(inviteId)
     },
-    onSuccess: () => {
-      void qc.invalidateQueries({ queryKey: transport === 'ssm' ? ssmStatusKey : tailscaleInvitesKey })
-      void qc.invalidateQueries({ queryKey: sharedCrewKeys.people })
+    onSuccess: () => refetchAccess(),
+    // `schedules_not_paused` answers a revoke that already withdrew the share: the
+    // lists drop the person, row and all, so the notice is raised above the list.
+    onError: error => {
+      if (inviteErrorCode(error) !== 'schedules_not_paused') return
+      qc.setQueryData(revokeUnpausedKey, true)
+      refetchAccess()
     },
   })
   return (
@@ -496,7 +533,7 @@ export function RevokeControl({ inviteId, name, link = false, state = 'sent', ch
         )}
       </div>
       {confirming && <p className="text-[12px] text-muted w-full">{link || !name.trim() ? i18nT('sharedCrew.invite_revoke_link_body') : i18nT(REVOKE_BODY[state], { name })}</p>}
-      <ErrorLine code={revoke.isError ? inviteErrorCode(revoke.error) || 'error' : ''} testId="invite-revoke-error" />
+      <ErrorLine code={revoke.isError && inviteErrorCode(revoke.error) !== 'schedules_not_paused' ? inviteErrorCode(revoke.error) || 'error' : ''} testId="invite-revoke-error" />
     </>
   )
 }

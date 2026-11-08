@@ -497,15 +497,24 @@ async def api_artifact_asset(request: web.Request) -> web.Response:
     A read, like ``api_artifact_detail`` — no restricted-session mutation gate
     applies (nothing is written), and no ``referenced`` breadcrumb is recorded
     (an asset fetch is a sub-resource load of a detail view already counted).
-    404 when the slug does not resolve or is not an image artifact.
+    404 when the slug does not resolve or is not an image artifact, and for a
+    Shared Crew guest also when the image's bytes did not come from a Crew-owned
+    root (``ImageMetadata.crew_origin``): a host picture an assistant reply named
+    stays the owner's.
     """
+    # Local, so the facade does not re-export a name it does not serve.
+    from kiro_crew.shared_crew.guest_scope import is_guest_session
+
     slug = request.match_info.get("slug", "")
+    crew_origin_only = is_guest_session(request)
     try:
         store = get_default_store()
         # Off the loop: the sidecar can be up to MAX_CONTENT_BYTES, and a
         # synchronous read of that size would stall every other gateway task
         # (the user's chat turn and the liveness heartbeat included).
-        data, mime = await asyncio.to_thread(store.read_image_bytes, slug)
+        data, mime = await asyncio.to_thread(
+            store.read_image_bytes, slug, crew_origin_only=crew_origin_only
+        )
     except ArtifactNotFoundError as exc:
         return _err(str(exc), status=404)
     except ArtifactValidationError as exc:

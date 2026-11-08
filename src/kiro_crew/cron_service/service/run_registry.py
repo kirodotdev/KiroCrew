@@ -18,6 +18,7 @@ Instance fields read: ``_active_session_lock``, ``_history``, ``_runs``.
 from __future__ import annotations
 
 import asyncio
+import copy
 from typing import TYPE_CHECKING, Any, Coroutine
 
 from kiro_crew.cron_history import CronHistoryStore
@@ -195,7 +196,13 @@ def set_timeout_alert(self: CronService, cb: Any) -> None:
     self._timeout_alert = cb
 
 
-def trigger_run(self: CronService, job_id: str, *, expected_owner: str | None = None) -> bool:
+def trigger_run(
+    self: CronService,
+    job_id: str,
+    *,
+    expected_owner: str | None = None,
+    require_attended: bool = False,
+) -> bool:
     """Start a manual run of ``job_id`` now; False when one is already in flight.
 
     The check-and-claim the manual-run route and ``CronSDK.run_job_async`` share.
@@ -206,13 +213,19 @@ def trigger_run(self: CronService, job_id: str, *, expected_owner: str | None = 
     self.discard_finished_run(job_id)
     if self.is_running(job_id):
         return False
-    task = asyncio.create_task(self.run_job(job_id, expected_owner=expected_owner))
+    task = asyncio.create_task(
+        self.run_job(job_id, expected_owner=expected_owner, require_attended=require_attended)
+    )
     self.attach_run_task(job_id, task)
     return True
 
 
 def run_job(
-    self: CronService, job_id: str, *, expected_owner: str | None = None
+    self: CronService,
+    job_id: str,
+    *,
+    expected_owner: str | None = None,
+    require_attended: bool = False,
 ) -> Coroutine[Any, Any, bool]:
     """Manually trigger a job via _run_job_isolated (records history).
 
@@ -240,13 +253,24 @@ def run_job(
     if job_id in self._claims:
         return _manual_run_refused()
     claim = self._claim_run(job_id, "manual")
-    return self._run_claimed_manual(job_id, claim, expected_owner)
+    return self._run_claimed_manual(
+        job_id, claim, expected_owner, require_attended=require_attended
+    )
 
 
 async def _run_claimed_manual(
-    self: CronService, job_id: str, claim: _RunClaim, expected_owner: str | None = None
+    self: CronService,
+    job_id: str,
+    claim: _RunClaim,
+    expected_owner: str | None = None,
+    *,
+    require_attended: bool = False,
 ) -> bool:
-    """Body of :meth:`run_job`, entered with the claim already taken."""
+    """Body of :meth:`run_job`, entered with the claim already taken.
+
+    With ``require_attended`` (a Shared Crew guest's run) a job that runs
+    unattended is not started: the record judged is the snapshot about to run.
+    """
     # Refresh the store off the loop, then resolve + spawn on the loop.
     #
     # The locked _sync() + snapshot runs in a worker thread (_synced_snapshot
@@ -282,6 +306,16 @@ async def _run_claimed_manual(
     if not job or (expected_owner is not None and job.created_by != expected_owner):
         self._runs.release(job_id, claim)
         return False
+    if require_attended:
+        # The snapshot hands back the live job object, which an owner's PATCH mutates in
+        # place. Detach a copy FIRST and judge and run that one, so a switch to ``auto``
+        # after this point cannot change who the run answers to. The run merges its
+        # results back to the store by id (``claim.job`` already tolerates a reload
+        # replacing the registry's objects).
+        job = copy.copy(job)
+        if job.approval_mode == "auto" or job.script or job.command:
+            self._runs.release(job_id, claim)
+            return False
     task = asyncio.create_task(self._run_job_isolated(job, claim))
     claim.task = task
     try:

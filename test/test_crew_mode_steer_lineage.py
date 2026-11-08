@@ -67,6 +67,8 @@ def test_a_released_session_typed_into_is_a_plain_send(monkeypatch):
     from kiro_crew.dashboard.session_control_parts import crew_filing
 
     monkeypatch.setattr(source_providers, "is_owner_dashboard_request", lambda r: True)
+
+    monkeypatch.setattr(source_providers, "is_host_owner_dashboard_request", lambda r: True)
     root = _live("r", "kirocrew-conductor")
     worker = _live("w", "kirocrew-worker", created_by="r")
     state = SimpleNamespace(_slots={"r": root, "w": worker})
@@ -91,6 +93,7 @@ def test_with_the_routing_off_a_crew_members_composer_is_a_plain_send(monkeypatc
 
     monkeypatch.setattr(crew_mode, "APPROVAL_ROUTING_LIVE", False)
     monkeypatch.setattr(source_providers, "is_owner_dashboard_request", lambda r: True)
+    monkeypatch.setattr(source_providers, "is_host_owner_dashboard_request", lambda r: True)
     monkeypatch.setattr(crew_mode, "lineage_is_settled", lambda: False)
     monkeypatch.setattr(crew_filing, "_frame_parents", lambda s: None)
     root = _live("r", "kirocrew-conductor")

@@ -28,7 +28,7 @@ import { SharedAccessSetup } from './SharedAccessSetup'
 import { ConsoleAccess, TeamConfigInvalid } from './PeopleModes'
 import { PeopleAdvanced } from './PeopleAdvanced'
 import { PeopleList, PersonalWaiting, ShareHero, useCanInvite, useOwnerRead } from './PeopleCrew'
-import { InviteEntry } from './TailscaleInvites'
+import { InviteEntry, RevokeUnpausedNotice } from './TailscaleInvites'
 import { avatarUrl } from '../../api/sharedCrewInvites'
 import { effectiveMode } from '../../api/sharedCrewMode'
 import { useSharedCrewCapabilities, useSharedCrewMode, useSharedCrewPeople } from '../../hooks/sharedCrew/useSharedCrew'
@@ -97,6 +97,7 @@ export function PeoplePanel() {
   const hasDraftSurface = !missingData && (mode === 'personal' || mode === 'network')
   return (
     <>
+      <RevokeUnpausedNotice />
       {failures.map(({ query, testId, fallback }) => (
         <div key={testId}>
           {/* No hand-off: cached People content holds unsaved invite emails, name, picture and API key. */}

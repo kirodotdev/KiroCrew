@@ -33,6 +33,7 @@ vi.mock('../api/client', async importOriginal => {
     api: {
       ...mod.api,
       sessionsUsageRefresh: vi.fn(),
+      sharedCrewIsGuest: vi.fn(async () => false),
       kiroUsage: vi.fn(async () => KIRO_USAGE_EMPTY),
       // The sign-out link's harness read; its own cases live in
       // KiroAccountModal.signOutLink.test.tsx.
@@ -604,6 +605,18 @@ describe('KiroAccountModal refresh', () => {
       const { unmount } = renderWithProviders(<KiroAccountModal open onClose={vi.fn()} usage={usage} />)
       expect(screen.queryByRole('button', REFRESH)).not.toBeInTheDocument()
       unmount()
+    }
+  })
+
+  it('offers a Shared Crew guest no Refresh: it asks with the host owner\'s account', async () => {
+    vi.mocked(api.sharedCrewIsGuest).mockResolvedValue(true)
+    try {
+      renderWithProviders(<KiroAccountModal open onClose={vi.fn()} usage={BASE_USAGE} />)
+      expect(screen.getByRole('progressbar')).toBeInTheDocument()
+      await waitFor(() => expect(screen.queryByRole('button', REFRESH)).not.toBeInTheDocument())
+      expect(refreshMock).not.toHaveBeenCalled()
+    } finally {
+      vi.mocked(api.sharedCrewIsGuest).mockResolvedValue(false)
     }
   })
 

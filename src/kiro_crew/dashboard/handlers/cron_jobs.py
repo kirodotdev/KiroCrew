@@ -22,6 +22,7 @@ from aiohttp import web
 
 from kiro_crew import model_registry
 from kiro_crew.cron import (
+    CronPendingMismatch,
     CronStoreBusy,
     CronStoreUnreadable,
     is_valid_timezone,
@@ -44,13 +45,22 @@ from kiro_crew.dashboard.handlers.cron_shared import (
     _CRON_BUSY_BODY,
     _CRON_BUSY_STATUS,
     _app_caller,
+    _attended_revision,
     _cron_unreadable_response,
+    _guest_unattended_response,
     _invalid_path_id_response,
     _refuse_foreign_app_job,
     _sel,
+    guest_unattended_refusal,
 )
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.shared_crew.guest_scope import (
+    guest_created_by,
+    guest_posture_refusal,
+    guest_recently_revoked,
+    is_guest_session,
+)
 from kiro_crew.validation import (
     _MODEL_NAME_RE,
     CHANNEL_ID_RE,
@@ -87,6 +97,35 @@ _MAX_CRON_BODY_BYTES = 12 * MAX_CRON_MESSAGE + 64 * 1024
 
 
 # ── Cron jobs ──
+
+
+async def _pause_after_revoke(request: web.Request, job_id: str) -> web.Response:
+    """The answer to a guest's create or enable of *job_id* that committed after their revoke.
+
+    The revoke sweep may have read the store before this write landed, so this job is
+    paused (``routes_invites.pause_job_after_revoke``): 403 ``owner_only`` once it is,
+    503 ``schedules_not_paused`` while it is still enabled, the answer the revoke routes
+    give.
+    """
+    from kiro_crew.shared_crew.routes_invites import _error, pause_job_after_revoke
+
+    if await pause_job_after_revoke(request.app, job_id):
+        return _error(403, "owner_only")
+    return _error(503, "schedules_not_paused")
+
+
+def _guest_channel_refusal(request: web.Request, channel: object) -> web.Response | None:
+    """403 when a Shared Crew guest points a schedule's output at a Slack channel.
+
+    Every run would post through the owner's Slack bot into a channel the guest
+    picked, the egress ``/api/send-message`` and session Slack linking close to a
+    guest. Clearing the channel is allowed.
+    """
+    if not channel or not is_guest_session(request):
+        return None
+    return web.json_response(
+        {"error": "a schedule's Slack channel is owner-only", "code": "owner_only"}, status=403
+    )
 
 
 def _schema_field(field_name: str) -> FieldSpec | None:
@@ -569,6 +608,10 @@ async def api_crons_create(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid channel ID format"}, status=400)
     if approval_mode and approval_mode not in {"", "auto"}:
         return web.json_response({"error": "invalid approval_mode"}, status=400)
+    if (guest_denied := guest_posture_refusal(request, approval_mode)) is not None:
+        return guest_denied
+    if (guest_denied := _guest_channel_refusal(request, channel)) is not None:
+        return guest_denied
     silent = body.get("silent", False)
     strict_schedule = body.get("strict_schedule", False)
     # ``False`` creates the job already paused in the one locked write, so a
@@ -719,6 +762,9 @@ async def api_crons_create(request: web.Request) -> web.Response:
         from kiro_crew.apps.cron_sdk import owner_tag
 
         add_kwargs["created_by"] = owner_tag(app_claim)
+    elif guest_by := guest_created_by(request):
+        # A revoked guest's schedules are found by this stamp and paused.
+        add_kwargs["created_by"] = guest_by
     # Which schedule this job carries. Resolved to kwargs FIRST, then handed to a
     # single add_job_async call: one call site means the store-failure handling
     # below is written once and cannot drift between the three schedule shapes.
@@ -769,6 +815,10 @@ async def api_crons_create(request: web.Request) -> web.Response:
             {"error": _redact_memory_field(str(exc)), "code": "invalid_cron"}, status=400
         )
     state.push_refresh("crons")
+    if is_guest_session(request) and guest_recently_revoked(request):
+        # The guest was revoked while this create was in flight: the sweep that paused
+        # their schedules may have run before it committed.
+        return await _pause_after_revoke(request, job.id)
     from kiro_crew.dashboard.change_cards import cron_job_revision
 
     # The fingerprint of the job as this write made it: a card step records it,
@@ -790,6 +840,8 @@ async def api_cron_delete(request: web.Request) -> web.Response:
     app_denied = await _refuse_foreign_app_job(request, state, [job_id], "crons.delete")
     if app_denied is not None:
         return app_denied
+    if (unattended := await guest_unattended_refusal(request, state, [job_id])) is not None:
+        return unattended
     from kiro_crew.dashboard.handlers.change_cards import REQ_CARD_UNDO_CRON_EXPECT
 
     expected_revision = request.get(REQ_CARD_UNDO_CRON_EXPECT)
@@ -816,6 +868,19 @@ async def api_cron_delete(request: web.Request) -> web.Response:
                     },
                     status=409,
                 )
+            ok = outcome == "removed"
+        elif is_guest_session(request):
+            # Compare-and-delete: the record removed is the one judged attended,
+            # read again under the store lock.
+            outcome = await state.crons.remove_job_if_async(
+                job_id,
+                expected_revision="attended",
+                revision_of=_attended_revision,
+                actor="dashboard",
+                source="api_cron_delete",
+            )
+            if outcome == "changed":
+                return _guest_unattended_response()
             ok = outcome == "removed"
         else:
             ok = await state.crons.remove_job_async(
@@ -867,6 +932,8 @@ async def api_cron_batch_delete(request: web.Request) -> web.Response:
     app_denied = await _refuse_foreign_app_job(request, state, unique_ids, "crons.batch_delete")
     if app_denied is not None:
         return app_denied
+    if (unattended := await guest_unattended_refusal(request, state, unique_ids)) is not None:
+        return unattended
     deleted: list[str] = []
     failed: list[str] = []
     try:
@@ -877,9 +944,27 @@ async def api_cron_batch_delete(request: web.Request) -> web.Response:
         # back on the loop (asyncio.create_task needs it): moving it off-loop
         # would raise AFTER the on-disk delete and leave the scheduler timer
         # cancelled.
-        deleted, failed = await state.crons.remove_jobs(
-            unique_ids, actor="dashboard", source="api_cron_batch_delete"
-        )
+        if is_guest_session(request):
+            # One compare-and-delete per id: each removal is judged on the record
+            # read under the store lock, and an id the owner made unattended meanwhile
+            # lands in ``failed``.
+            for jid in unique_ids:
+                try:
+                    outcome = await state.crons.remove_job_if_async(
+                        jid,
+                        expected_revision="attended",
+                        revision_of=_attended_revision,
+                        actor="dashboard",
+                        source="api_cron_batch_delete",
+                    )
+                except Exception:  # noqa: BLE001 -- keep the removals already made
+                    logger.warning("Guest batch delete of %s failed", jid, exc_info=True)
+                    outcome = "failed"
+                (deleted if outcome == "removed" else failed).append(jid)
+        else:
+            deleted, failed = await state.crons.remove_jobs(
+                unique_ids, actor="dashboard", source="api_cron_batch_delete"
+            )
     except Exception:
         # The batch itself raised (unexpected) — report everything as failed.
         logger.warning("Batch delete failed", exc_info=True)
@@ -956,6 +1041,18 @@ async def api_cron_update(request: web.Request) -> web.Response:
         if kwargs["new_chat_per_run"]:
             # As on create: a new chat per run is a fresh session per run.
             kwargs.setdefault("persistent_session", False)
+    if (guest_denied := guest_posture_refusal(request, kwargs.get("approval_mode"))) is not None:
+        return guest_denied
+    if kwargs.get("channel") and is_guest_session(request):
+        # The edit form sends the stored channel back with every save: unchanged, it is
+        # dropped so the write never touches it; any other value is the guest's pick.
+        current = await state.crons.get_job_async(job_id)
+        if current is not None and kwargs["channel"] == (current.channel or ""):
+            del kwargs["channel"]
+    if (guest_denied := _guest_channel_refusal(request, kwargs.get("channel"))) is not None:
+        return guest_denied
+    if (unattended := await guest_unattended_refusal(request, state, [job_id])) is not None:
+        return unattended
     timeout_secs, timeout_err = timeout_secs_from_body(body)
     if timeout_err is not None:
         return timeout_err
@@ -1116,6 +1213,8 @@ async def api_cron_update(request: web.Request) -> web.Response:
             )
     if not kwargs:
         return web.json_response({"error": "no fields to update"}, status=400)
+    if is_guest_session(request):
+        kwargs["require_attended"] = True
     try:
         job = await _persist_holding_folder(
             state,
@@ -1124,6 +1223,10 @@ async def api_cron_update(request: web.Request) -> web.Response:
         )
     except _ChatFolderGone:
         return _unknown_chat_folder_response()
+    except CronPendingMismatch:
+        # Only a guest's ``require_attended`` can raise this here: the owner made the
+        # job unattended after the check above read it.
+        return _guest_unattended_response()
     except CronStoreBusy:
         return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
     except CronStoreUnreadable as exc:
@@ -1170,12 +1273,25 @@ async def api_cron_enable(request: web.Request) -> web.Response:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     enabled = body.get("enabled", True)
+    # A guest may pause any job; starting an unattended one again is the owner's.
+    if (
+        enabled
+        and (unattended := await guest_unattended_refusal(request, state, [job_id])) is not None
+    ):
+        return unattended
     try:
-        ok = await state.crons.enable_job_async(job_id, enabled=enabled)
+        if enabled and is_guest_session(request):
+            ok = await state.crons.enable_job_async(job_id, enabled=enabled, require_attended=True)
+        else:
+            ok = await state.crons.enable_job_async(job_id, enabled=enabled)
+    except CronPendingMismatch:
+        return _guest_unattended_response()
     except CronStoreBusy:
         return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
     except CronStoreUnreadable as exc:
         return _cron_unreadable_response(exc)
+    if ok and enabled and is_guest_session(request) and guest_recently_revoked(request):
+        return await _pause_after_revoke(request, job_id)
     if ok:
         state.push_refresh("crons")
     return web.json_response({"ok": ok})

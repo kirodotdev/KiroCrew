@@ -15,6 +15,7 @@ import json
 from enum import Enum
 from typing import Any
 
+from kiro_crew import guest_prompt_origin
 from kiro_crew.dashboard.slot_queue_repository import ATTACHMENT_META_KEYS, source_channels_of
 from kiro_crew.dashboard.state import (
     BUSY_RECOVERY_PREFIX,
@@ -614,6 +615,11 @@ def _dequeue_next_message(slot, merge_enabled: bool) -> tuple:
             # so entries from different channels (or one with none) never share a
             # turn: a refusal of one channel's words must not take another's.
             if to_merge and source_channels_of(item) != source_channels_of(to_merge[0]):
+                break
+            # A guest's words and anyone else's get separate image-reader bindings.
+            if to_merge and guest_prompt_origin.marked([item]) != guest_prompt_origin.marked(
+                [to_merge[0]]
+            ):
                 break
             to_merge.append(item)
         if len(to_merge) > 1:

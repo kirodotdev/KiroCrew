@@ -71,7 +71,9 @@ class TestApiCronRun:
             data = await resp.json()
         assert data["ok"] is True
         # A run was started and its task handed to the claim run_job took.
-        state.crons.run_job.assert_called_once_with("j1", expected_owner=None)
+        state.crons.run_job.assert_called_once_with(
+            "j1", expected_owner=None, require_attended=False
+        )
         state.crons.attach_run_task.assert_called_once()
         assert state.crons.attach_run_task.call_args.args[0] == "j1"
 
@@ -118,7 +120,9 @@ class TestApiCronRun:
             resp = await client.post("/api/crons/just-created/run")
             assert resp.status == 200
         state.crons.get_job_async.assert_awaited_once_with("just-created")
-        state.crons.run_job.assert_called_once_with("just-created", expected_owner=None)
+        state.crons.run_job.assert_called_once_with(
+            "just-created", expected_owner=None, require_attended=False
+        )
 
     @pytest.mark.asyncio
     async def test_concurrent_runs_still_yield_one_200_and_one_409(self) -> None:
@@ -136,7 +140,7 @@ class TestApiCronRun:
 
         state = _make_state(_make_job("j1"))
 
-        def _claiming_run_job(job_id: str, *, expected_owner: str | None):
+        def _claiming_run_job(job_id: str, *, expected_owner: str | None, require_attended: bool):
             # The real run_job claims the job synchronously while the call is
             # evaluated, so the next guard read answers "running".
             state.crons.is_running.return_value = True
@@ -153,7 +157,9 @@ class TestApiCronRun:
         finally:
             gate.set()
         # Exactly one run was started despite both requests passing the lookup.
-        state.crons.run_job.assert_called_once_with("j1", expected_owner=None)
+        state.crons.run_job.assert_called_once_with(
+            "j1", expected_owner=None, require_attended=False
+        )
 
 
 async def _wait_until(predicate: Callable[[], bool], *, timeout: float = 5.0) -> None:

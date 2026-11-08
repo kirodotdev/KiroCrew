@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from kiro_crew import git_coord, shutdown_event
+from kiro_crew import git_coord, guest_prompt_origin, shutdown_event
 from kiro_crew.execution_context import ExecutionContext
 from kiro_crew.task_models import Project, TaskStatus
 from kiro_crew.task_planner import auto_name
@@ -246,7 +246,9 @@ async def run(
         )
         await self._taskq_begin_run(run)
         watchdog_task = asyncio.create_task(self._watchdog_loop(run))
-        await self._execute_tasks(run, history_key)
+        # A plan a guest wrote runs as the guest's, whoever starts it (Project.guest_origin).
+        with guest_prompt_origin.binding(run.guest_origin):
+            await self._execute_tasks(run, history_key)
         if run.status == "running" and not self._stopping():
             run.status = "completed"
             run.finished_at = time.time()

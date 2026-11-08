@@ -52,6 +52,7 @@ from typing import Any, Awaitable, Callable
 
 from aiohttp import web
 
+from kiro_crew import guest_prompt_origin
 from kiro_crew import members as members_mod
 from kiro_crew.apps import permissions as app_permissions
 from kiro_crew.dashboard.chat_utils import (
@@ -680,15 +681,35 @@ async def load_routed_slot_window(request: web.Request) -> None:
 
 @web.middleware
 async def slot_ownership_middleware(request: web.Request, handler: Handler) -> web.StreamResponse:
-    """Refuse an app caller on a per-slot route it may not act on, before the handler.
+    """Refuse a guest's write to an owner-only route, and an app caller on a per-slot
+    route it may not act on, before the handler.
 
     Registered inner to ``token_auth_middleware``, which publishes the ``app``
     claim this reads, and inner to ``sel_audit_middleware`` so a refusal here is in
     that request record too. A request the checkpoint admits then has its slot's
     pending window loaded (:func:`load_routed_slot_window`).
     """
-    denied = await slot_route_denial(request)
+    from kiro_crew.shared_crew.guest_scope import (
+        guest_host_path_denial,
+        guest_write_denial,
+        is_guest_session,
+    )
+
+    # ``is None``, not ``or``: a ``web.Response`` is falsy before aiohttp 3.12 (an empty
+    # mapping with no ``__bool__``), which would throw a refusal away.
+    denied = guest_write_denial(request)
+    if denied is None:
+        # A guest never names a location on the host's disk (``HOST_PATH_FIELDS``).
+        denied = await guest_host_path_denial(request)
+    if denied is None:
+        denied = await slot_route_denial(request)
     if denied is not None:
         return denied
     await load_routed_slot_window(request)
-    return await handler(request)
+    # Whatever turn, queue entry or steer this request creates is a guest's: the image
+    # builder reads their text's image paths only through the attachment stores.
+    token = guest_prompt_origin.bind(is_guest_session(request))
+    try:
+        return await handler(request)
+    finally:
+        guest_prompt_origin.reset(token)

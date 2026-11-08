@@ -31,6 +31,29 @@ export function useSharedCrewViewer(enabled = true) {
   return useQuery({ queryKey: sharedCrewKeys.viewer, queryFn: () => api.sharedCrewViewer(), enabled, staleTime: 60_000, retry: false })
 }
 
+function useGuestQuery() {
+  return useQuery({ queryKey: sharedCrewKeys.guest, queryFn: () => api.sharedCrewIsGuest(), staleTime: 60_000, retry: false })
+}
+
+/** Whether this tab is a Shared Crew guest (never true until the server says so). */
+export function useIsGuest(): boolean {
+  return useGuestQuery().data === true
+}
+
+/** Why the identity read failed, or `null`. The server still decides what a guest may do;
+ *  this only keeps a failed read from passing as "not a guest" without a word. */
+export function useGuestIdentityError(): string | null {
+  const { error } = useGuestQuery()
+  if (!error) return null
+  return error instanceof Error ? error.message : String(error)
+}
+
+/** Read the identity again, for the failed read's Try again. */
+export function useRetryGuestIdentity(): () => void {
+  const { refetch } = useGuestQuery()
+  return () => { void refetch() }
+}
+
 /** This Crew's People/setup mode. A missing or failing route is a query error,
  *  which every consumer renders as an error, never as a personal Crew. */
 export function useSharedCrewMode(enabled = true, { fetchOnMount = true }: { fetchOnMount?: boolean } = {}) {

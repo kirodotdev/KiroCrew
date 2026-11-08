@@ -110,10 +110,10 @@ def _install(seed: tuple[str, ...] = ()) -> None:
 
 
 async def _whoami(request: web.Request) -> web.Response:
-    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+    from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 
     return web.json_response(
-        {"user": request.get("user"), "owner": is_owner_dashboard_request(request)}
+        {"user": request.get("user"), "owner": is_host_owner_dashboard_request(request)}
     )
 
 

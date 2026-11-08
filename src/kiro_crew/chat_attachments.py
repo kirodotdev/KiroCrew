@@ -44,14 +44,24 @@ rows, ``chat_persistence._build_message_entry`` for the dashboard slot save):
   that cannot be preserved; nothing already stored is removed to make room.
 * **Local only.** ``http(s)``, ``data:`` and protocol-relative destinations are
   never touched -- they are already durable and are not ours to copy.
+* **The name records the origin.** A copy is ``<sha256[:16]>_<name>`` when its
+  bytes were read through a descriptor pinned inside a Crew-owned root (a file
+  directly inside the upload directory, or another ``_`` copy), or the gateway
+  downloaded the picture itself (:func:`store_image_file`). Every other
+  copy, and every copy an earlier build made, is ``<sha256[:16]>-<name>``. A
+  Shared Crew guest reads only the ``_`` form (``guest_scope._store_relative``),
+  so a host picture an assistant reply names stays the owner's. The separator is
+  the character right after the fixed-length digest and :func:`_safe_name` never
+  starts a name with ``_``, so no source basename can forge it.
 
-The SECURITY boundary on the read is one call to
+The SECURITY boundary on the read is
 :func:`kiro_crew.hooks.safe_read_file_bytes_nolink`, the house chokepoint for
 "read a file an untrusted string named". It opens the final component AS ITSELF on
 every platform (``FILE_FLAG_OPEN_REPARSE_POINT`` where there is no
 ``O_NOFOLLOW``), then validates the descriptor it actually opened -- regular file,
 not hardlinked, not sensitive -- so no check-to-use window remains. Nothing here
-re-decides any of that, and the copy is written from the bytes that call returned.
+re-decides any of that, and the copy is written from the bytes it returned (the
+Crew-origin read is the same call pinned to a root, see :func:`read_with_origin`).
 
 The ``os.lstat`` ahead of it is CLASSIFICATION, not a second gate, and the
 distinction is worth stating because the two look alike. The chokepoint canonicalizes
@@ -91,6 +101,7 @@ import re
 import secrets
 import shutil
 import stat
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -164,6 +175,15 @@ _IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp",
 #: shows the original basename to a human reading the directory.
 _DIGEST_CHARS = 16
 
+#: The character after the digest: where the copied bytes came from (see the
+#: module docstring). ``-`` is the only form any earlier build wrote.
+_HOST_ORIGIN_SEP = "-"
+_CREW_ORIGIN_SEP = "_"
+
+#: A stored copy whose bytes came from a Crew-owned root. Lowercase hex only, so
+#: an uppercase or short-name spelling of a stored file never matches.
+_CREW_STORED_NAME_RE = re.compile(rf"[0-9a-f]{{{_DIGEST_CHARS}}}{_CREW_ORIGIN_SEP}.+")
+
 #: Original basenames are LLM-authored text joined onto a path, so only this
 #: alphabet survives into a filename.
 _UNSAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -191,6 +211,11 @@ _EXTENDED_LENGTH_PREFIX = "\\\\?\\"
 def attachments_dir(sessions_dir: Path, stem: str) -> Path:
     """The attachments directory belonging to the transcript named *stem*."""
     return sessions_dir / f"{stem}{ATTACHMENTS_DIR_SUFFIX}"
+
+
+def is_crew_origin_name(name: str) -> bool:
+    """Whether *name* is a stored copy whose bytes came from a Crew-owned root."""
+    return _CREW_STORED_NAME_RE.fullmatch(name) is not None
 
 
 @dataclass
@@ -304,13 +329,14 @@ def store_image_file(
 
     For a picture the gateway downloaded for a message, which no markup names yet.
     Same copy contract and *budget* as :func:`persist_inline_images`; ``None`` for
-    anything that would leave a reference alone.
+    anything that would leave a reference alone. The gateway fetched these bytes
+    itself, so the copy carries the Crew-origin name.
     """
     if budget.copies_left <= 0:
         return None
     budget.copies_left -= 1
     try:
-        result = _store_one(source, attachments_dir(sessions_dir, stem), budget)
+        result = _store_one(source, attachments_dir(sessions_dir, stem), budget, attested=True)
     except Exception:
         logger.debug("chat-attachments: could not preserve an ingested image", exc_info=True)
         return None
@@ -321,8 +347,87 @@ def store_image_file(
     return f"![image]({_encode_destination(stored, angle_wrapped=False)})"
 
 
-#: The digest prefix a stored attachment's basename carries.
-_STORED_NAME_RE = re.compile(rf"^[0-9a-f]{{{_DIGEST_CHARS}}}-(.+)$")
+#: The digest prefix a stored attachment's basename carries, either origin.
+_STORED_NAME_RE = re.compile(
+    rf"^[0-9a-f]{{{_DIGEST_CHARS}}}[{_HOST_ORIGIN_SEP}{_CREW_ORIGIN_SEP}](.+)$"
+)
+
+
+def read_with_origin(
+    source: Path,
+    *,
+    sessions_dir: Path,
+    max_bytes: int,
+    read: Callable[..., bytes | None],
+) -> tuple[bytes, bool] | None:
+    """The bytes at *source* and whether they came from a Crew-owned root, or ``None``.
+
+    The one origin decision both chat-image copiers make (this module, and
+    :mod:`kiro_crew.image_artifacts`). *read* is the caller's own binding of
+    :func:`kiro_crew.hooks.safe_read_file_bytes_nolink`. A source named in a
+    Crew-owned root (:func:`_crew_root_for`) is read pinned to that root, so the
+    answer is judged on the descriptor actually opened: a link inside the root
+    that resolves outside it is refused there. Anything else, that refusal
+    included, is read as before and counts as host origin, so the owner keeps
+    every copy they had. ``None`` when the chokepoint refuses both reads.
+    Raises :class:`FileTooLargeError` as the chokepoint does.
+    """
+    root = _crew_root_for(source, sessions_dir)
+    if root is not None:
+        data = read(
+            str(source), within_root=root, within_root_is_canonical=True, max_bytes=max_bytes
+        )
+        if data is not None:
+            return data, True
+    data = read(str(source), max_bytes=max_bytes)
+    return None if data is None else (data, False)
+
+
+def _crew_root_for(source: Path, sessions_dir: Path) -> str | None:
+    """The canonical Crew-owned root *source* is named directly inside, or ``None``.
+
+    Lexical, and only a candidate: the read then pins containment to the root this
+    returns. The roots are the upload directory, for a file directly inside it (the
+    one depth a guest is served from there), matched as configured and with its
+    parent resolved (a data home reached through a link, such as macOS ``/var``),
+    and a ``<stem>.attachments`` directory under *sessions_dir* for a copy that
+    already carries the Crew-origin name, so a copy keeps its origin and a host copy
+    cannot be laundered through another session. Nothing else is a root: not the
+    scratch tree, which holds every runtime's allocation while each agent sees only
+    its own, nor the browser-snapshot and computer-use spools.
+    """
+    # The guest reader's own function (``guest_scope._store_relative``), so the
+    # upload root this vouches for is the one a guest is served from. Deferred: the
+    # transcript writer must not load the dashboard at import.
+    from kiro_crew.dashboard.handlers.files import _upload_dir
+
+    parent = source.parent
+    spellings = _root_spellings(Path(_upload_dir()))
+    if spellings and any(_same_dir(parent, Path(spelling)) for spelling in spellings):
+        return spellings[1]
+    if (
+        parent.name.endswith(ATTACHMENTS_DIR_SUFFIX)
+        and parent.name != ATTACHMENTS_DIR_SUFFIX
+        and is_crew_origin_name(source.name)
+    ):
+        spellings = _root_spellings(sessions_dir)
+        if spellings and any(_same_dir(parent.parent, Path(spelling)) for spelling in spellings):
+            return os.path.join(spellings[1], parent.name)
+    return None
+
+
+def _root_spellings(root: Path) -> tuple[str, str] | None:
+    """*root* as configured, and with its parent resolved and its leaf kept literal.
+
+    The second is the canonical root a pinned read compares the opened descriptor
+    against; keeping the leaf literal means a root replaced by a link does not
+    move with it.
+    """
+    try:
+        return str(root), os.path.join(os.path.realpath(root.parent), root.name)
+    except (OSError, ValueError):
+        return None
+
 
 #: Stands in for a destination when two texts are compared modulo images.
 _DEST_PLACEHOLDER = "\x00"
@@ -458,12 +563,18 @@ def purge_staged_attachments(staged: Path) -> bool:
     return False
 
 
-def _store_one(raw_dest: str, target_dir: Path, budget: ImageBudget) -> tuple[str, int] | None:
+def _store_one(
+    raw_dest: str, target_dir: Path, budget: ImageBudget, *, attested: bool = False
+) -> tuple[str, int] | None:
     """Copy the image *raw_dest* names into *target_dir*.
 
     Returns its new path and the bytes that copy consumed of the message budget --
     zero when the bytes were already stored, since content-addressing means a
     repeat costs no disk.
+
+    The stored name's separator records the origin :func:`read_with_origin`
+    proved; *attested* (a picture the gateway downloaded itself) names the copy
+    Crew-origin without that proof.
 
     ``None`` means "leave the reference alone", for every reason: not a local
     absolute path, not an image extension, not a regular file, larger than the
@@ -510,14 +621,25 @@ def _store_one(raw_dest: str, target_dir: Path, budget: ImageBudget) -> tuple[st
     # (where ``O_NOFOLLOW`` does not exist) and adds the hardlink refusal a
     # path-based check cannot make. Oversize RAISES rather than returning None.
     try:
-        data = safe_read_file_bytes_nolink(str(source), max_bytes=MAX_ATTACHMENT_BYTES)
+        if attested:
+            data = safe_read_file_bytes_nolink(str(source), max_bytes=MAX_ATTACHMENT_BYTES)
+            read = None if data is None else (data, True)
+        else:
+            read = read_with_origin(
+                source,
+                sessions_dir=target_dir.parent,
+                max_bytes=MAX_ATTACHMENT_BYTES,
+                read=safe_read_file_bytes_nolink,
+            )
     except FileTooLargeError:
         return None
-    if data is None:
+    if read is None:
         return None
+    data, crew_origin = read
 
     digest = hashlib.sha256(data).hexdigest()[:_DIGEST_CHARS]
-    dest = target_dir / f"{digest}-{_safe_name(source.name)}"
+    sep = _CREW_ORIGIN_SEP if crew_origin else _HOST_ORIGIN_SEP
+    dest = target_dir / f"{digest}{sep}{_safe_name(source.name)}"
     if dest.exists():
         # Content-addressed: a file already under this name holds these bytes.
         return str(dest), 0

@@ -22,7 +22,8 @@ and nobody types the set of people who get in. The AWS SSM link is the one other
 Session Manager proves nothing about the person to the gateway, so there the
 owner's invite is the credential (§2 AWS SSM invites).
 
-No permission scoping in this release: every collaborator a Crew admits has the same
+No permission scoping in this release beyond the owner-only list in "Guest scope": every
+collaborator a Crew admits has the same
 rights, and no code path reads a role or an ACL.
 
 A Crew is a machine identity, not a group of people. Its synthetic principal is the
@@ -707,7 +708,9 @@ built as an argument list from validated parts), `local_url` and `invites`
 `url` and the command; it needs the listener active (409 `ssm_not_active`) and the
 first-share acknowledgement (409 `first_share_ack_required`; one acknowledgement covers
 both transports, and an SSM invite counts as access for it), and is limited to 64
-(409 `ssm_invite_limit`). `DELETE .../ssm/invites/{id}` revokes. Create and revoke
+(409 `ssm_invite_limit`). `DELETE .../ssm/invites/{id}` revokes, closes that person's open
+sockets and pauses the schedules they created (503 `schedules_not_paused` when one stays
+running, the invite already withdrawn). Create and revoke
 write one SEL `shared_crew.ssm_invite.<op>` record.
 
 **UI.** SSM is a tab of the one Invite dialog, beside Tailscale, and the tabs appear
@@ -1540,6 +1543,159 @@ it can lose again if yet another send landed first.
 Everything is in memory and bounded (`MAX_SESSIONS`, `HISTORY_PER_SESSION`). A tab
 that never learned a revision sends none and is not compared.
 
+### Guest scope
+
+A guest (a collaborator a membership boundary admitted, `guest_scope.is_guest_session`)
+does everything the owner does inside the Crew. `is_owner_dashboard_request` answers
+true for a guest's own dashboard session (empty app claim, dashboard-user claim, no
+internal secret, verified collaborator actor, preview on) on every route outside the
+owner-only list, so the shared gates (`require_owner_dashboard_request`,
+`require_owner_for_dashboard_caller`, `deny_non_dashboard_caller`) admit chat, slot
+creation, the agent picker, mates and their threads, approvals, artifacts, skills,
+steering, prompts, workflow definitions and runs (read), schedules and the other in-Crew routes. Anything not
+listed is open to a guest.
+
+`is_host_owner_dashboard_request` is the strict predicate and never admits a guest. It
+guards what spends or discloses the host owner's credentials or reaches beyond this
+Crew: provider status and source-provider access, remote crews and cloud
+(`handlers_instances*`, `remote_*`, `handlers_cloud`, `handlers_crew_turn`), change-card
+apply, the credential-redaction owner view, agent secrets in `GET /api/agents`, schedule
+secret-grant metadata, flagged outbox files unscanned, the session export's context
+layer, the approval override, protected tag identities, host setup
+(`kiro_prerequisite`), the apps proxy principal (`apps.routes_proxy._proxy_principal`)
+and the Shared Crew invite and access routes.
+
+The owner-only routes are `guest_scope.OWNER_ONLY_PATH_PREFIXES`,
+`OWNER_ONLY_RAW_PREFIXES`, `OWNER_ONLY_PATH_PATTERNS` and `OWNER_ONLY_METHOD_PATHS`,
+matched on the normalized request path (a request path holding a `.` or `..` segment is
+always refused to a guest). So is a request whose path as sent percent-encodes a separator
+(`%2F` or `%5C` in either case, through any depth of `%25`, such as `%252F`; the query is not
+judged): the router matches the encoded path, where `x%2Fy` is one segment its handler reads
+as `x/y` (a run a guest renamed `x/y`), while the list reads the decoded path, where it is two
+and a `[^/]+` pattern misses it. `guest_scope._owner_only_request` is that one judgment:
+`guest_write_denial` answers such a write 403 `owner_only`, and `guest_acts_as_owner` answers
+false for it on any method, so an owner-gated read refuses the guest too. The sign-out exemption
+compares the path as sent. The owner is not judged:
+
+| Group | Routes |
+|---|---|
+| Who may reach the Crew and over which network | `/api/shared-crew/{access,preview,tailscale,ssm}`, `/api/tailnet`, `/api/tunnel`, `/api/mobile-connect`, `/api/instances` |
+| `config.json` and security policy | `/api/config`, `/api/dashboard/config`, `/api/agent/config`, `/api/security`, `/api/governance`, `/api/redaction`, `/api/admin`, `/api/sel`, `/api/decisions/{consent,provider,local-models}`, `/api/aws`, `/api/computer-use/config`, `/api/telemetry/collection`, `/api/debug`, `/api/logs`, `/api/diagnostics`, `/api/system` |
+| Credentials, connection secrets and channels | `/api/secrets`, `/api/connections`, `/api/kas-login`, `/api/kas-bundle`, `/api/sso-login`, `/api/sso-ttl`, `/api/token`, `/api/relay-viewer` (the owner's Kiro sign-in), `/api/auth`, `/api/webhooks`, the channel config routes (`/api/channels`, `/api/channel`, `/api/channel-folders`, `/api/slack`, `/api/telegram`, `/api/discord`, `/api/feishu`, `/api/imessage`, `/api/teams`, `/api/messaging`, `/api/webex`, `/api/wecom`, `/api/weixin`, `/api/whatsapp`), `/api/voice/config`, `/api/notifications/push`, `/api/cloud`, `/api/deploy`, `/api/artifacts/{slug}/{publish,sharing,pull-latest,upstream-status,overwrite-remote}` and `/api/publish-providers`, `/api/usage` and `/api/sessions/usage` (billing and sign-in) (they spend the owner's AWS account or publish publicly), `/api/remote-artifacts`, `/api/send-message`, `/api/delete-message`, `/api/slack-profile`, `/api/mediated-secret-*`, `/api/connection-proxy`, `/api/slack-history`, `/api/app-store`, `/api/session-environments`, `/api/wakatime`, `/api/onboarding`, `/api/mcp-gateway`, `/api/mcp/oauth` |
+| Gateway process and host-run code | `/api/restart`, `/api/shutdown`, `/api/update`, `/api/computer-use`, `/api/terminal`, `/api/ws/terminal`, `/api/mcp`, `/api/capability`, `/api/mcp-apps` (an embedded app's tool call), `/api/app-tools` (an app agent tool call, also an internal-only path), `/api/hooks`, `/api/kiro-hooks`, `/api/apps` and `/apps` (installed apps and their backends), `/api/browser`, `/api/themes/install`, `/api/monitors` and `/api/autonudge` (a monitor probes a provider with the owner's credentials; `_require_monitor_owner` asks the strict predicate), starting, saving or promoting a workflow (`/api/workflows/{run,run_intent}`, `/api/workflows/definitions`, `/api/workflows/runs/{id}/{rerun,promote,update-definition}`; a workflow's agents run with every call approved; a guest still reads definitions and runs, previews a run's definition update and can cancel a run), `/api/portability`, `/api/worktree`, `/api/project-scaffold`, `/api/stt/ffmpeg`, a schedule's script source and secret grants (`/api/crons/{id}/{script,secrets}`), `/api/skills/-/trust` (project-skill trust), the memory administration routes (stores, backups, restore, import, migrate, embeddings), `DELETE /api/sessions`, `/api/ui-prefs` (the owner's dashboard prefs backup, which names host paths), `/api/chat/headroom` and `/api/chat/slots/{slot}/work-item` (remote dispatch for the owner's hub account; a guest's slot create with a `work_item` is refused in `remote_work_item.work_item_for_create`) |
+| Host filesystem | `/api/file-*` (except the attachment read below), `/api/directory-upload`, `/api/browse-dirs`, `/api/browse-files`, `/api/path-complete`, `/api/reveal`, `/api/project/{git,tree,session-files,session-file-diff}`, `/api/knowledge/{pick-folder,sources,ingest,import,remote-search}`, and the writes to `/api/agents`, `/api/workspaces`, `/api/projects`, a session's `/environment`, `/api/agent-spec-pins` writes (which version of an agent's spec runs, installation-wide), `PUT /api/memory/settings` (history retention, installation-wide), `PUT /api/notifications/channels/settings`, `PATCH /api/taskrunner/{id}/tasks/{index}`, `PUT /api/taskrunner/{id}/plan` and `POST /api/taskrunner/from-chat` with an existing `task_id` (an owner's auto-approved run executes the plan under its standing grant; the first two are owner-only by path and from-chat calls `_refuse_guest_plan_write`, so a guest still creates a new plan), `PUT /api/members/{slug}/goals/schedules` (Goals check-ins create unattended jobs a revoke cannot find) and linking a session to Slack (`/api/chat/slots/{name}/{slack,mirror}-{link,pause,unlink}`) (a guest reads them; browsing or writing a session's remote files is closed) |
+
+`test_shared_crew_guest_parity.py` copies the owner-only lists in full and keeps `test/data/shared_crew_guest_open_routes.txt` as the reviewed guest-open set, so a registered route in neither fails the test. It checks that each prefix
+still names a registered route, and compares the guest-open routes of the live dashboard's route table (every registered
+route, apps included) with `test/data/shared_crew_guest_open_routes.txt`, so a new route is either listed
+owner-only or added to the allow-list knowingly.
+
+Chat attachment preview. `GET /api/file-raw` is the one file route a guest reaches, and
+only for a file directly inside the upload directory or a Crew-origin copy directly inside a session's
+`sessions/<stem>.attachments/` directory (`guest_scope.guest_attachment_read`). The copier names a copy `<sha256[:16]>_<name>` only when its bytes were read through a descriptor pinned inside a Crew-owned root (a file directly inside the upload directory, another `_` copy) or the gateway downloaded the picture itself (`store_image_file`); every other copy, a host image an assistant reply named included, is `<sha256[:16]>-<name>`, and so is every copy made before this rule ([history](history.md#inline-image-attachments-chat_attachmentspy)). `_store_relative` admits a session file only in the `_` form (`chat_attachments.is_crew_origin_name`), so a guest never reads a `-` copy; the owner reads both. The scratch tree is not a root, so a copy of a picture a mate wrote to scratch is `-` and stays the owner's, as do browser-tool and computer-use screenshots. The guest's `path` is only a name to look up: `_store_relative` splits it as text and never resolves it. It must be the server's literal upload directory plus one file name, or the literal `sessions/` directory plus one `<stem>.attachments` directory plus one file name, and every part must be a plain name (no empty segment, `.`, `..`, `:` or control character; a leading double separator, a UNC path, is refused first). Anything else is refused before any file is touched, so a UNC or link-to-UNC path, `..` and a symlink in the guest's string never reach `realpath`. The path that is opened is built from the server's own root: the root and the `<stem>.attachments` directory must be real directories (`lstat`, not links or Windows junctions), and the file is read through the house chokepoint `hooks.safe_read_file_bytes_nolink` pinned to that directory (`within_root`, `within_root_is_canonical=True`, the route's byte cap), which judges the descriptor it opened, so a link, a second hard link or a directory swapped after the check is refused. The read runs on the file routes' isolated path-probe pool (a stalled mount answers the busy response and cannot starve the gateway's shared executor). The guest arm does not go through the owner arm's `_open_checked`: it reads only those two stores, by the checks above, and the route then serves only the raster, SVG and PDF types it sniffs. The owner's reach is unchanged.
+
+Image artifacts follow the same rule. `image_artifacts.register_images` reads a picture an assistant segment names through the same origin decision (`chat_attachments.read_with_origin`) and records it as `image.crew_origin` ([artifacts](artifacts.md#image-metadata-schema)). `GET /api/artifacts/{slug}/asset` passes `crew_origin_only` for a guest (`guest_scope.is_guest_session`), so a guest gets 404 for an image without the flag, a legacy image and a picture a mate wrote to scratch included; the owner is unchanged. No other artifact route returns an image's bytes: an image's detail and versions carry an empty `content`.
+
+Images named in a guest's text. `acp.prompt_blocks.build_prompt_blocks` is the one place a path in a prompt is read and sent to the model as a picture. A prompt a guest's request started reads it through `guest_scope.attachment_read` (the same literal store-name check as the preview route): a path that is not an attachment-store file stays plain text and is never opened, and a store file is attached from the bytes that check read. `guest_prompt_origin` carries the mark as a context variable. `slot_ownership_middleware` binds it for a guest's request, so a spawn, a regenerate, a rewind and a direct send, and the tasks they create, inherit it. A queued message or a steer carries `guest_origin` in its entry meta (`queue_for_next_turn`, `steer_into_running_turn`, a guest's queue edit), the meta is durable, and the queue drain binds from the entries it consumes (`guest_prompt_origin.marked`), so a turn never takes the mark of whichever request created its task. The checkpoint also judges the text where it enters (`_local_image_outside_stores`): every string a guest's write carries is scanned with the prompt builder's own path grammar (`image_refs._PATH_RE` over the same literal-masked view) and the copier's, and a path that is not a literal attachment-store name for a regular file (`_is_plain_store_file`: the name is taken apart as text, never resolved, then the store root, the `<stem>.attachments` directory and the file are `lstat`-ed, so a link on the way refuses it) is refused 403 `owner_only`. That includes a `-` session copy, because a session file passes only in the `_` form: a schedule a guest writes runs its prompt with no guest mark, so the checkpoint is what keeps a host-origin copy's bytes from the model. A store file the text names keeps its origin when a row naming it is copied later (a `-` copy stays `-`), so the time between the check and that copy exposes nothing. A guest's text therefore cannot name a host image at all, which is what keeps a retried, requeued or scheduled prompt safe without carrying a mark through every hop; a path in a code span or a URL is not a reference and passes. Owner prompts, channel and subagent prompts bind nothing and are unchanged, and each scheduled run binds nothing explicitly (`_run_job_isolated`), so the shared timer never carries the request that armed it. A task a guest's request starts that outlives the request and serves other people's work would keep the mark and read less, never more. An owner who regenerates or continues a session a guest imported reads its paths as the owner. A store file the guest names that is not attached, because it is over the image cap or the agent takes no pictures, gets the note the owner's turn gets (`[image not attached: …]`), judged on its first bytes read through the same pinned path (`attachment_read(..., head=True)`); a path outside the stores is not looked at, so it gets no note. A task plan a guest's request built carries `Project.guest_origin`, so every run of it and its to-chat turn read images as the guest's whoever starts them; its text is cut before a prompt, which no check on the words could foresee (taskrunner.md, "Who wrote a plan").
+
+WebSockets. A socket joins the owner set (`_owner_ws_clients`) only for the host owner.
+Frames the Crew shares go through `collaborators.broadcast_to_collaborators` /
+`deliver_to_collaborators` (owner sockets plus collaborator sockets): question cards,
+side-chat frames, the Resume-all outcome, pin changes, crew-log slot frames, dashboard cards and the per-member event log. Host-only frames (`broadcast_ws_owners`:
+credentials, redaction, live browser and its connect snapshot, computer use, change cards) never reach a guest,
+and a guest's socket never drives provider status probes. A guest's `subscribe_logs` frame is
+refused (SEL deny `not_owner`), so the gateway log ring replay and the live tail reach only the
+host owner's dashboard sockets and apps that declared the `log` scope.
+
+Central refusal. `slot_ownership_middleware` (the checkpoint inside token auth) refuses a guest's
+write (any method but GET, HEAD and OPTIONS) to an owner-only route with 403 `owner_only`
+before the handler runs, so a listed route stays closed even when its handler never asks the
+owner gate. Signing out and refreshing (`/api/auth`, `/api/logout`) are exempt. Reads are left
+to their handlers, because the dashboard polls several listed routes. Before this checkpoint a
+guest reached the handler of some listed writes, measured by driving each one through the
+previous release's middleware as a guest; the checkpoint refuses them now. Each acts with the
+owner's credentials or reaches the host or the installation: channel messaging (`/api/send-message`,
+`/api/delete-message`, `/api/slack-*`, `/api/slack/{pins,reactions,upload-file}`,
+`/api/channel/upload-file`) and linking a session to Slack, `/api/deploy`,
+`/api/system/session-storage`, `/api/upload` and `/api/screenshot`, `/api/stt/ffmpeg/download`,
+`/api/update/{arm,cancel}` and `/api/logs/level`, `PUT /api/voice/config`, `PUT /api/config/stt`,
+`PUT /api/notifications/channels/settings`, project writes, `/api/themes/install` and
+`install-zip`, `/api/sessions/usage/refresh`, `/api/auth/mobile-link`, `/api/portability/preview`,
+the agent channels (`/api/channels`) and installed apps' own routes. On a page a guest reaches,
+the dashboard does not offer them: a guest gets no keep/mute prompt for a new notification channel and the Kiro Account
+modal no Refresh for a guest.
+
+Host paths. The same checkpoint (`guest_scope.guest_host_path_denial`) refuses, with 403
+`owner_only`, a guest write whose query or body carries a field that names a location on the
+host's disk and holds a value. The one list is `guest_scope.HOST_PATH_FIELDS` (`source_path`,
+`spec`, `spec_path`, `workspace_dir`, `project`, `project_dir`, `path`, `file`, `root`, `cwd`, `steering_dirs`
+and the like), so artifact create, materialize and relocate, a task run's spec file or
+`workspace_dir` (including a UNC share), a plan's `spec`, and any route added later are closed
+together. The rule is that the checkpoint reads the body with the handler's own parser, so they
+cannot disagree: it calls `request.json()` and `request.post()` on the same request, which decode
+the charset, a BOM and the multipart boundary exactly as a handler's call will, and checks the
+names they return (a JSON object's top-level fields, urlencoded pairs, form fields; a file part
+is judged by its name only, and `file` or `files` is an upload, not a location). There is no
+second parser and no list of content types to skip. A body neither call parses has no field a
+handler could read and passes. The body is read once (`request.read()`, bounded by the app's
+`client_max_size`; 413 beyond) and replayed unchanged for a handler that streams it. The three routes that stream a body past that limit on purpose (`/api/upload/file`, `/api/stt/transcribe`, `/api/chat/slots/import`; a video up to 512 MiB, a session archive) are not read at the checkpoint, only their query is: each consumes its file parts or the raw archive and reads no form field. An inline
+spec (`spec` starting `__inline__:`), task text, attachment objects nested in a body and the file
+parts of an upload are content and stay open. Relocating an artifact
+is owner-only in `OWNER_ONLY_WRITE_PATTERNS`. `POST /api/taskrunner/from-chat` refuses a guest's
+rewrite of an existing plan itself (`_refuse_guest_plan_write`), because that depends on the body.
+Text carries locations too, for a reader that runs later with no guest mark: a scheduled run builds
+its prompt as the owner, and so does the owner regenerating a guest's row (a host file copied into
+the session is named `-`, which no guest reads, but that reader would still send the picture to the
+model). The same checkpoint checks every string
+a guest's body carries, in any field or nesting (a chat message, a note, a queued prompt), and refuses
+403 `owner_only` one that references a local image other than an upload or a Crew-origin (`_`) copy in a session's
+`.attachments` directory (`guest_scope._local_image_outside_stores`, judged on the path the copier reads: it uses the copier's own `local_destination`, so a `#` or `?` suffix cannot make the two differ). The text is judged in a worker thread, never on the event loop (`_values_name_outside_image`): a string that cannot spell an image suffix or `![` in any view is skipped in linear time (`_may_name_an_image`), and a write with more than `_IMAGE_SCAN_BUDGET_CHARS` (256 KiB) of text that can is refused rather than scanned, so one guest request costs a bounded time. Each text is judged as sent and as its later readers see it (`_reader_views`): stored through `sanitize_string`, folded by the turn builder's `_MULTIBYTE_TABLE`, and in the NFKC member view, so a path that only those steps assemble (`/srv/x.p<U+200B>ng`, an em dash folded to `--`) is refused too; a network path is refused
+before anything resolves it, and a reference to a picture already in a store, or to a web URL, is
+untouched. Every route that stores a guest's text is therefore covered without its own guard. A guest's session import (`POST /api/chat/slots/import`) stays open and streams past the
+checkpoint, so its rows keep their image references: persisting a row copies a host file it names
+under the host-origin name (`-`), which no guest reader serves, while a `_` copy it names stays `_`
+and shows. A guest's regenerate of an imported row reads its paths as the guest's (`guest_prompt_origin`). A schedule a guest creates or enables as a revoke lands is paused by
+the revoke's own sweep, run again (`routes_invites.pause_revoked_schedules`), and the request
+answers 403 `owner_only`, or 503 `schedules_not_paused` while a schedule is still enabled.
+`test_every_guest_open_write_handler_field_is_classified_as_host_path_or_reviewed` walks every
+guest-open write route's handler for the path-like fields it reads and fails on one that is neither
+in the list nor reviewed with a reason in `test_shared_crew_guest_host_paths.py`. Reads are not covered by the checkpoint.
+
+Approval postures. A guest approves or rejects each tool call. Turning on `trust`, `trust_reads`,
+`yolo`, `trust_command` or `trust_base` (`POST /api/chat/mode`, the approve action) is refused to a
+guest (403 `owner_only`), because it would keep auto-approving after the guest is revoked. A
+guest's task-run `auto_approve` is turned off instead of refused: the run starts without it, and
+the grant is logged as denied (`taskrunner._gate_auto_approve`, the SEL `auto_approve_grant` row).
+A posture the owner already turned on is not undone for a guest: while a session runs under the
+owner's `trust`, `trust_reads` or YOLO, a guest's turns in it are approved the same way. The
+refusal stops a guest from granting one, not from working inside one the owner chose.
+
+Schedules. A guest creates and edits schedules on the default approval mode, and cannot edit a
+schedule that is auto-approved or runs a script or command;
+`approval_mode=auto` on create or update is refused (403 `owner_only`), because it skips
+the owner's approval on every later run. For the same reason a guest cannot run
+(`POST /api/crons/{id}/run`), open in chat (`to-chat`), delete (single or batch), re-enable
+(`enable` with `enabled: true`) or acknowledge (`ack`, whose item reaches every later run's prompt) such a schedule (`cron_shared.guest_unattended_refusal`, 403
+`owner_only`); on an attended one a guest's ack `summary` must be a string the store keeps whole (at most `ACK_SUMMARY_MAX_CHARS`), so the item later runs read is the text the write checkpoint judged; pausing one is allowed, though the Schedule board does not offer Pause on such a schedule, since the guest could not resume it. A guest also cannot start a task run from a spec file path (`POST /api/taskrunner` and `POST /api/taskrunner/plan` with `source=file` take an inline spec only: a path would read an ordinary host file into the run; the host-path checkpoint refuses a non-inline `spec`, and any `workspace_dir`, 403 `owner_only` before a handler runs), and cannot set a schedule's Slack `channel` on create or update (each run would post through the owner's bot into a channel the guest chose); clearing it is allowed, and an edit that sends the stored channel back unchanged is dropped from the write. A schedule with no channel sends its result and failure alert to its creator on Slack, and a guest's stamp is not a Slack id, so those go to the owner (`guest_scope.slack_recipient`). Each of these refusals is judged again on the record actually acted on, so an owner switching the job to auto between the guest's read and the write wins: the store judges the record it reloads under its lock
+(edit and enable raise `CronPendingMismatch`, answered 403 `owner_only`; run starts nothing; delete is a compare-and-delete, answered 403 `owner_only`, and a batch delete compares each id, so one that turned unattended lands in `failed`), and open in chat judges and opens a copy of the job detached after its last await (`api_cron_to_chat`). A guest's manual run executes a detached copy of the job, copied before it is judged, so the owner switching the job to auto mid-run cannot change who it answers to. A schedule a guest creates from the dashboard (`POST /api/crons`) is stamped
+`created_by = guest:<principal id>`, and revoking that person pauses it
+(`routes_invites.pause_revoked_schedules`, which takes principal ids; the Tailscale and the SSM
+revoke routes both call it, and an SSM invite's person is `ssm_principal(invite_id)`). Each job is paused on its own and retried; a revoke that leaves a schedule running answers 503 `schedules_not_paused` (the share is already withdrawn; the owner pauses the rest from the Schedule page); the owner resumes one that should keep running. A schedule the agent creates with `cron_add` at a guest's request carries no stamp, so a revoke does not pause it. The sweep first records the revoked ids (`guest_scope.record_guest_revocation`), and a guest create or enable that was admitted before the revoke (stamped at the write checkpoint, before its body is read, so a slow body does not outrun the fence) and commits after the sweep read the store finds the mark, pauses the one job it wrote (`routes_invites.pause_job_after_revoke`, not the whole sweep, so a schedule the owner resumed since stays resumed and a person invited again is not fenced) and answers 403; when that pause fails it answers 503 `schedules_not_paused` and logs the job id at error level for the owner to pause from the Schedule page. The Schedule board row carries
+`creator` for such a job (`guest_scope.guest_creator_name`: the person's display name, or `""`
+when the guest has none), and the page shows that name or "Guest" (`JobCreator`), never the
+stamp. On the Schedule page an owner-only schedule shows a guest disabled Run, Delete, selection, open-in-chat, strict and move controls and a read-only detail dialog, each with the "Owner only" reason as its tooltip and a lock label on the row; Pause and Resume are not offered either, since a guest could not resume what they paused (`isOwnerOnlySchedule`).
+
+Dashboard. `GET /api/auth/me` carries `is_guest`. For a guest the website hides the owner-only
+rail entries (Apps, Customize, Webhooks, Settings and the installed-app rows) and shows one
+"Owner only" state (`OwnerOnlyState`) in place of an owner-only page, or when a page throws a 403
+`owner_only`, with a "Back to chat" link. The server list above stays the authority; the website list only avoids advertising.
+
+Turn provenance. The mark a turn inherits as owner-sent (`_directive_owner_origin`, the
+crew-lineage read and `responsive_chat`) comes from `is_host_owner_dashboard_request`, so
+a guest's turn never reuses the host owner's session security waivers or the owner's
+remote-crew credentials.
+
+
 ## 6. Wire shapes
 
 ### HTTP
@@ -1569,7 +1725,7 @@ that never learned a revision sends none and is not compared.
 | `DELETE /api/shared-crew/tailscale/invites/{id}` | owner: `{revoked, member_removed, closed_connections}` |
 | `GET /api/shared-crew/ssm` | owner: SSM listener state, the teammate command and link base, `tools`, `invites` (§2 AWS SSM invites) |
 | `POST /api/shared-crew/ssm/invites` `{alias}` | owner: `{invite, url, command, local_url}`; the `url` carries the credential and is returned once |
-| `DELETE /api/shared-crew/ssm/invites/{id}` | owner: `{revoked, closed_connections}` |
+| `DELETE /api/shared-crew/ssm/invites/{id}` | owner: `{revoked, closed_connections}`, or 503 `schedules_not_paused` |
 | `POST` / `DELETE /api/shared-crew/tailscale/credential` | owner: connect `{key}` or remove the key; the status body, never the key |
 | `POST /api/shared-crew/tailscale/avatars` `{data_base64}` | owner: `{avatar_id}` |
 | `GET /api/shared-crew/tailscale/avatars/{avatar_id}` | any dashboard user: the image |

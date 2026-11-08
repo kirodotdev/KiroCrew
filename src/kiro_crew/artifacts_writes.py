@@ -209,6 +209,7 @@ def create_image(
     description: str = "",
     tags: list[str] | None = None,
     folder_id: str = "",
+    crew_origin: bool = False,
 ) -> Artifact:
     """Persist a raster image as a first-class ``kind="image"`` artifact.
 
@@ -228,6 +229,10 @@ def create_image(
     chat-emitted ``![](...)``), making it sweepable by
     :meth:`prune_auto_widgets` while unpinned — the same lifecycle as
     auto-registered widgets. Only :mod:`kiro_crew.image_artifacts` sets it.
+
+    ``crew_origin=True`` records that the bytes were read from a Crew-owned root
+    (:attr:`ImageMetadata.crew_origin`), which is what lets a Shared Crew guest
+    fetch the asset. :mod:`kiro_crew.image_artifacts` decides it.
     """
     if not isinstance(image_bytes, (bytes, bytearray)):
         raise ArtifactValidationError(
@@ -258,6 +263,7 @@ def create_image(
         sha256=hashlib.sha256(data).hexdigest(),
         original_filename=str(original_filename or "")[: _rules.MAX_NAME_LEN],
         alt=str(alt or "")[: _rules.MAX_DESCRIPTION_LEN],
+        crew_origin=crew_origin is True,
     )
 
     with self._lock:

@@ -223,6 +223,7 @@ def _serialize_runs(self: TaskRunner) -> str:
                     "workflow_revision": run.workflow_revision,
                     "derived_from_workflow_id": run.derived_from_workflow_id,
                     "derived_from_revision": run.derived_from_revision,
+                    "guest_origin": run.guest_origin,
                     # The conversation the run was started from, so a restart's
                     # recovery and resume notices still reach it; the sink checks
                     # that it resolves before it posts there.
@@ -500,6 +501,7 @@ def _load_runs(self: TaskRunner) -> None:
                 workflow_revision=int(item.get("workflow_revision") or 0),
                 derived_from_workflow_id=item.get("derived_from_workflow_id", ""),
                 derived_from_revision=int(item.get("derived_from_revision") or 0),
+                guest_origin=item.get("guest_origin") is True,
             )
             # Compensating control: never let per-run trust silently survive a
             # gateway restart. A run recovered from an active state had its

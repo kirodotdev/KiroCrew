@@ -10,8 +10,10 @@ import { i18next } from '../i18n/all'
 
 const mockUpdateChannelSettings = vi.fn().mockResolvedValue({})
 
+const guest = vi.hoisted(() => ({ value: false }))
 vi.mock('../api/client', () => ({
   api: {
+    sharedCrewIsGuest: () => Promise.resolve(guest.value),
     notifications: vi.fn().mockResolvedValue({ notifications: [] }),
     ackNotification: vi.fn().mockResolvedValue({}),
     updateNotificationChannelSettings: (...args: unknown[]) => mockUpdateChannelSettings(...args),
@@ -38,6 +40,7 @@ function renderFeed(notifs: Notification[]) {
 beforeEach(() => {
   localStorage.clear()
   mockUpdateChannelSettings.mockClear()
+  guest.value = false
 })
 
 describe('NotificationFeed Phase 3: silenced (muted-channel) rows', () => {
@@ -152,6 +155,16 @@ describe('NotificationFeed Phase 3: keep/mute prompt', () => {
     await waitFor(() => expect(screen.queryByText(/Keep receiving these\?/)).toBeNull())
     expect(JSON.parse(localStorage.getItem(SEEN_CHANNELS_STORAGE_KEY) || '[]'))
       .toContain('oncall-radar.ticket-update')
+  })
+
+  it('asks a Shared Crew guest nothing: keeping or muting a channel is the owner\'s setting', async () => {
+    guest.value = true
+    renderFeed([appNote])
+    await waitFor(() => expect(screen.queryByText(/Keep receiving these\?/)).toBeNull())
+    expect(screen.getByText('Ticket escalated')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Mute channel' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Keep' })).toBeNull()
+    expect(mockUpdateChannelSettings).not.toHaveBeenCalled()
   })
 
   it('keeps the prompt and the channel undecided while the mute is in flight', () => {

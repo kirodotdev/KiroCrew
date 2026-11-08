@@ -37,6 +37,12 @@ logger = logging.getLogger("kiro_crew.cron")
 # ── Public API ──
 
 
+#: How much of an acknowledgement's ``summary`` the store keeps. A Shared Crew guest's
+#: summary must fit in it whole (``cron_runs.api_cron_ack``), so the stored text is the
+#: text the write checkpoint judged.
+ACK_SUMMARY_MAX_CHARS = 500
+
+
 def add_job(
     self: CronService,
     name: str,
@@ -489,12 +495,26 @@ def enable_job(
 
 
 async def enable_job_async(
-    self: CronService, job_id: str, enabled: bool = True, *, expected_owner: str | None = None
+    self: CronService,
+    job_id: str,
+    enabled: bool = True,
+    *,
+    expected_owner: str | None = None,
+    require_attended: bool = False,
 ) -> bool:
     """Event-loop-safe :meth:`enable_job`: the lock+save runs off the loop.
 
-    Raises :class:`CronStoreBusy` (retryable) on sustained contention.
+    Raises :class:`CronStoreBusy` (retryable) on sustained contention. With
+    ``require_attended``, starting a job that runs unattended raises
+    :class:`CronPendingMismatch`, judged on the record reloaded under the lock.
     """
+    if require_attended:
+        ok = await asyncio.to_thread(
+            self._enable_job_locked, job_id, enabled, require_attended=True
+        )
+        if ok:
+            self._arm_timer()
+        return ok
     ok = (
         await asyncio.to_thread(
             self._enable_job_locked, job_id, enabled, expected_owner=expected_owner
@@ -517,12 +537,24 @@ def ack_job(self: CronService, job_id: str, summary: str, ack_id: str = "") -> b
     return self._ack_job_locked(job_id, summary, ack_id)
 
 
-async def ack_job_async(self: CronService, job_id: str, summary: str, ack_id: str = "") -> bool:
+async def ack_job_async(
+    self: CronService,
+    job_id: str,
+    summary: str,
+    ack_id: str = "",
+    *,
+    require_attended: bool = False,
+) -> bool:
     """Event-loop-safe :meth:`ack_job`: the lock+save runs off the loop.
 
-    Raises :class:`CronStoreBusy` (retryable) on sustained contention.
+    Raises :class:`CronStoreBusy` (retryable) on sustained contention. With
+    ``require_attended``, acknowledging a job that runs unattended raises
+    :class:`CronPendingMismatch`, judged on the record reloaded under the lock:
+    an acknowledged item reaches every later run's prompt.
     """
-    ok = await asyncio.to_thread(self._ack_job_locked, job_id, summary, ack_id)
+    ok = await asyncio.to_thread(
+        self._ack_job_locked, job_id, summary, ack_id, require_attended=require_attended
+    )
     # ack itself changes no schedule. If the worker's _sync() reloaded an
     # external change, its _load() re-armed the timer thread-safely via the
     # bound loop (see _arm_timer) — no drain needed here.
@@ -556,18 +588,31 @@ def _aligned_ack_ids(job: CronJob) -> list[str]:
     return [i if isinstance(i, str) else "" for i in ids]
 
 
-def _ack_job_locked(self: CronService, job_id: str, summary: str, ack_id: str = "") -> bool:
+def _ack_job_locked(
+    self: CronService,
+    job_id: str,
+    summary: str,
+    ack_id: str = "",
+    *,
+    require_attended: bool = False,
+) -> bool:
     """Lock/reload/mutate/save core of :meth:`ack_job`."""
     with self._file_lock():
         self._sync_for_write()
         for job in self._jobs:
             if job.id == job_id:
+                if require_attended and (job.approval_mode == "auto" or job.script or job.command):
+                    from kiro_crew.cron_service.store import CronPendingMismatch
+
+                    # A Shared Crew guest may not add to what an unattended job's
+                    # runs read; judged on the record reloaded under the lock.
+                    raise CronPendingMismatch("job runs unattended")
                 before = job.acked_items
                 before_ids = job.acked_item_ids
                 before_digest = job.acked_item_ids_digest
                 # Built before any of it is assigned, so a failure here leaves
                 # the job as it was. Keep only last 20 acks.
-                items = [*job.acked_items, summary[:500]][-20:]
+                items = [*job.acked_items, summary[:ACK_SUMMARY_MAX_CHARS]][-20:]
                 ids = [*_aligned_ack_ids(job), ack_id][-20:]
                 digest = _acked_items_digest(items)
                 job.acked_items, job.acked_item_ids, job.acked_item_ids_digest = items, ids, digest

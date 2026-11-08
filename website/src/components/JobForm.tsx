@@ -1,6 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Check, Zap } from 'lucide-react'
+import { Check, Lock, Zap } from 'lucide-react'
 import { api } from '../api/client'
 import { ApiError } from '../api/apiError'
 import { Btn, Input, SendBtn } from './ui'
@@ -302,9 +302,11 @@ interface Props {
    *  form and backing out never triggers a "your typed work will be lost"
    *  confirm about work that does not exist. */
   onDirtyChange?: (dirty: boolean) => void
+  /** Show the job without letting anyone change it: every field off, and a visible "Owner only" line. */
+  readOnly?: boolean
 }
 
-export default function JobForm({ job, prefill, agents, defaultAgent, rosterFailure, lockedAgent, memberId, memberNoun, lockedAgentHint, providerAgent, onSaved, layout = 'horizontal', externalSubmit, submitRef, onSavingChange, onSubmitError, onDirtyChange }: Props) {
+export default function JobForm({ job, prefill, agents, defaultAgent, rosterFailure, lockedAgent, memberId, memberNoun, lockedAgentHint, providerAgent, onSaved, layout = 'horizontal', externalSubmit, submitRef, onSavingChange, onSubmitError, onDirtyChange, readOnly = false }: Props) {
   // "" and undefined both mean unlocked, so render and submit share one truth.
   const boundMember = job?.member_id || memberId
   const privateMember = !!boundMember && boundMember !== 'default'
@@ -789,6 +791,14 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
 
   return (
     <div className="flex flex-col gap-3">
+      {readOnly && (
+        <p data-testid="jobform-owner-only" className="flex items-center gap-1 text-[12px] text-muted">
+          <Lock size={12} aria-hidden="true" />{i18nT('components.errorBoundary.owner_only')}
+        </p>
+      )}
+      {/* A disabled fieldset turns off every input, select and button inside it at once;
+          the fade shows it, since an input's own disabled look is only its cursor. */}
+      <fieldset disabled={readOnly} className={`flex flex-col gap-3 min-w-0 border-0 p-0 m-0${readOnly ? ' opacity-60' : ''}`}>
       {vertical ? (<>
         <div className="flex flex-col gap-1">
           <span className="text-[12px] text-muted font-medium">{i18nT('components.jobForm.name')}</span>
@@ -1184,6 +1194,7 @@ export default function JobForm({ job, prefill, agents, defaultAgent, rosterFail
       <div ref={errorRef}>
         <ErrorNotice message={error} />
       </div>
+      </fieldset>
     </div>
   )
 }

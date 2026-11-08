@@ -282,8 +282,11 @@ async def _deliver_cron_agent_result(
             # Retry only open_dm (transient Slack API errors).
             # Delivery (post_blocks/post_message) is NOT retried to avoid duplicates.
             channel = job.channel
-            if not channel and (job.created_by or self._owner_id):
-                channel = await self._open_dm_with_retry(job.created_by or self._owner_id, job.name)
+            from kiro_crew.shared_crew.guest_scope import slack_recipient
+
+            recipient = slack_recipient(job.created_by, self._owner_id)
+            if not channel and recipient:
+                channel = await self._open_dm_with_retry(recipient, job.name)
             if channel:
                 # ── Extract embedded local images and upload them
                 # natively (mirror the chat renderer's on_done seal).

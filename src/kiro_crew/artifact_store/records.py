@@ -297,6 +297,9 @@ def parse_image_metadata(raw_img: Any) -> "ImageMetadata | None":
         sha256=_str(raw_img.get("sha256")),
         original_filename=_str(raw_img.get("original_filename")),
         alt=_str(raw_img.get("alt")),
+        # Only a literal true: a record without the key, or with any other value, is
+        # not Crew-origin, so a legacy image stays the owner's.
+        crew_origin=raw_img.get("crew_origin") is True,
     )
 
 

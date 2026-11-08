@@ -34,6 +34,7 @@ import os
 import re
 from pathlib import Path
 
+from kiro_crew.guest_prompt_origin import current as guest_image_source
 from kiro_crew.hooks import (
     is_unc_shape,
     safe_read_file_bytes,
@@ -207,6 +208,7 @@ def build_prompt_blocks(
         marker_count: dict[str, int] = {}
         prompt_b64_bytes = 0
         past_block_cap = 0
+        guest_source = guest_image_source()
         # Literal text (code, indented code, escaped ``\![x](...)``) is ABOUT a
         # path, not an attachment: scan the view with it masked, the same view
         # strip_image_refs reads, so the text stays as written and no block is
@@ -237,6 +239,23 @@ def build_prompt_blocks(
             if raw in seen:
                 continue
             seen.add(raw)
+            # A guest's prompt attaches only a file the attachment-name check admits,
+            # and uses the bytes that check read; any other path stays plain text and
+            # is never probed (kiro_crew.guest_prompt_origin).
+            served_path, preread = raw, None
+            if guest_source is not None:
+                found = guest_source(raw, max_image_bytes) if agent_accepts_image else None
+                if found is None:
+                    # Not attached: no store file, one over the cap, or an agent that takes
+                    # no pictures. The last two get the note the owner's turn gets, judged
+                    # on the store file's own first bytes, so the picture is not taken as seen.
+                    head = guest_source(raw, SNIFF_BYTES, head=True)
+                    if head is not None and _is_raster_head(head[1]):
+                        notes[raw] = (
+                            IMAGE_SIZE_NOTE if agent_accepts_image else IMAGE_UNSUPPORTED_NOTE
+                        )
+                    continue
+                served_path, preread = found
             # UNC-shaped candidates name a HOST on Windows: gate them before
             # any filesystem call, or is_file() below opens an SMB connection
             # to attacker-controlled text. POSIX has no such semantics (a
@@ -244,7 +263,7 @@ def build_prompt_blocks(
             # is platform-gated anyway. See kiro_crew.hooks.unc_probe_allowed.
             if os.name == "nt" and is_unc_shape(raw) and not unc_probe_allowed(raw):
                 continue
-            path = Path(raw)
+            path = Path(served_path)
             suffix = path.suffix.lower()
             suffix_mime = IMAGE_MEDIA_TYPES.get(suffix)
             if suffix_mime is None:
@@ -310,7 +329,7 @@ def build_prompt_blocks(
                 )
                 continue
             try:
-                raw_bytes = safe_read_file_bytes(str(path))
+                raw_bytes = preread if preread is not None else safe_read_file_bytes(str(path))
             except Exception:
                 logger.debug("acp prompt: could not read image %s", raw, exc_info=True)
                 continue
@@ -431,9 +450,15 @@ def _sniffs_as_raster(path: Path) -> bool:
         head = safe_read_file_bytes_nolink(str(path), max_bytes=SNIFF_BYTES, allow_truncate=True)
     except Exception:
         return False
-    if head is None or len(head) < SNIFF_BYTES:
-        return False
-    return sniff_raster_mime(head) in IMAGE_MEDIA_TYPES.values()
+    return head is not None and _is_raster_head(head)
+
+
+def _is_raster_head(head: bytes) -> bool:
+    """Whether *head*, a file's first bytes, is a whole sniff window of a supported raster."""
+    return (
+        len(head) >= SNIFF_BYTES
+        and sniff_raster_mime(head[:SNIFF_BYTES]) in IMAGE_MEDIA_TYPES.values()
+    )
 
 
 #: What may follow a path inside a markdown destination: an optional closing

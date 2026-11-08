@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from kiro_crew import git_coord, shutdown_event  # noqa: F401
+from kiro_crew import git_coord, guest_prompt_origin, shutdown_event  # noqa: F401
 from kiro_crew.atomic_write import atomic_write  # noqa: F401
 from kiro_crew.config import live  # noqa: F401
 from kiro_crew.config.loader import KiroCrewConfig
@@ -484,7 +484,9 @@ class TaskRunner:
                 )
                 await self._taskq_begin_run(run)
                 watchdog_task = asyncio.create_task(self._watchdog_loop(run))
-                await self._execute_tasks(run, history_key)
+                # A plan a guest wrote runs as the guest's, whoever starts it (Project.guest_origin).
+                with guest_prompt_origin.binding(run.guest_origin):
+                    await self._execute_tasks(run, history_key)
                 if run.status == "running" and not self._stopping():
                     run.status = "completed"
                     run.finished_at = time.time()
@@ -655,7 +657,9 @@ class TaskRunner:
                 await self._notify("\U0001f504 Retrying", f"From task {from_task}", run=run)
                 await self._taskq_begin_run(run)
                 watchdog_task = asyncio.create_task(self._watchdog_loop(run))
-                await self._execute_tasks(run, history_key)
+                # A plan a guest wrote runs as the guest's, whoever starts it (Project.guest_origin).
+                with guest_prompt_origin.binding(run.guest_origin):
+                    await self._execute_tasks(run, history_key)
                 if run.status == "running" and not self._stopping():
                     run.status = "completed"
                     run.finished_at = time.time()

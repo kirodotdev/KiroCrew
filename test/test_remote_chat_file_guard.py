@@ -65,7 +65,7 @@ def table(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         "kiro_crew.session_environment.session_runs_remotely", lambda key: key == REMOTE
     )
-    monkeypatch.setattr(source_providers, "is_owner_dashboard_request", lambda request: True)
+    monkeypatch.setattr(source_providers, "is_host_owner_dashboard_request", lambda request: True)
     routes = {
         (route.method, route.resource.canonical): route.handler
         for route in app.router.routes()
@@ -114,7 +114,7 @@ async def test_with_the_developer_flag_off_a_remote_chat_reaches_the_route(
 async def test_a_non_owner_gets_the_routes_own_answer_not_the_chats_placement(
     table, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(source_providers, "is_owner_dashboard_request", lambda request: False)
+    monkeypatch.setattr(source_providers, "is_host_owner_dashboard_request", lambda request: False)
     response = await _call(table, "/api/file-read", f"&slot={REMOTE}")
     assert json.loads(response.body) == {"served": "api_file_read"}
 

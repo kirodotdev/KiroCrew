@@ -25,7 +25,7 @@ class _Req:
     """Request stub mirroring aiohttp's mapping surface.
 
     ``user`` is "local-app" because the handler's owner gate is POSITIVE
-    (``is_owner_dashboard_request``): with no configured owner_id only the local
+    (``is_host_owner_dashboard_request``): with no configured owner_id only the local
     dashboard subjects pass, so a bare truthy user would fail the second gate.
     """
 
@@ -872,7 +872,7 @@ class TestAuthorization:
         subject with an empty app, so `_guard` alone would let them through."""
         _enable_instances(monkeypatch)
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers_instances.is_owner_dashboard_request",
+            "kiro_crew.dashboard.handlers_instances.is_host_owner_dashboard_request",
             lambda _r: False,
         )
 
@@ -889,7 +889,7 @@ class TestAuthorization:
         _enable_instances(monkeypatch)
         mgr = _manager()
         monkeypatch.setattr(
-            "kiro_crew.dashboard.handlers_instances.is_owner_dashboard_request",
+            "kiro_crew.dashboard.handlers_instances.is_host_owner_dashboard_request",
             lambda _r: False,
         )
 

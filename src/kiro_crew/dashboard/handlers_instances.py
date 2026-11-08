@@ -43,7 +43,7 @@ from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     _owner_denial_response,
     read_capped_response,
 )
-from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 from kiro_crew.dashboard.handlers_instances_gate import (
     _ADDRESSING_FIELDS,
     _CHAIN_MUTATION_LOCK,
@@ -1036,7 +1036,7 @@ def _update_owner_denial(request: web.Request, operation: str) -> web.Response |
     it: an app token or a Slack-minted ``!dashboard`` subject is refused here,
     before the registry is read, even if ``_guard`` admitted it.
     """
-    if not is_owner_dashboard_request(request):
+    if not is_host_owner_dashboard_request(request):
         _audit(operation, "denied", error="non-owner identity rejected")
         return _owner_denial_response(request, "updating a remote crew is owner-only")
     return None
@@ -1143,9 +1143,9 @@ async def api_instances_search_sessions(request: web.Request) -> web.Response:
     # a Slack user who minted a dashboard token via `!dashboard` (app == "" but
     # a non-owner subject).
     from kiro_crew.dashboard.handlers._shared import _owner_denial_response
-    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+    from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 
-    if not is_owner_dashboard_request(request):
+    if not is_host_owner_dashboard_request(request):
         # Domain audit stays here rather than delegating to
         # ``require_owner_dashboard_request``: ``_audit`` emits
         # ``log_tool_invocation`` under ``instances_search_sessions`` /

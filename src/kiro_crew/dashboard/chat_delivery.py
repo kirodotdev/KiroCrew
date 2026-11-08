@@ -23,6 +23,7 @@ import weakref
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew import guest_prompt_origin
 from kiro_crew.config import live
 from kiro_crew.dashboard.chat_utils import (
     COMPOSER_SEND_META,
@@ -36,6 +37,7 @@ from kiro_crew.dashboard.slot_queue_repository import (
     refused_durable_ids,
     warn_if_not_durable,
 )
+from kiro_crew.guest_prompt_origin import GUEST_ORIGIN_META
 from kiro_crew.history import HUMAN_TURN_META_KEY
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -732,6 +734,7 @@ async def steer_into_running_turn(
             **attachments,
             **quote,
             **knowledge,
+            **({GUEST_ORIGIN_META: True} if guest_prompt_origin.current() is not None else {}),
             **({"relay": dict(relay_meta)} if relay_meta else {}),
             **({"appLabel": app_label} if app_label else {}),
             **({TURN_ACTOR_META_KEY: "app"} if app_actor else {}),
@@ -1378,6 +1381,9 @@ def queue_for_next_turn(
         meta["decisions_strip"] = decision_strip
     if commands_off:
         meta[COMMANDS_OFF_META_KEY] = True
+    # A guest's words keep their origin through the wait: the drain binds the image
+    # builder to the attachment stores for the turn that consumes this entry.
+    guest_prompt_origin.mark(meta)
     if composer_send:
         meta[COMPOSER_SEND_META] = True
     if author:

@@ -117,9 +117,9 @@ def _person_crew_worker_root(request: web.Request, state: Any, slot: Any, app: s
 
         if not crew_mode.APPROVAL_ROUTING_LIVE:
             return ""
-        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+        from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 
-        if not is_owner_dashboard_request(request):
+        if not is_host_owner_dashboard_request(request):
             return ""
         from kiro_crew.dashboard.session_control_parts.crew_filing import _frame_parents
 

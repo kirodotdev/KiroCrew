@@ -15,6 +15,7 @@ from kiro_crew.dashboard.slot_ownership import slot_not_found
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.shared_crew.collaborators import broadcast_to_collaborators
 
 logger = logging.getLogger(__name__)
 
@@ -258,7 +259,7 @@ async def api_chat_pins_create(request: web.Request) -> web.Response:
     # Broadcast after the lock is released: slot_key only, no pin content.
     # dashboard-user connections only (app tokens must not receive other slots'
     # pin signals — see CWE-269 and App Kit §5.2).
-    state.broadcast_ws_owners("pins_changed", {"slot_key": slot_key})
+    broadcast_to_collaborators(state, "pins_changed", {"slot_key": slot_key})
     return web.json_response(pin, status=201)
 
 
@@ -303,7 +304,7 @@ async def api_chat_pins_delete(request: web.Request) -> web.Response:
                 {"error": "failed to persist pin", "code": "persist_failed"}, status=500
             )
     # Broadcast after the lock is released: slot_key only, no pin content.
-    state.broadcast_ws_owners("pins_changed", {"slot_key": removed["slot_key"]})
+    broadcast_to_collaborators(state, "pins_changed", {"slot_key": removed["slot_key"]})
     return web.json_response({"ok": True})
 
 
@@ -372,5 +373,5 @@ async def api_chat_pins_delete_by_query(request: web.Request) -> web.Response:
                 {"error": "failed to persist pin", "code": "persist_failed"}, status=500
             )
     # Broadcast after the lock is released: slot_key only, no pin content.
-    state.broadcast_ws_owners("pins_changed", {"slot_key": slot_key})
+    broadcast_to_collaborators(state, "pins_changed", {"slot_key": slot_key})
     return web.json_response({"ok": True})

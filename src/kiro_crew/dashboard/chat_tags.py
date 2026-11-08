@@ -1120,7 +1120,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         string_field_error,
     )
     from kiro_crew.dashboard.handlers.source_providers import (  # noqa: F401
-        is_owner_dashboard_request,
+        is_host_owner_dashboard_request,
     )
     from kiro_crew.dashboard.snapshot_commit import (  # noqa: F401
         VocabularyDeleteCancellations,

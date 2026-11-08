@@ -415,6 +415,7 @@ from kiro_crew.security import (  # noqa: F401
     sandbox_credential_targets,
 )
 from kiro_crew.session_environment import session_runs_remotely  # noqa: F401
+from kiro_crew.shared_crew.guest_scope import guest_attachment_read  # noqa: F401 - owner: editor
 from kiro_crew.validation import (  # noqa: F401
     FILE_READ_SCHEMA,
     MODEL_ID_RE,

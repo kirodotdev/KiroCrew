@@ -273,7 +273,7 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
             "reference the prior reply."
         )
         # The regenerated turn's owner mark is THIS request's: see ``api_chat``.
-        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+        from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 
         task = asyncio.create_task(
             _run_chat(
@@ -285,7 +285,7 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
                 # A regenerated row is not new typed text (it may be an API
                 # request's flattened prompt), so it never starts an MCP sign-in.
                 _message_is_typed=False,
-                _directive_owner_origin=is_owner_dashboard_request(request),
+                _directive_owner_origin=is_host_owner_dashboard_request(request),
                 # See ``api_chat``: an observed app must be NAMED, because the
                 # actor resolver's fallback is ``user``. ``""`` is the parameter's
                 # own default and reads as "not named".
@@ -740,9 +740,9 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
         # Decided at request time, carried by the dispatch: see ``api_chat``.
         # The edited words are whoever sent THIS request's, so the turn's owner
         # mark is this request's, not the original row's.
-        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+        from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 
-        _owner_sent = is_owner_dashboard_request(request)
+        _owner_sent = is_host_owner_dashboard_request(request)
 
         async def _edit_resend_dispatch() -> None:
             await dispatch_ready.wait()

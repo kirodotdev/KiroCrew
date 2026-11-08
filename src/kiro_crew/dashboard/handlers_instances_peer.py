@@ -26,7 +26,7 @@ from kiro_crew.dashboard.chat_persistence import (
     register_reasoning_effort_values,
 )
 from kiro_crew.dashboard.handlers._shared import _owner_denial_response, read_capped_response
-from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 from kiro_crew.dashboard.handlers_instances_gate import (
     _PEER_FIELD_MAX_CHARS,
     MANAGER_UNAVAILABLE_CODE,
@@ -332,9 +332,9 @@ async def api_instances_capabilities(request: web.Request) -> web.Response:
     # on a peer with the OWNER's manager-held credential, so a Slack-minted
     # `!dashboard` subject (an authenticated non-owner) must not reach them.
     from kiro_crew.dashboard.handlers._shared import _owner_denial_response
-    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+    from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 
-    if not is_owner_dashboard_request(request):
+    if not is_host_owner_dashboard_request(request):
         _audit("capabilities", "denied", error="non-owner identity rejected")
         return _owner_denial_response(request, "remote-crew capabilities are owner-only")
     state: DashboardState = request.app["state"]
@@ -459,9 +459,9 @@ async def api_instances_approval_state(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     from kiro_crew.dashboard.handlers._shared import _owner_denial_response
-    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+    from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 
-    if not is_owner_dashboard_request(request):
+    if not is_host_owner_dashboard_request(request):
         _audit("approval_state", "denied", error="non-owner identity rejected")
         return _owner_denial_response(request, "remote-crew approval state is owner-only")
     state: DashboardState = request.app["state"]
@@ -502,7 +502,7 @@ async def api_instances_versions(request: web.Request) -> web.Response:
     denied = _guard(request, "versions")
     if denied is not None:
         return denied
-    if not is_owner_dashboard_request(request):
+    if not is_host_owner_dashboard_request(request):
         _audit("versions", "denied", error="non-owner identity rejected")
         return _owner_denial_response(request, "remote-crew versions are owner-only")
     state: DashboardState = request.app["state"]
@@ -899,7 +899,7 @@ async def api_instances_chat_slots(request: web.Request) -> web.Response:
     # on a peer with the OWNER's manager-held credential and discloses every one
     # of that peer's open session titles, so a Slack-minted `!dashboard` subject
     # (an authenticated NON-owner) must not reach it.
-    if not is_owner_dashboard_request(request):
+    if not is_host_owner_dashboard_request(request):
         _audit("chat_slots", "denied", error="non-owner identity rejected")
         return _owner_denial_response(request, "remote-crew session list is owner-only")
     state: DashboardState = request.app["state"]
@@ -1025,9 +1025,9 @@ async def api_instances_proxy(request: web.Request) -> web.StreamResponse:
     # identified owner — the same bar api_instances_search_sessions sets, for
     # the same reason.
     from kiro_crew.dashboard.handlers._shared import _owner_denial_response
-    from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+    from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 
-    if not is_owner_dashboard_request(request):
+    if not is_host_owner_dashboard_request(request):
         # Domain audit stays here for the same reason as
         # ``api_instances_search_sessions`` in ``handlers_instances`` (the facade):
         # ``_audit``, defined in ``handlers_instances_gate``, is the ``instances_*``

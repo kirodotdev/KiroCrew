@@ -20,6 +20,7 @@ import Clickable from './Clickable'
 import ErrorNotice from './ErrorNotice'
 import { useGuardedLeave } from './NavigationLeaveGuard'
 import Modal from './Modal'
+import { useIsGuest } from '../hooks/sharedCrew/useSharedCrew'
 
 // The usage view model is owned by `api/client.ts` next to the wire payload it
 // is normalized from, so this panel and the credits pill cannot drift apart.
@@ -518,7 +519,10 @@ function CreditUsage({ usage, onClose }: { usage: KiroAccountUsage; onClose: () 
   useEffect(() => {
     if (configUnreadable) void queryClient.invalidateQueries({ queryKey: KIROCREW_CONFIG_QUERY })
   }, [configUnreadable, queryClient])
-  const refreshButton = (compact: boolean) => (
+  // A refresh asks the provider with the host owner's account: a Shared Crew guest is
+  // refused it, so a guest is not offered it.
+  const isGuest = useIsGuest()
+  const refreshButton = (compact: boolean) => isGuest ? null : (
     <RefreshButton
       pending={refresh.mutation.isPending}
       held={refresh.held}

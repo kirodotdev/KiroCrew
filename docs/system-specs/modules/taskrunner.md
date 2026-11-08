@@ -371,6 +371,17 @@ visible after the source filter. Hidden cron work cannot make an otherwise idle
 result set report that one of its returned projects is running. Caller admission
 and visibility filtering remain unchanged.
 
+### Who wrote a plan
+
+`Project.guest_origin` says a Shared Crew guest's request built the plan. It is read
+once, when the `Project` is made, from the turn's guest mark (`guest_prompt_origin`),
+and it is persisted with the run (`run_registry`). Every run of such a plan (Execute,
+Retry, the start path and a restart's resume) and the chat turn its to-chat opens
+(`_plan_chat_task`) read images as the guest's, through the attachment stores,
+whoever starts them. The plan's stored text is cut before it reaches a prompt
+(`[:200]`, `[:2000]`, `[:3000]`), so no check on the guest's words could foresee
+every path a cut forms; the mark on the plan does not depend on the text.
+
 ### Decomposer Selection
 
 `run()` picks the decomposer from the spec's suffix, not from the caller. A spec whose

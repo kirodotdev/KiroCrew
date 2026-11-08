@@ -7072,7 +7072,9 @@
       "sessions": "세션"
     },
     "errorBoundary": {
+      "back_to_chat": "채팅으로 돌아가기",
       "lazy_page_load_failed": "이 페이지를 불러올 수 없습니다. 게이트웨이 연결을 확인한 후 다시 시도하세요.",
+      "owner_only": "소유자 전용",
       "reload_page": "페이지 새로 고침",
       "something_went_wrong": "문제가 발생했습니다",
       "try_again": "다시 시도"
@@ -17398,6 +17400,7 @@
       "failed": "실패",
       "failed_to_load_jobs": "작업을 불러오지 못했습니다",
       "filter_jobs": "작업 필터…",
+      "guest": "게스트",
       "h_ago": "{{n}}시간 전",
       "hide_message": "메시지 숨기기",
       "id": "ID",
@@ -22309,6 +22312,8 @@
     "invite_alias_label": "표시 이름(선택)",
     "filter_empty": "이 필터에 맞는 세션이 없습니다.",
     "invite_err_generic": "실패했습니다. 다시 시도하세요.",
+    "invite_err_schedules_not_paused": "액세스가 제거되었지만 일부 일정이 아직 켜져 있습니다. 일정 페이지에서 일시 중지하세요.",
+    "identity_check_failed": "액세스를 확인할 수 없어 사용할 수 없는 컨트롤이 표시될 수 있습니다.",
     "source_observed": "접속 확인됨",
     "rejected_by_person": "{{name}}님이 거부했습니다",
     "send_race_send_now": "{{name}} 님 메시지 다음에 보내기",

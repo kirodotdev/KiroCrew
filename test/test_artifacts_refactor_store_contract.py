@@ -299,6 +299,7 @@ class TestPersistedBytes:
         meta = json.loads((idir / "meta.json").read_text(encoding="utf-8"))
         assert meta["image"] == {
             "alt": "",
+            "crew_origin": False,
             "ext": "png",
             "height": 2,
             "mime": "image/png",
@@ -385,6 +386,7 @@ class TestResponseShape:
             "sha256",
             "original_filename",
             "alt",
+            "crew_origin",
         ]
         assert names(ArtifactComment)[-3:] == ["created_at", "updated_at", "deleted"]
 

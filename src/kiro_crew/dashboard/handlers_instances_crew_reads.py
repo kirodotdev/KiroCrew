@@ -43,7 +43,7 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.constants import is_owner_minted_session_key
 from kiro_crew.context import RECALL_ROLES
 from kiro_crew.dashboard.handlers._shared import _owner_denial_response, read_capped_response
-from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.handlers.source_providers import is_host_owner_dashboard_request
 from kiro_crew.dashboard.handlers_instances_gate import (
     _PEER_FIELD_MAX_CHARS,
     MANAGER_UNAVAILABLE_CODE,
@@ -208,7 +208,7 @@ def _slot_refusal(slot: object) -> "tuple[str, str] | None":
       (``/kirocrew dashboard`` on Telegram, Teams and Webex), whose sends pass the
       resolver's user-sent arm: ``_turn_user_sent`` records that a person sent the
       turn, not which one. The owner mark is the gateway's own record of
-      ``is_owner_dashboard_request`` for the request that dispatched the turn:
+      ``is_host_owner_dashboard_request`` for the request that dispatched the turn:
       passed on the turn's own ``_run_chat`` call (``_directive_owner_origin``) by
       the dashboard send, regenerate and rewind handlers, carried on a queued
       entry under the same name and reduced by the drain over every entry it
@@ -250,7 +250,7 @@ async def _authorize_crew_read(request: web.Request, operation: str) -> "web.Res
     shared caller resolver, ``handlers/guide.py``'s ``_resolve_agent_caller``,
     plus the arms that only a crew read needs.
 
-    **Why not ``is_owner_dashboard_request`` alone.** That helper requires a
+    **Why not ``is_host_owner_dashboard_request`` alone.** That helper requires a
     dashboard ``user`` claim, and the internal-secret branch never sets one (see
     ``token_auth``: identity there comes from the calling session, not a cookie).
     Applied literally it would refuse every legitimate call, so this asserts the
@@ -376,7 +376,7 @@ async def _authorize_crew_read(request: web.Request, operation: str) -> "web.Res
         code, why = refusal
         _audit_crew(request, operation, "denied", error=why)
         return web.json_response({"error": "forbidden", "code": code}, status=403)
-    if str(request.get("user") or "") and not is_owner_dashboard_request(request):
+    if str(request.get("user") or "") and not is_host_owner_dashboard_request(request):
         _audit_crew(request, operation, "denied", error="non-owner identity rejected")
         return _owner_denial_response(request, "remote-crew session reads are owner-only")
     return None

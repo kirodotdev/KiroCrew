@@ -94,6 +94,8 @@ import { i18nT } from './i18n/t'
 import { isAppNavId } from './appNotificationBadges'
 import { lazyPage, TasksRedirect, ChatRedirect, OrchestratedRedirect } from './shell/routes'
 import { NAV_ITEMS } from './shell/nav/navItems'
+import OwnerOnlyGate from './components/OwnerOnlyGate'
+import { useIsGuest } from './hooks/sharedCrew/useSharedCrew'
 import { RailHeaderGlyph } from './shell/nav/railChrome'
 import { AdaptiveMobileRail } from './shell/nav/adaptiveMobileRail'
 import { guideTarget } from './uiLocations/targetRegistry'
@@ -382,6 +384,7 @@ export default function App() {
    */
   // A docked mate's tile is the lit one while its chat is open (see navRail).
   const { openIsDocked } = useDockMates()
+  const isGuest = useIsGuest()
   const railHost = mobileSingle || (isMobile && membersRoute)
   const mobileNavRail = railHost
     ? ({ onActivate }: MobileNavRailOptions) => {
@@ -443,7 +446,7 @@ export default function App() {
               <RailHeaderGlyph avatar={avatar} boxClass={branding?.logoClass ?? 'w-7 h-7'} iconSize={18} />
             </button>
             {advertisedNavItems.filter(n => n.group === 'Main').map(railRow)}
-            <NavItem
+            {!isGuest && <NavItem
               navId="apps"
               path="/apps"
               label={i18nT('nav.discover')}
@@ -454,8 +457,8 @@ export default function App() {
               replace
               onClickOverride={discoverNavActive ? onActivate : undefined}
               badge={<NavBadge navId="apps" collapsed appBadges={discoverBadges} />}
-            />
-            <NavItem
+            />}
+            {!isGuest && <NavItem
               navId="apps-library"
               path="/apps/library"
               label={i18nT('nav.library')}
@@ -465,14 +468,14 @@ export default function App() {
               touch
               replace
               onClickOverride={libraryNavActive ? onActivate : undefined}
-            />
+            />}
           </>}
           apps={<>{sortedAppGroup.map(railRow)}<DockMatesTiles onActivate={onActivate} /></>}
           // Pinned above Settings while the rail has room; folded into the Apps
           // scroller (behind a divider) on screens where pinning them would leave
           // the app tiles less than four rows (shell/nav/adaptiveMobileRail.tsx).
           secondary={<>
-            {terminalEnabled && (
+            {terminalEnabled && !isGuest && (
               <NavItem
                 navId="terminal"
                 path="#"
@@ -485,7 +488,7 @@ export default function App() {
                 onClickOverride={() => { onActivate(); if (terminalPoppedOut) focusTerminalPopout(); else toggleBottomTerminal(activeSlotProject) }}
               />
             )}
-            {railRow(capabilitiesSurface)}
+            {!isGuest && railRow(capabilitiesSurface)}
             {/* The account modal (balance, sign-in state): the desktop opens it
                 from the readout capsule, which the phone does not render, so the
                 rail carries it -- on exactly the readings the desktop segment
@@ -505,7 +508,7 @@ export default function App() {
             )}
           </>}
           bottom={<>
-            <NavItem
+            {!isGuest && <NavItem
               path={settingsSurface.path}
               label={surfaceLabel(settingsSurface)}
               icon={settingsSurface.icon}
@@ -515,7 +518,7 @@ export default function App() {
               replace
               onClickOverride={navRowActive(settingsSurface.path) ? onActivate : undefined}
               badge={settingsDotLabel ? <span title={settingsDotLabel.title} role="status" aria-label={settingsDotLabel.label} className="absolute top-1 right-1 w-2 h-2 bg-accent rounded-full z-10" /> : undefined}
-            />
+            />}
             <button
               type="button"
               data-testid="mobile-nav-rail-search"
@@ -877,6 +880,7 @@ export default function App() {
           <Suspense fallback={null}><LinkOpenLayer /></Suspense>
           {/* The shell's own nav read owns the shared app list here. */}
           <Suspense fallback={null}><SelectionActionLayer readApps={false} /></Suspense>
+          <OwnerOnlyGate>
           <Routes>
             <Route path="/chat/:slug?" element={<ErrorBoundary><ChatPage /></ErrorBoundary>} />
             <Route path="/orchestrated/:slug?" element={<OrchestratedRedirect />} />
@@ -938,6 +942,7 @@ export default function App() {
             <Route path="/:builtinApp/*" element={<BuiltinAppRoute />} />
             <Route path="*" element={<ChatRedirect />} />
           </Routes>
+          </OwnerOnlyGate>
           </GuideProvider>
           </MobileRosterBarContext.Provider>
           </MobileNavRailContext.Provider>

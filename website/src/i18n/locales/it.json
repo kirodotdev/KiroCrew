@@ -7458,7 +7458,9 @@
       "sessions": "Sessioni"
     },
     "errorBoundary": {
+      "back_to_chat": "Torna alla chat",
       "lazy_page_load_failed": "Impossibile caricare questa pagina. Controlla la connessione al gateway e riprova.",
+      "owner_only": "Solo per il proprietario",
       "reload_page": "Ricarica la pagina",
       "something_went_wrong": "Si è verificato un problema",
       "try_again": "Riprova"
@@ -18251,6 +18253,7 @@
     },
     "schedulePage": {
       "actions": "Azioni",
+      "guest": "Ospite",
       "owning_session_help": "Un job senza sessione proprietaria è invisibile a cron_list nella chat e viene gestito da questa pagina o dalla CLI.",
       "owning_session_tooltip": "Sessione proprietaria: {{key}}",
       "view_calendar": "Calendario",
@@ -23381,6 +23384,8 @@
     "invite_alias_label": "Nome visualizzato (facoltativo)",
     "filter_empty": "Nessuna sessione corrisponde a questo filtro.",
     "invite_err_generic": "Non ha funzionato. Riprova.",
+    "invite_err_schedules_not_paused": "L’accesso è stato rimosso, ma alcune sue pianificazioni sono ancora attive. Mettile in pausa nella pagina Pianificazioni.",
+    "identity_check_failed": "Impossibile verificare il tuo accesso, quindi potrebbero comparire controlli che non puoi usare.",
     "source_observed": "Visto connettersi",
     "rejected_by_person": "{{name}} ha rifiutato",
     "send_race_send_now": "Invia dopo il messaggio di {{name}}",

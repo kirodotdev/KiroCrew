@@ -809,7 +809,11 @@ class TestAssetReadHardening:
             return await real_to_thread(fn, *args, **kw)
 
         monkeypatch.setattr(handlers.asyncio, "to_thread", _spy_to_thread)
-        request = types.SimpleNamespace(match_info={"slug": art.slug})
+        # ``get``: the handler asks whether the caller is a Shared Crew guest, which
+        # reads the request's own items as an aiohttp request carries them.
+        request = types.SimpleNamespace(
+            match_info={"slug": art.slug}, get=lambda key, default=None: default
+        )
         resp = asyncio.run(handlers.api_artifact_asset(request))  # type: ignore[arg-type]
 
         assert resp.status == 200

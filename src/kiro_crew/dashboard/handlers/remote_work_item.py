@@ -141,6 +141,14 @@ async def work_item_for_create(
     raw = body.get("work_item")
     if raw is None or not await _preview_on():
         return None, None
+    from kiro_crew.shared_crew.guest_scope import is_guest_session
+
+    if is_guest_session(request):
+        # A hub work item is the host owner's remote-dispatch account; the create
+        # route is open to a guest, so the field is refused here.
+        return None, web.json_response(
+            {"error": "owner authorization required", "code": "owner_only"}, status=403
+        )
     denied = await require_owner_dashboard_request(request, "chat_slot_create.work_item")
     if denied is not None:
         return None, denied

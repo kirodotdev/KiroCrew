@@ -7458,7 +7458,9 @@
       "sessions": "Sesiones"
     },
     "errorBoundary": {
+      "back_to_chat": "Volver al chat",
       "lazy_page_load_failed": "No se pudo cargar esta página. Comprueba la conexión con el gateway y vuelve a intentarlo.",
+      "owner_only": "Solo para el propietario",
       "reload_page": "Recargar la página",
       "something_went_wrong": "Algo ha ido mal",
       "try_again": "Reintentar"
@@ -18251,6 +18253,7 @@
     },
     "schedulePage": {
       "actions": "Acciones",
+      "guest": "Invitado",
       "owning_session_help": "Un trabajo sin sesión propietaria es invisible para cron_list en el chat y se gestiona desde esta página o la CLI.",
       "owning_session_tooltip": "Sesión propietaria: {{key}}",
       "view_calendar": "Calendario",
@@ -23381,6 +23384,8 @@
     "invite_alias_label": "Nombre visible (opcional)",
     "filter_empty": "Ninguna sesión coincide con este filtro.",
     "invite_err_generic": "No funcionó. Inténtalo de nuevo.",
+    "invite_err_schedules_not_paused": "Se quitó el acceso, pero algunas de sus programaciones siguen activas. Páusalas en la página Programaciones.",
+    "identity_check_failed": "No se pudo comprobar tu acceso, así que pueden aparecer controles que no puedes usar.",
     "source_observed": "Visto al conectarse",
     "rejected_by_person": "{{name}} rechazó",
     "send_race_send_now": "Enviar después del mensaje de {{name}}",

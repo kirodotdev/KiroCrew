@@ -64,7 +64,7 @@ def catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
         dir_revision, "time", types.SimpleNamespace(time_ns=lambda: time.time_ns() + ahead)
     )
-    monkeypatch.setattr(agent_catalog, "is_owner_dashboard_request", lambda request: True)
+    monkeypatch.setattr(agent_catalog, "is_host_owner_dashboard_request", lambda request: True)
 
     scans: list[Path] = []
     real_scan = loader_snapshots._scan_materialized_index

@@ -10,6 +10,7 @@ import time
 from typing import TYPE_CHECKING
 
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.shared_crew.collaborators import broadcast_to_collaborators
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard.state import DashboardState
@@ -78,7 +79,7 @@ def broadcast_side_result(
     # Owner-only, matching the queue frame and `_check_slot_ownership`: side answers and
     # steer echoes are the owner's own conversation, and an app that asks the HTTP API
     # about a slot it does not own gets a 404.
-    state.broadcast_ws_owners(SIDE_RESULT_EVENT, payload)
+    broadcast_to_collaborators(state, SIDE_RESULT_EVENT, payload)
 
 
 def broadcast_thread_reply(
@@ -132,7 +133,7 @@ def broadcast_thread_reply(
         payload["final"] = True
     if reply is not None:
         payload["reply"] = reply
-    state.broadcast_ws_owners(THREAD_REPLY_EVENT, payload)
+    broadcast_to_collaborators(state, THREAD_REPLY_EVENT, payload)
 
 
 def broadcast_side_queue(
@@ -194,7 +195,7 @@ def broadcast_side_queue(
     # Owner-only: `_check_slot_ownership` answers 404 when an app asks about a slot it
     # does not own, and queue entries are the user's own prose. An unscoped broadcast
     # would hand that text to app sockets the HTTP layer keeps out.
-    state.broadcast_ws_owners(SIDE_QUEUE_EVENT, payload)
+    broadcast_to_collaborators(state, SIDE_QUEUE_EVENT, payload)
 
 
 def broadcast_side_closed(
@@ -219,4 +220,4 @@ def broadcast_side_closed(
         payload["origin_client"] = origin_client
     if dropped:
         payload["dropped"] = dropped
-    state.broadcast_ws_owners(SIDE_CLOSED_EVENT, payload)
+    broadcast_to_collaborators(state, SIDE_CLOSED_EVENT, payload)

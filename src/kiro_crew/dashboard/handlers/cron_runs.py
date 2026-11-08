@@ -10,12 +10,19 @@ never imports it.
 from __future__ import annotations
 
 import asyncio
+import copy
 import sys
 from typing import Any
 
 from aiohttp import web
 
-from kiro_crew.cron import CronPauseNotSaved, CronStoreBusy, CronStoreUnreadable
+from kiro_crew.cron import (
+    CronPauseNotSaved,
+    CronPendingMismatch,
+    CronStoreBusy,
+    CronStoreUnreadable,
+)
+from kiro_crew.cron_service.service.job_writes import ACK_SUMMARY_MAX_CHARS
 from kiro_crew.dashboard.chat_persistence import _restore_dismissed_source_links
 from kiro_crew.dashboard.cron_inject import (
     apply_cron_turn_timeout,
@@ -38,14 +45,18 @@ from kiro_crew.dashboard.handlers.cron_shared import (
     _CRON_BUSY_BODY,
     _CRON_BUSY_STATUS,
     _app_caller,
+    _attended_revision,
     _audit_app_cron,
     _cron_unreadable_response,
+    _guest_unattended_response,
     _invalid_path_id_response,
     _refuse_foreign_app_job,
+    guest_unattended_refusal,
 )
 from kiro_crew.dashboard.slot_ownership import app_holds_gateway_key
 from kiro_crew.dashboard.state import DashboardState, SlotOrigin, note_crew_log_class
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.shared_crew.guest_scope import is_guest_session
 
 from ._shared import guard_owner_surface_routes, read_bounded_json
 
@@ -63,6 +74,8 @@ async def api_cron_run(request: web.Request) -> web.Response:
     app_denied = await _refuse_foreign_app_job(request, state, [job_id], "crons.run")
     if app_denied is not None:
         return app_denied
+    if (unattended := await guest_unattended_refusal(request, state, [job_id])) is not None:
+        return unattended
     # Freshness-guaranteed lookup: this endpoint is handed a job id minted by
     # ANOTHER process (`kirocrew cron add`, the MCP cron_add tool), which writes
     # crons.json directly. The cache-only `list_jobs()` would not see that job
@@ -75,7 +88,9 @@ async def api_cron_run(request: web.Request) -> web.Response:
         return web.json_response({"error": "job not found"}, status=404)
     # trigger_run is await-free, so although the lookup above awaits and two
     # concurrent requests can both reach it, only one passes its guard.
-    if not state.crons.trigger_run(job_id):
+    # A guest's run is judged on the record run_job reads again, so an owner
+    # switching the job to auto meanwhile starts nothing.
+    if not state.crons.trigger_run(job_id, require_attended=is_guest_session(request)):
         return web.json_response({"error": "job is already running"}, status=409)
     state.push_refresh("crons")
     safe_name = redact_credentials(redact_exfiltration_urls(job.name)[0])[0]
@@ -124,6 +139,8 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
     app_denied = await _refuse_foreign_app_job(request, state, [job_id], "crons.to_chat")
     if app_denied is not None:
         return app_denied
+    if (unattended := await guest_unattended_refusal(request, state, [job_id])) is not None:
+        return unattended
     slot_name = f"cron-{job_id}"
     # The job's tab key is held by an app's slot: it is not adopted (see
     # slot_ownership.app_holds_gateway_key), so there is no tab to open.
@@ -142,6 +159,14 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
             if state.conversation_log
             else []
         )
+        dismissed = await prefetch_cron_dismissed(state, job.id)
+        if is_guest_session(request):
+            # The snapshot is the live job object an owner's PATCH mutates in place, and
+            # the reads above awaited. Detach a copy after the last await, judge it, and
+            # open that one, so a switch to auto meanwhile opens nothing.
+            job = copy.copy(job)
+            if _attended_revision(job) != "attended":
+                return _guest_unattended_response()
         # Re-surfacing a stored result, not delivering a fresh run: the prompt
         # that produced it is not recoverable from live config -- see
         # inject_cron_result_to_dashboard's ``include_prompt``.
@@ -150,7 +175,7 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
             job,
             job.last_result or "",
             history=history,
-            dismissed=await prefetch_cron_dismissed(state, job.id),
+            dismissed=dismissed,
             include_prompt=False,
         )
         await restore_cron_turn_timeout(state, job.id)
@@ -243,6 +268,11 @@ async def api_cron_ack(request: web.Request) -> web.Response:
     app_denied = await _refuse_foreign_app_job(request, state, [job_id], "crons.ack")
     if app_denied is not None:
         return app_denied
+    # An acknowledged item reaches every later run's prompt, so a guest adds none to
+    # an unattended job.
+    if (unattended := await guest_unattended_refusal(request, state, [job_id])) is not None:
+        return unattended
+    guest = is_guest_session(request)
     # Default cap: the body is a short summary + notification ts. allow_absent
     # keeps the missing-body-means-defaults contract; see api_cron_enable.
     body, body_err = await read_bounded_json(request, allow_absent=True)
@@ -257,6 +287,17 @@ async def api_cron_ack(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "'summary' must be a string", "code": "invalid_summary"}, status=400
         )
+    if guest and not (isinstance(summary, str) and len(summary) <= ACK_SUMMARY_MAX_CHARS):
+        # Every later run reads the item as prompt text, stringified and cut to the
+        # store's length. A guest's must be the very string the write checkpoint
+        # judged: a plain string the store keeps whole.
+        return web.json_response(
+            {
+                "error": f"'summary' must be a string of at most {ACK_SUMMARY_MAX_CHARS} characters",
+                "code": "invalid_summary",
+            },
+            status=400,
+        )
     notification_ts = body.get("ts", "")
     # An app may mark read only a notification of the job it just passed:
     # the same ts / kind / job_id match api_notification_unack makes.
@@ -269,7 +310,7 @@ async def api_cron_ack(request: web.Request) -> web.Response:
             _audit_app_cron(app, "crons.ack", "denied", job_id)
             return _owner_denial_response(request)
     if not notification_ts:
-        ok, refused = await _ack_job(state, job_id, summary, "")
+        ok, refused = await _ack_job(state, job_id, summary, "", guest=guest)
         return refused or web.json_response({"ok": ok})
     # The check, the store write and the record are one step per note, so two
     # overlapping acks (a double click) cannot both pass the check.
@@ -281,7 +322,7 @@ async def api_cron_ack(request: web.Request) -> web.Response:
             await state.ack_notification(notification_ts)
             return web.json_response({"ok": True})
         ack_id = new_ack_id()
-        ok, refused = await _ack_job(state, job_id, summary, ack_id)
+        ok, refused = await _ack_job(state, job_id, summary, ack_id, guest=guest)
         if refused is not None:
             return refused
         if ok:
@@ -291,13 +332,24 @@ async def api_cron_ack(request: web.Request) -> web.Response:
 
 
 async def _ack_job(
-    state: DashboardState, job_id: str, summary: Any, ack_id: str
+    state: DashboardState, job_id: str, summary: Any, ack_id: str, *, guest: bool = False
 ) -> tuple[bool, web.Response | None]:
-    """Append *summary* to the job under *ack_id*: ``(ok, None)``, or the store's refusal."""
+    """Append *summary* to the job under *ack_id*: ``(ok, None)``, or the store's refusal.
+
+    A guest's ack is judged again under the store lock: an acknowledged item reaches
+    every later run's prompt, so an owner making the job unattended mid-request wins.
+    """
     try:
+        if guest:
+            return (
+                await state.crons.ack_job_async(job_id, summary, ack_id, require_attended=True),
+                None,
+            )
         if not ack_id:
             return await state.crons.ack_job_async(job_id, summary), None
         return await state.crons.ack_job_async(job_id, summary, ack_id), None
+    except CronPendingMismatch:
+        return False, _guest_unattended_response()
     except CronStoreBusy:
         return False, web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
     except CronStoreUnreadable as exc:

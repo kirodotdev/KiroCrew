@@ -134,6 +134,13 @@ class WorkingMemory:
                 self.files_changed.append(stripped[:200])
 
 
+def _built_for_a_guest() -> bool:
+    """Whether the code now running was started by a Shared Crew guest's request."""
+    from kiro_crew import guest_prompt_origin
+
+    return guest_prompt_origin.current() is not None
+
+
 @dataclass
 class Project:
     """Tracks the full task execution."""
@@ -180,6 +187,11 @@ class Project:
     workflow_revision: int = 0
     derived_from_workflow_id: str = ""  # saved ancestor after the plan is adapted
     derived_from_revision: int = 0
+    # Whether a Shared Crew guest's request built this plan. Read once, when the plan is
+    # made, from the turn's guest mark; every later run of it reads images as the guest's
+    # (``run_steps._execute_tasks``), whoever starts it, since its stored text is cut
+    # before it reaches a prompt and no check on the guest's words could foresee the cut.
+    guest_origin: bool = field(default_factory=_built_for_a_guest)
 
 
 # ``NotifyCallback`` moved to ``task_reporter``, which owns the notification

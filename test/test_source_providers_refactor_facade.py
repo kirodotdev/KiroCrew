@@ -128,8 +128,8 @@ _HISTORICAL_SURFACE = frozenset("""
     comment_on_pull_request config_dir create_subprocess_limited enable_pull_request_auto_merge
     ensure_gitlab_hosts_loaded fetch_app_contributors fetch_issue fetch_pull_request
     fetch_pull_request_checks get_cached_check_status github_runner
-    gitlab_ambient_token_allowed gitlab_hosts_generation is_owner_dashboard_request
-    is_repo_public jira_global_token_applicable jira_host_token_name json logger
+    gitlab_ambient_token_allowed gitlab_hosts_generation is_host_owner_dashboard_request
+    is_owner_dashboard_request is_repo_public jira_global_token_applicable jira_host_token_name json logger
     mark_pull_request_ready normalize_jira_host owner_view_for_request parse_repo_url
     parse_source_url platform_compat provider_executable_candidates
     publish_session_card_chips_now pull_request_pending_review read_capped_response
