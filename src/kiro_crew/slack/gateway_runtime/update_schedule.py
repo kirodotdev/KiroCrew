@@ -508,6 +508,17 @@ async def _restart_gate_when_idle(self: GatewayOrchestrator) -> tuple[bool, int,
     return True, 0, 0
 
 
+def _restart_gate_held(self: GatewayOrchestrator) -> bool:
+    """Whether a restart the idle gate approved is still on its way.
+
+    Synchronous, so ``api_update_apply`` reads it and launches its installer
+    with no await between: an installer started under that hold is cut off by
+    the restart.
+    """
+    hold = getattr(self, "_restart_gate_hold", None)
+    return hold is not None and not hold.done()
+
+
 async def _release_restart_gate_hold(self: GatewayOrchestrator) -> None:
     """Reopen admission the restart gate paused, once its restart did not arrive.
 
