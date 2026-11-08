@@ -254,6 +254,18 @@ class RouteRegistry:
         """Return list of app names with registered routes."""
         return list(self._routes.keys())
 
+    def serves(self, app_name: str, method: str, path: str) -> bool:
+        """Whether *app_name* registered a route with exactly this method and path.
+
+        Exact only, as :meth:`dispatch` tries first: a parameterised pattern is never
+        read as serving a fixed path.
+        """
+        path = path if path.startswith("/") else f"/{path}"
+        return any(
+            r.method == method and r.path == path and not r.has_params
+            for r in self._routes.get(app_name, ())
+        )
+
     async def _call_handler(
         self,
         app_name: str,

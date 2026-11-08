@@ -9,6 +9,7 @@ pod that is still stopping is never reported as a failed stop.
 from __future__ import annotations
 
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -24,7 +25,7 @@ from pod_helpers import (  # noqa: F401 -- the fixtures register by import
 from kiro_crew.apps.builtins.dev_fleet import repository as repository_mod
 from kiro_crew.apps.builtins.dev_fleet import runtime as runtime_mod
 from kiro_crew.apps.builtins.dev_fleet import worktree_ops_pods
-from kiro_crew.mcp_tools import apps as mcp_apps
+from kiro_crew.apps.manifest import AppManifest
 from kiro_crew.pod import runtime as rt
 from kiro_crew.pod import unit as unit_mod
 from kiro_crew.pod.config import POD_STOP_TIMEOUT_SECS, SYSTEMCTL_STOP_WAIT_SECS, PodConfig
@@ -119,8 +120,11 @@ def test_halt_refreshes_a_stale_hookless_unit_before_stopping(
 def test_each_wait_above_the_stop_is_longer() -> None:
     cli_bound = worktree_ops_pods._POD_DOWN_TIMEOUT_SECS
     assert cli_bound > SYSTEMCTL_STOP_WAIT_SECS + DRAIN_TIMEOUT_SECS
-    # The gateway's bound must fire first: it is the one that names the cause.
-    assert mcp_apps._POD_DOWN_TIMEOUT_S > cli_bound
+    # The gateway's bound must fire first: it is the one that names the cause. The
+    # pod_down tool's wait is the one Dev Fleet's shipped manifest declares.
+    manifest = AppManifest.from_json_file(Path(worktree_ops_pods.__file__).parent / "app.json")
+    waits = {t.name: t.timeout_seconds for t in manifest.agentTools.tools}
+    assert waits["pod_down"] > cli_bound
 
 
 @pytest.mark.asyncio

@@ -14,11 +14,6 @@ from __future__ import annotations
 
 from kiro_crew.validation_parts.app_schemas import (
     OPS_MISSION_CONTROL_API_SCHEMA,
-    POD_DOWN_SCHEMA,
-    POD_LS_SCHEMA,
-    POD_RESTART_SCHEMA,
-    POD_STATUS_SCHEMA,
-    POD_UP_SCHEMA,
 )
 from kiro_crew.validation_parts.artifact_schemas import (
     ARTIFACT_DELETE_COMMENT_SCHEMA,
@@ -221,11 +216,6 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "workflow_library_list": WORKFLOW_LIBRARY_LIST_SCHEMA,
     "deploy_artifact": DEPLOY_ARTIFACT_SCHEMA,
     "ops_mission_control_api": OPS_MISSION_CONTROL_API_SCHEMA,
-    "pod_up": POD_UP_SCHEMA,
-    "pod_restart": POD_RESTART_SCHEMA,
-    "pod_down": POD_DOWN_SCHEMA,
-    "pod_status": POD_STATUS_SCHEMA,
-    "pod_ls": POD_LS_SCHEMA,
 }
 
 

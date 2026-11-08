@@ -1,9 +1,10 @@
 """The agent's pod lifecycle path: gateway routes, their guards, and the tools.
 
 An agent session cannot reach the systemd user bus, so ``kirocrew pod up`` in one
-of its shells fails with ``Permission denied``. These four routes are the gateway
-doing that part on the agent's behalf, and the ``pod_*`` MCP tools are how a
-session calls them. What is worth pinning is therefore not the pod mechanics --
+of its shells fails with ``Permission denied``. These routes are the gateway doing
+that part on the agent's behalf, and the ``pod_*`` tools Dev Fleet declares in its
+manifest (``agent_tools.py``, served from the gateway through the ``agentTools``
+seam) are how a session calls them. What is worth pinning is therefore not the pod mechanics --
 ``worktree_ops`` owns those and has its own tests -- but the seams that make the
 detour safe and the answer usable:
 
@@ -21,8 +22,21 @@ from typing import Any
 import pytest
 from aiohttp import web
 
-from kiro_crew.apps.builtins.dev_fleet import agent_pod_api
-from kiro_crew.mcp_tools import apps as apps_tools
+from kiro_crew.apps.builtins.dev_fleet import agent_pod_api, agent_tools
+from kiro_crew.apps.manifest import AppManifest
+
+_POD_TOOLS = ("pod_up", "pod_restart", "pod_down", "pod_status", "pod_ls")
+
+
+def _declared() -> dict[str, dict[str, Any]]:
+    """The pod tools as the shipped ``app.json`` declares them, by name."""
+    from pathlib import Path
+
+    root = Path(agent_pod_api.__file__).parent
+    manifest = AppManifest.from_json_file(root / "app.json")
+    assert manifest.agentTools.validate(manifest.name) == []
+    return {t.name: t.descriptor() | {"_decl": t} for t in manifest.agentTools.tools}
+
 
 # Route registration + admission
 
@@ -251,15 +265,9 @@ async def test_provisioning_is_not_reachable_from_the_agent_surface(granted: Non
     silently given a 16-minute call. The dashboard's Provision button streams the
     same work under a run id, which is the shape that survives a restart.
     """
-    from kiro_crew.validation import POD_UP_SCHEMA
-
-    assert [f.name for f in POD_UP_SCHEMA.fields] == ["worktree", "memory", "cpu"]
-    assert "provision" not in {
-        k
-        for t in apps_tools.schemas()
-        if t["name"] == "pod_up"
-        for k in t["inputSchema"]["properties"]
-    }
+    props = _declared()["pod_up"]["inputSchema"]["properties"]
+    assert list(props) == ["worktree", "memory", "cpu"]
+    assert "provision" not in props
 
 
 @pytest.mark.asyncio
@@ -404,32 +412,82 @@ def test_ops_resolves_the_real_worktree_ops_module() -> None:
     assert callable(worktree_ops._pod_ls)
 
 
-# MCP tools
+# The declared tools (agent_tools.py, through the manifest agentTools seam)
 
 
-def test_pod_tools_are_advertised_with_handlers() -> None:
-    """A descriptor with no handler advertises a tool that cannot run."""
-    advertised = {t["name"] for t in apps_tools.schemas()}
-    for name in ("pod_up", "pod_restart", "pod_down", "pod_status", "pod_ls"):
-        assert name in advertised
-        assert name in apps_tools.HANDLERS
+def _verb(
+    monkeypatch: pytest.MonkeyPatch,
+    attr: str,
+    payload: dict[str, Any],
+    *,
+    status: int = 200,
+    calls: list[tuple[Any, ...]] | None = None,
+) -> None:
+    """Stand in for one ``agent_pod_api.pod_*_response`` verb."""
+
+    async def _fake(*args: Any) -> web.Response:
+        if calls is not None:
+            calls.append(args)
+        return web.json_response(payload, status=status)
+
+    monkeypatch.setattr(agent_pod_api, attr, _fake)
 
 
-def test_pod_tools_are_registered_for_argument_validation() -> None:
-    """A tool absent from MCP_CORE_SCHEMAS has its arguments passed through raw."""
-    from kiro_crew.validation import MCP_CORE_SCHEMAS
+def test_pod_tools_are_declared_with_a_verb_each() -> None:
+    """A declaration with no verb advertises a tool that cannot run."""
+    declared = _declared()
+    assert set(declared) == set(_POD_TOOLS) == set(agent_tools.TOOLS)
+    for name in _POD_TOOLS:
+        decl = declared[name]["_decl"]
+        assert decl.result == "text", name
+        assert decl.max_result_chars == 60_000, name
 
-    for name in ("pod_up", "pod_restart", "pod_down", "pod_status", "pod_ls"):
-        assert name in MCP_CORE_SCHEMAS
+
+def test_pod_tools_keep_the_core_validation_bounds() -> None:
+    """The bounds the core tool held are the declaration's, so the same calls are refused."""
+    from kiro_crew.apps import app_agent_tools
+    from kiro_crew.validation_parts.field_engine import ValidationError, validate_tool_args
+
+    for name in _POD_TOOLS:
+        decl = _declared()[name]["_decl"]
+        schema = app_agent_tools.build_tool_schema(
+            app_agent_tools.DeclaredTool(app="dev-fleet", route="agent-tools", decl=decl)
+        )
+        if name == "pod_ls":
+            with pytest.raises(ValidationError):
+                validate_tool_args({"worktree": "w"}, schema)
+            continue
+        with pytest.raises(ValidationError):
+            validate_tool_args({"worktree": "w" * 201}, schema)
+        assert validate_tool_args({"worktree": "w" * 200}, schema) == {"worktree": "w" * 200}
+        if name in ("pod_up", "pod_restart"):
+            with pytest.raises(ValidationError):
+                validate_tool_args({"worktree": "w", "memory": "1" * 17}, schema)
 
 
-def test_pod_up_tool_returns_the_token_verbatim(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_pod_tools_wait_as_long_as_the_core_tools_did() -> None:
+    """A pod boot is bounded at 180s and a pod down at 90s in the gateway; the caller waits past both.
+
+    A read spawns a python subprocess in the gateway, so 10s cannot cover it either.
+    """
+    waits = {n: d["_decl"].timeout_seconds for n, d in _declared().items()}
+    assert waits == {
+        "pod_up": 210,
+        "pod_restart": 210,
+        "pod_down": 120,
+        "pod_status": 45,
+        "pod_ls": 45,
+    }
+
+
+@pytest.mark.asyncio
+async def test_pod_up_tool_returns_the_token_verbatim(monkeypatch: pytest.MonkeyPatch) -> None:
     """The token IS the deliverable -- a redacted one is a handle that cannot be used."""
-    calls: list[tuple[str, dict[str, Any]]] = []
-
-    def _fake_post(path: str, body: dict[str, Any] | None = None, **kw: Any) -> dict[str, Any]:
-        calls.append((path, body or {}))
-        return {
+    calls: list[tuple[Any, ...]] = []
+    _verb(
+        monkeypatch,
+        "pod_up_response",
+        {
             "ok": True,
             "name": "kc-wt-1",
             "status": "up",
@@ -437,30 +495,106 @@ def test_pod_up_tool_returns_the_token_verbatim(monkeypatch: pytest.MonkeyPatch)
             "base_url": "http://127.0.0.1:7913",
             "token": "tok-abc123",
             "ttl": "2h",
-        }
-
-    monkeypatch.setattr(apps_tools.mcp_core, "_post", _fake_post)
-    out = apps_tools.pod_up("pod_up", {"worktree": "kc-wt-1"})
+        },
+        calls=calls,
+    )
+    out = _text(await agent_tools.pod_up({"worktree": "kc-wt-1"}))
     assert "tok-abc123" in out
     assert "http://127.0.0.1:7913" in out
-    assert calls[0][0] == "/api/apps/dev-fleet/pod/up"
-    assert calls[0][1] == {"worktree": "kc-wt-1"}
+    assert "open: http://127.0.0.1:7913/?token=tok-abc123" in out.splitlines()
+    assert calls == [({"worktree": "kc-wt-1"},)]
+
+
+def _mint_link_token() -> str:
+    """A link token minted the way a pod mints one: a 2h session."""
+    from kiro_crew.dashboard.token_auth import generate_token
+
+    return generate_token("local-app", ttl_seconds=7200, register_nonce=False)
+
+
+def _text(answer: dict[str, Any]) -> str:
+    """The text a tool's answer carries, its credential put back where it stands."""
+    text = answer["text"]
+    return answer["credential"].join(text) if "credential" in answer else text
 
 
 def _token_line(out: str) -> str:
     return next(line for line in out.splitlines() if line.startswith("token:"))
 
 
-def test_pod_up_tool_names_both_token_limits(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_a_pod_start_names_its_token_as_the_answers_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The token is cut out of the text, so the core redacts every other character."""
+    token = "tok-" + "a" * 40
+    _verb(monkeypatch, "pod_up_response", {"ok": True, "port": 7913, "token": token})
+    answer = await agent_tools.pod_up({"worktree": "kc-wt-1"})
+    assert answer["credential"] == token
+    assert len(answer["text"]) == 3
+    assert not any(token in piece for piece in answer["text"])
+
+
+def test_the_core_relays_a_pod_up_reply_byte_for_byte() -> None:
+    """Through the core's real redaction, the agent reads what the core tool returned.
+
+    A real link token is what the redactor would otherwise rewrite (``token=...`` and
+    the token itself), so the reply is built around a minted one.
+    """
+    from kiro_crew.mcp_tools import app_tools
+
+    token = _mint_link_token()
+    resp = {
+        "ok": True,
+        "port": 7913,
+        "base_url": "http://127.0.0.1:7913",
+        "checkout": "/home/u/clone-a/kc-wt-1",
+        "memory": "4G",
+        "cpu": "200%",
+        "token": token,
+        "link_ttl_secs": 300,
+        "session_ttl_secs": 7200,
+    }
+    answer = agent_tools._pod_start_reply({"worktree": "kc-wt-1"}, resp, "up")
+    assert app_tools._text_answer("pod_up", answer) == (
+        "Pod `kc-wt-1` is up on port 7913.\n"
+        "base_url: http://127.0.0.1:7913\n"
+        "checkout: /home/u/clone-a/kc-wt-1\n"
+        "limits: memory=4G cpu=200%\n"
+        f"token: {token}  (use within 5 min; the session it opens lasts 2h)\n"
+        f"open: http://127.0.0.1:7913/?token={token}\n"
+        "Past its window the pod refuses the token as expired; call pod_up "
+        "again (the pod keeps running) for a fresh one.\n"
+        "Stop it with pod_down when you are done: kc-wt-1"
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Pod `kc-wt-1`: up port=7913 health=200 memory=4G cpu=200%",
+        "2 pod(s) active:\n  kc-wt-1  port=7913 health=200\n  kc-wt-2  port=7940 health=0",
+        "Pod `kc-wt-1` is stopped and its data directory reclaimed.",
+        "Error: pod up 'kc-wt-1' failed [pod_up_failed]: no built dist",
+    ],
+)
+def test_the_core_relays_every_other_pod_reply_unchanged(text: str) -> None:
+    from kiro_crew.mcp_tools import app_tools
+
+    assert app_tools._text_answer("pod_ls", {"text": text}) == text
+
+
+@pytest.mark.asyncio
+async def test_pod_up_tool_names_both_token_limits(monkeypatch: pytest.MonkeyPatch) -> None:
     """The link window and the session lifetime are both named, from the route's numbers.
 
     Naming only the session lifetime tells the agent its token lasts hours when
     the pod refuses it as expired minutes later.
     """
-    monkeypatch.setattr(
-        apps_tools.mcp_core,
-        "_post",
-        lambda *_a, **_k: {
+    _verb(
+        monkeypatch,
+        "pod_up_response",
+        {
             "ok": True,
             "port": 7913,
             "base_url": "http://127.0.0.1:7913",
@@ -470,7 +604,7 @@ def test_pod_up_tool_names_both_token_limits(monkeypatch: pytest.MonkeyPatch) ->
             "session_ttl_secs": 7200,
         },
     )
-    out = apps_tools.pod_up("pod_up", {"worktree": "kc-wt-1"})
+    out = _text(await agent_tools.pod_up({"worktree": "kc-wt-1"}))
     line = _token_line(out)
     assert "tok-abc123" in line
     assert "use within 5 min" in line
@@ -479,12 +613,13 @@ def test_pod_up_tool_names_both_token_limits(monkeypatch: pytest.MonkeyPatch) ->
     assert "call pod_up again" in out
 
 
-def test_pod_up_tool_reads_the_numbers_it_is_given(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_pod_up_tool_reads_the_numbers_it_is_given(monkeypatch: pytest.MonkeyPatch) -> None:
     """The windows come from the route response, not from constants in the tool."""
-    monkeypatch.setattr(
-        apps_tools.mcp_core,
-        "_post",
-        lambda *_a, **_k: {
+    _verb(
+        monkeypatch,
+        "pod_up_response",
+        {
             "ok": True,
             "port": 7913,
             "token": "tok-abc123",
@@ -492,11 +627,12 @@ def test_pod_up_tool_reads_the_numbers_it_is_given(monkeypatch: pytest.MonkeyPat
             "session_ttl_secs": 1800,
         },
     )
-    line = _token_line(apps_tools.pod_up("pod_up", {"worktree": "kc-wt-1"}))
+    line = _token_line(_text(await agent_tools.pod_up({"worktree": "kc-wt-1"})))
     assert "use within 2 min" in line
     assert "lasts 30 min" in line
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "extra",
     [
@@ -507,16 +643,14 @@ def test_pod_up_tool_reads_the_numbers_it_is_given(monkeypatch: pytest.MonkeyPat
         {"link_ttl_secs": "300", "session_ttl_secs": 7200},
     ],
 )
-def test_pod_up_tool_names_no_duration_it_was_not_given(
+async def test_pod_up_tool_names_no_duration_it_was_not_given(
     monkeypatch: pytest.MonkeyPatch, extra: dict[str, Any]
 ) -> None:
     """Without usable windows the line names no duration; a guessed one is the defect."""
-    monkeypatch.setattr(
-        apps_tools.mcp_core,
-        "_post",
-        lambda *_a, **_k: {"ok": True, "port": 7913, "token": "tok-abc123", **extra},
+    _verb(
+        monkeypatch, "pod_up_response", {"ok": True, "port": 7913, "token": "tok-abc123", **extra}
     )
-    line = _token_line(apps_tools.pod_up("pod_up", {"worktree": "kc-wt-1"}))
+    line = _token_line(_text(await agent_tools.pod_up({"worktree": "kc-wt-1"})))
     assert "tok-abc123" in line
     assert "2h" not in line
     assert "straight away" in line
@@ -524,7 +658,7 @@ def test_pod_up_tool_names_no_duration_it_was_not_given(
 
 def test_pod_up_description_names_the_link_window() -> None:
     """The description is what an agent plans from, so it states both limits."""
-    desc = next(t for t in apps_tools.schemas() if t["name"] == "pod_up")["description"]
+    desc = _declared()["pod_up"]["description"]
     assert "2h credential" not in desc
     assert "5 minutes" in desc
     assert "session" in desc and "2h" in desc
@@ -543,9 +677,9 @@ async def test_pod_up_route_reports_the_windows_of_the_minted_token(
     from unittest.mock import AsyncMock
 
     from kiro_crew.apps.builtins.dev_fleet import repository, runtime, worktree_ops
-    from kiro_crew.dashboard.token_auth import LINK_WINDOW_SECS, generate_token
+    from kiro_crew.dashboard.token_auth import LINK_WINDOW_SECS
 
-    token = generate_token("local-app", ttl_seconds=7200, register_nonce=False)
+    token = _mint_link_token()
     handle = {"name": "kc-wt-1", "status": "up", "port": 7913, "token": token, "ttl": "2h"}
     monkeypatch.setattr(worktree_ops, "_pod_checkout_guard", AsyncMock(return_value=None))
     monkeypatch.setattr(worktree_ops, "_pod_env", lambda: {})
@@ -581,26 +715,28 @@ def test_token_windows_reports_nothing_for_a_malformed_token(token: str) -> None
     assert worktree_ops._token_windows(token) == {}
 
 
-def test_pod_up_tool_says_so_when_the_cli_withheld_the_token(
+@pytest.mark.asyncio
+async def test_pod_up_tool_says_so_when_the_cli_withheld_the_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An empty token is a deliberate refusal to certify the port, not an oversight."""
-    monkeypatch.setattr(
-        apps_tools.mcp_core,
-        "_post",
-        lambda *_a, **_k: {"ok": True, "name": "kc-wt-1", "port": 7913, "token": ""},
+    _verb(
+        monkeypatch, "pod_up_response", {"ok": True, "name": "kc-wt-1", "port": 7913, "token": ""}
     )
-    out = apps_tools.pod_up("pod_up", {"worktree": "kc-wt-1"})
+    out = _text(await agent_tools.pod_up({"worktree": "kc-wt-1"}))
     assert "withheld" in out
     assert not out.startswith("Error:")
 
 
-def test_pod_up_tool_prints_the_checkout_a_handle_copies(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_pod_up_tool_prints_the_checkout_a_handle_copies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The pod-e2e handle is built from this reply, so the clone it serves must be on it."""
-    monkeypatch.setattr(
-        apps_tools.mcp_core,
-        "_post",
-        lambda *_a, **_k: {
+    _verb(
+        monkeypatch,
+        "pod_up_response",
+        {
             "ok": True,
             "port": 7913,
             "base_url": "http://127.0.0.1:7913",
@@ -608,54 +744,65 @@ def test_pod_up_tool_prints_the_checkout_a_handle_copies(monkeypatch: pytest.Mon
             "checkout": "/home/u/clone-a/kc-wt-1",
         },
     )
-    out = apps_tools.pod_up("pod_up", {"worktree": "kc-wt-1"})
+    out = _text(await agent_tools.pod_up({"worktree": "kc-wt-1"}))
     assert "checkout: /home/u/clone-a/kc-wt-1" in out.splitlines()
 
 
-def test_a_route_refusal_reaches_the_model_as_an_error(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_a_route_refusal_reaches_the_model_as_an_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """``Error:`` is load-bearing: call_tool_with_logging derives the outcome from it."""
-    monkeypatch.setattr(
-        apps_tools.mcp_core,
-        "_post",
-        lambda *_a, **_k: {"ok": False, "code": "pod_up_failed", "error": "no built dist"},
+    _verb(
+        monkeypatch,
+        "pod_up_response",
+        {"ok": False, "code": "pod_up_failed", "error": "no built dist"},
+        status=409,
     )
-    out = apps_tools.pod_up("pod_up", {"worktree": "kc-wt-1"})
-    assert out.startswith("Error:")
-    assert "pod_up_failed" in out
-    assert "no built dist" in out
+    out = _text(await agent_tools.pod_up({"worktree": "kc-wt-1"}))
+    assert out == "Error: pod up 'kc-wt-1' failed [pod_up_failed]: no built dist"
 
 
-def test_a_transport_failure_is_not_reported_as_a_pod(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A gateway-helper ``{"error": ...}`` carries no ``ok`` at all."""
-    monkeypatch.setattr(
-        apps_tools.mcp_core, "_post", lambda *_a, **_k: {"error": "connection refused"}
+@pytest.mark.asyncio
+async def test_a_refusal_with_no_json_body_is_not_reported_as_a_pod(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _plain(*_a: Any) -> web.Response:
+        return web.Response(status=500, text="boom")
+
+    monkeypatch.setattr(agent_pod_api, "pod_down_response", _plain)
+    assert _text(await agent_tools.pod_down({"worktree": "kc-wt-1"})).startswith("Error:")
+
+
+@pytest.mark.asyncio
+async def test_pod_status_hands_the_worktree_to_the_verb_as_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No query string is built any more, so the name cannot carry a second parameter."""
+    calls: list[tuple[Any, ...]] = []
+    _verb(
+        monkeypatch,
+        "pod_status_response",
+        {"ok": True, "name": "a b", "status": "down", "port": 7999, "health": 0},
+        calls=calls,
     )
-    assert apps_tools.pod_down("pod_down", {"worktree": "kc-wt-1"}).startswith("Error:")
+    out = _text(await agent_tools.pod_status({"worktree": "a b&x=1"}))
+    assert calls == [("a b&x=1",)]
+    assert out == "Pod `a b`: down port=7999 health=0"
 
 
-def test_pod_status_url_encodes_the_worktree(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The name reaches a query string, so a caller cannot smuggle a second param."""
-    seen: list[str] = []
-
-    def _fake_get(path: str, session_key: str | None = None, **kw: Any) -> dict[str, Any]:
-        seen.append(path)
-        return {"ok": True, "name": "a b", "status": "down", "port": 7999, "health": 0}
-
-    monkeypatch.setattr(apps_tools.mcp_core, "_get", _fake_get)
-    apps_tools.pod_status("pod_status", {"worktree": "a b&x=1"})
-    assert seen[0] == "/api/apps/dev-fleet/pod/status?worktree=a%20b%26x%3D1"
+@pytest.mark.asyncio
+async def test_pod_ls_reports_an_empty_host_plainly(monkeypatch: pytest.MonkeyPatch) -> None:
+    _verb(monkeypatch, "pod_list_response", {"ok": True, "pods": []})
+    assert _text(await agent_tools.pod_ls({})) == "No pods are active on this host."
 
 
-def test_pod_ls_reports_an_empty_host_plainly(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(apps_tools.mcp_core, "_get", lambda *_a, **_k: {"ok": True, "pods": []})
-    assert "No pods" in apps_tools.pod_ls("pod_ls", {})
-
-
-def test_pod_ls_lists_each_pod(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        apps_tools.mcp_core,
-        "_get",
-        lambda *_a, **_k: {
+@pytest.mark.asyncio
+async def test_pod_ls_lists_each_pod(monkeypatch: pytest.MonkeyPatch) -> None:
+    _verb(
+        monkeypatch,
+        "pod_list_response",
+        {
             "ok": True,
             "pods": [
                 {"name": "kc-wt-1", "port": 7913, "health": 200},
@@ -663,25 +810,82 @@ def test_pod_ls_lists_each_pod(monkeypatch: pytest.MonkeyPatch) -> None:
             ],
         },
     )
-    out = apps_tools.pod_ls("pod_ls", {})
+    out = _text(await agent_tools.pod_ls({}))
     assert "kc-wt-1" in out
     assert "kc-wt-2" in out
     assert "2 pod(s) active" in out
 
 
-def test_read_tools_ask_for_more_than_the_telemetry_timeout(
+class _ToolReq(_Req):
+    """A ``POST /api/app-tools/call`` request as the registry hands it to the route."""
+
+    def __init__(self, body: Any, **kw: Any) -> None:
+        super().__init__(body=body, **kw)
+        self.path = "/api/apps/dev-fleet/agent-tools"
+
+
+@pytest.mark.asyncio
+async def test_the_tool_route_answers_each_tool_as_text(
+    monkeypatch: pytest.MonkeyPatch, granted: None
+) -> None:
+    _verb(monkeypatch, "pod_down_response", {"ok": True})
+    resp = await agent_tools.handle_agent_tool(
+        _ToolReq({"tool": "pod_down", "arguments": {"worktree": "w"}})  # type: ignore[arg-type]
+    )
+    assert resp.status == 200
+    assert _payload(resp) == {"text": "Pod `w` is stopped and its data directory reclaimed."}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "req",
+    [
+        {"remote": "10.0.0.7"},
+        {"internal_auth": False},
+    ],
+)
+async def test_the_tool_route_holds_the_pod_routes_caller_gate(
+    monkeypatch: pytest.MonkeyPatch, granted: None, req: dict[str, Any]
+) -> None:
+    """A dashboard cookie that reaches the route directly is not the gateway's own call."""
+    monkeypatch.setattr(agent_pod_api, "pod_list_response", lambda: pytest.fail("no pod work"))
+    resp = await agent_tools.handle_agent_tool(
+        _ToolReq({"tool": "pod_ls", "arguments": {}}, **req)  # type: ignore[arg-type]
+    )
+    assert resp.status == 403
+
+
+@pytest.mark.asyncio
+async def test_the_tool_route_refuses_without_the_grant_in_the_tools_own_words(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A pod read spawns a python subprocess in the gateway; 10s cannot cover it."""
-    seen: dict[str, Any] = {}
+    """The refusal reads exactly as the core tool rendered the route's 403."""
+    monkeypatch.setattr(
+        "kiro_crew.apps.builtins.dev_fleet.agent_pod_api.host_exec_granted", lambda _n: False
+    )
+    monkeypatch.setattr(agent_pod_api, "pod_up_response", lambda _b: pytest.fail("no pod work"))
+    resp = await agent_tools.handle_agent_tool(
+        _ToolReq({"tool": "pod_up", "arguments": {"worktree": "w"}})  # type: ignore[arg-type]
+    )
+    text = _payload(resp)["text"]
+    assert text.startswith("Error: pod up 'w' failed [app_not_enabled]: dev-fleet is not enabled.")
 
-    def _fake_get(path: str, session_key: str | None = None, **kw: Any) -> dict[str, Any]:
-        seen.update(kw)
-        return {"ok": True, "pods": []}
 
-    monkeypatch.setattr(apps_tools.mcp_core, "_get", _fake_get)
-    apps_tools.pod_ls("pod_ls", {})
-    assert seen["timeout"] > 10
+@pytest.mark.asyncio
+async def test_the_tool_route_knows_only_the_declared_tools(granted: None) -> None:
+    resp = await agent_tools.handle_agent_tool(
+        _ToolReq({"tool": "pod_provision", "arguments": {}})  # type: ignore[arg-type]
+    )
+    assert resp.status == 404
+
+
+def test_the_route_hook_registers_exactly_the_declared_route() -> None:
+    from pathlib import Path
+
+    manifest = json.loads((Path(agent_pod_api.__file__).parent / "app.json").read_text())
+    assert manifest["backend"]["hooks"] == {"routes": "agent_tools:register_routes"}
+    (route,) = agent_tools.register_routes(None)
+    assert (route.method, route.path) == ("POST", "/" + manifest["agentTools"]["route"])
 
 
 # Ceilings and the home-keeping restart
@@ -760,25 +964,26 @@ async def test_pod_restart_route_reports_a_refusal_as_409(
     assert _payload(resp)["code"] == "pod_restart_failed"
 
 
-def test_pod_restart_tool_posts_to_restart_with_the_ceilings(
+@pytest.mark.asyncio
+async def test_pod_restart_tool_hands_the_ceilings_to_restart(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[tuple[str, dict[str, Any]]] = []
-
-    def _fake_post(path: str, body: dict[str, Any] | None = None, **kw: Any) -> dict[str, Any]:
-        calls.append((path, body or {}))
-        return {
+    calls: list[tuple[Any, ...]] = []
+    _verb(
+        monkeypatch,
+        "pod_restart_response",
+        {
             "ok": True,
             "port": 7913,
             "base_url": "http://127.0.0.1:7913",
             "token": "tok-r",
             "memory": "16G",
             "cpu": "200%",
-        }
-
-    monkeypatch.setattr(apps_tools.mcp_core, "_post", _fake_post)
-    out = apps_tools.pod_restart("pod_restart", {"worktree": "w", "memory": "16G", "cpu": ""})
-    assert calls == [("/api/apps/dev-fleet/pod/restart", {"worktree": "w", "memory": "16G"})]
+        },
+        calls=calls,
+    )
+    out = _text(await agent_tools.pod_restart({"worktree": "w", "memory": "16G", "cpu": ""}))
+    assert calls == [({"worktree": "w", "memory": "16G"},)]
     assert "restarted with its data kept" in out
     assert "memory=16G cpu=200%" in out
 
@@ -795,3 +1000,91 @@ async def test_pod_restart_route_refuses_on_windows_before_any_pod_work(
     )
     assert resp.status == 409
     assert _payload(resp)["code"] == "pod_restart_unsupported"
+
+
+# The seam end to end: listing, the deny universe, and the gateway route
+
+
+def test_the_shipped_declaration_is_read_as_first_party() -> None:
+    """The reader takes the block from the shipped ``app.json``, for a first-party slot only."""
+    from kiro_crew.apps import app_agent_tools
+
+    rows = ("apps", ("dev-fleet", 0, 0))
+    tools = app_agent_tools._scan(rows, frozenset({"dev-fleet"}))
+    assert [(t.app, t.route, t.name) for t in tools] == [
+        ("dev-fleet", "agent-tools", name) for name in _POD_TOOLS
+    ]
+    assert app_agent_tools._scan(rows, frozenset()) == ()
+
+
+def test_the_pod_tools_keep_their_names_in_the_core_listing() -> None:
+    """The names an agent, a skill or a policy knows stay ``pod_*``, under ``kirocrew-core``."""
+    from kiro_crew.apps import app_agent_tools
+    from kiro_crew.mcp_tools import app_tools
+    from kiro_crew.mcp_tools import apps as apps_domain
+    from kiro_crew.mcp_tools import build_tool_names
+
+    shipped = {t.name for t in app_agent_tools.shipped_tools.__wrapped__() if t.app == "dev-fleet"}
+    assert shipped == set(_POD_TOOLS)
+    assert set(_POD_TOOLS) <= set(build_tool_names())
+    assert set(_POD_TOOLS) <= set(app_tools.HANDLERS)
+    # No core domain declares them any more, so nothing in core keys a tool on this app.
+    assert not set(_POD_TOOLS) & {t["name"] for t in apps_domain.schemas()}
+    assert "dev-fleet" not in set(apps_domain.TOOL_APPS.values())
+
+
+def test_adoption_no_longer_refuses_dev_fleet_on_a_core_tool_table() -> None:
+    """E10 refused a pin for an app a core table keys a capability on."""
+    from kiro_crew.apps.builtin_adoption_checks import core_named_apps
+
+    assert "dev-fleet" not in core_named_apps()
+
+
+@pytest.mark.asyncio
+async def test_a_pod_tool_call_is_served_by_the_gateway_route_not_the_backend(
+    monkeypatch: pytest.MonkeyPatch, granted: None
+) -> None:
+    """Dev Fleet has a sandboxed backend, so the call must reach its GATEWAY route.
+
+    The real route hook is loaded from the shipped tree into a real route registry, and
+    the real ``/api/app-tools/call`` handler dispatches the call: the backend proxy must
+    not be reached, and the answer is the tool's text.
+    """
+    import types
+    from pathlib import Path
+
+    from aiohttp.test_utils import make_mocked_request
+
+    from kiro_crew.apps import app_agent_tools, hooks_integration
+    from kiro_crew.apps import routes as app_routes
+    from kiro_crew.apps.route_registry import RouteRegistry
+    from kiro_crew.dashboard.handlers import app_agent_tools as handler_mod
+
+    root = Path(agent_pod_api.__file__).parent
+    manifest = json.loads((root / "app.json").read_text(encoding="utf-8"))
+    registry = RouteRegistry(web.Application())
+    registered = await registry.register_app_routes(
+        "dev-fleet",
+        root,
+        manifest["backend"]["hooks"]["routes"],
+        types.SimpleNamespace(health=None),  # type: ignore[arg-type]
+    )
+    try:
+        assert registered == ["POST /api/apps/dev-fleet/agent-tools"]
+        decl = _declared()["pod_ls"]["_decl"]
+        tool = app_agent_tools.DeclaredTool(app="dev-fleet", route="agent-tools", decl=decl)
+        monkeypatch.setattr(handler_mod, "_resolve", lambda _n: (tool, True, True))
+        monkeypatch.setattr(hooks_integration, "get_route_registry", lambda: registry)
+        monkeypatch.setattr(
+            app_routes, "handle_app_api_proxy", lambda *_a, **_k: pytest.fail("proxied")
+        )
+        monkeypatch.setattr("kiro_crew.dashboard.origin.request_is_unix_socket", lambda _r: True)
+        _verb(monkeypatch, "pod_list_response", {"ok": True, "pods": []})
+        req = make_mocked_request("POST", "/api/app-tools/call")
+        req["internal_auth"] = True
+        req._read_bytes = json.dumps({"tool": "pod_ls", "arguments": {}}).encode()
+        resp = await handler_mod.api_app_agent_tool_call(req)
+        assert resp.status == 200
+        assert _payload(resp) == {"text": "No pods are active on this host."}
+    finally:
+        registry.deregister_app_routes("dev-fleet")

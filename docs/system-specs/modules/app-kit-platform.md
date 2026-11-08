@@ -1603,9 +1603,9 @@ Writer: `apps/bridges_register.py::reconcile_enabled_app_resources`.
 Enablement also decides which of an app's **`kirocrew-core` tools are advertised**.
 The four built-in apps reached through that server — Issue Radar, Dev Fleet, Ops
 Mission Control, Design Tweak — gate every agent route on `is_app_enabled` (a 403
-whose body differs per app: Dev Fleet's routes and the app reverse proxy Design
-Tweak sits behind name it `app_not_enabled`, Ops Mission Control `app_disabled`,
-Issue Radar carries no code), and since #16099 `tools/list` emits a tool's
+whose body differs per app: `POST /api/app-tools/call`, which Dev Fleet's and Design
+Tweak's declared tools go through, names it `app_not_enabled`, Ops Mission Control
+`app_disabled`, Issue Radar carries no code), and since #16099 `tools/list` emits a tool's
 descriptor only
 while the same `installed.json` read says the app is enabled; a read fault lists
 rather than hides. The contract, the tool-to-app map and why the listing reads the
@@ -6118,11 +6118,19 @@ app tools are MCP tools the app registers and serves from its own process.
 **The declaration.** An app's `app.json` may carry an `agentTools` block: one `route`
 below the app's own API, and up to 16 `tools`, each with a `name`, the model-facing
 `description`, an optional one-line `title`, the `inputSchema` and an optional
-`maxResultChars` (default 20,000, at most 60,000). `apps/manifest_agent_tools.py` owns
-the rules, and `AppManifest.validate` refuses an install that breaks one:
+`maxResultChars` (default 20,000, at most 60,000), an optional `timeoutSeconds` (how
+long `kirocrew-core` waits for the answer: default 30, the wait of every core post to the
+gateway, at most 600) and an optional `result` (`json`, the default, or `text`, below).
+`apps/manifest_agent_tools.py` owns the rules, and `AppManifest.validate` refuses an
+install that breaks one:
 
-- a tool name begins with the app's name, `-` read as `_`, and `_` (`design_tweak_`),
-  so an app names tools in its own namespace only;
+- a tool name begins with the app's namespace and `_`, so an app names tools in its own
+  namespace only. The namespace is the app's name, `-` read as `_` (`design_tweak_`),
+  unless the block states `namespace`, a lowercase identifier of at most 32 characters:
+  an app whose tools ran in the core before this seam keeps their names that way
+  (Dev Fleet's `pod`), so the agents, skills, profiles and policies that name them
+  are unchanged. A core tool still keeps its name (below), and a name two apps
+  declare is neither's;
 - the route is a plain lowercase path such as `agent-tools`: no scheme, host, query,
   leading `/` or `..`;
 - an `inputSchema` uses only the subset the core enforces: `string` (with `enum` and
@@ -6182,24 +6190,43 @@ A name any other `kirocrew-core` domain declares is never an app's: the domain d
 so a core tool keeps its name, its schema and its handler.
 
 **The call.** `app_agent_tool` posts `{"tool", "arguments"}` to `POST /api/app-tools/call`,
-one fixed core route in `_STRICT_INTERNAL_API_PATHS`. Its handler re-asserts
+one fixed core route in `_STRICT_INTERNAL_API_PATHS`, and waits the tool's
+`timeoutSeconds`. Its handler re-asserts
 `internal_auth`, takes the app from the manifest that declares the tool (never from the
 request), checks that the arguments are exactly what validating them against the
 declaration returns (so the bytes forwarded are the bytes checked), and refuses a
 disabled app. It then hands the request to the dispatcher that already serves that app:
-the signed reverse proxy for a process-backed app (`/apps/<app>/api/<route>`, principal
-`agent-tool`, the gateway's own credentials stripped, handed the body the handler
-already read: `request.can_read_body` is False once a payload is at EOF), or the route registry for an app
-whose routes run in the gateway (`/api/apps/<app>/<route>`, a route the app registered
-through `RouteRegistry` and never a core route; a built-in that still mounts its routes
-on the gateway router directly is not reached this way, so it registers its
-`agentTools` route through `backend.hooks.routes` beside them). The forwarded request
-keeps its headers, so an app whose routes run in the gateway reads a `strictSession`
-caller's `X-Session-Key` from it; a process-backed app cannot declare `strictSession`.
-The app's answer is relayed unchanged; `app_agent_tool` redacts
-it and then cuts it at the tool's `maxResultChars`, so a cut never splits a credential.
-An answer of exactly `{"text": <string>}` is that text, so a tool can answer in prose;
-any other answer is its JSON.
+the route registry when the app registered a `POST` route at exactly the declared route
+(`/api/apps/<app>/<route>`, a route the app registered through `RouteRegistry` and never
+a core route; a built-in that still mounts its routes on the gateway router directly is
+not reached this way, so it registers its `agentTools` route through
+`backend.hooks.routes` beside them), else the signed reverse proxy for a process-backed
+app (`/apps/<app>/api/<route>`, principal `agent-tool`, the gateway's own credentials
+stripped, handed the body the handler already read: `request.can_read_body` is False
+once a payload is at EOF). The registry comes first because an app can have both: Dev
+Fleet's backend process is sandboxed, so it cannot reach the systemd user bus a pod
+verb needs and a pod refuses a token minted from inside it, and its tools are served by
+the gateway route its `backend.hooks.routes` registers. The forwarded request keeps its
+headers, so an app whose routes run in the gateway reads a `strictSession` caller's
+`X-Session-Key` from it; a process-backed app cannot declare `strictSession`. The app's
+answer is relayed unchanged; `app_agent_tool` redacts it and then cuts it at the tool's
+`maxResultChars`, so a cut never splits a credential. An answer of exactly
+`{"text": <string>}` is that text, so a tool can answer in prose; any other answer is
+its JSON.
+
+A tool declared `result: "text"` answers `{"text": <str>}`, the model-facing text it
+formatted, which `app_agent_tool` redacts and cuts at the cap like a JSON answer. A tool
+that exists to hand over a credential answers `{"text": [<str>, ...], "credential":
+<str>}` instead: the text cut at each place the credential stands (at most 8 pieces), and
+the credential, one printable token of 16 to 4,096 characters. Each piece is redacted on
+its own and the credential is put back between them, so that one string survives
+verbatim and every other character is redacted. Dev Fleet's `pod_up` names the pod's
+own token that way: it is scoped to the pod the agent just started, and the core tool it
+replaces never redacted it either. Every other answer of such a tool is an `Error:` line,
+which the tool-call audit records as failed: `Error: <tool> failed [<code>]: <message>`
+for a refusal the gateway, the app or the transport produced (a timeout, a gateway that
+is restarting), and `Error: <tool> returned no result: <the answer>` for any other
+body, both redacted. Only a first-party app's block is read at all (above).
 No app route is admitted to internal-secret callers, so the one path in is the declared
 route, with declared arguments.
 
@@ -6220,11 +6247,14 @@ reviewed remote-safe or local-only. A declared tool with no row there shows its
 humanized name in the chat and is not granted to a remote session by a whole-server
 grant; its descriptor still carries its own `title`.
 
-**Level.** The seam is App Kit seam level 2 (`APP_SDK_LEVEL`). A host below it reads
-`agentTools` as an unknown key, so an app that declares tools installs there without
-them. `strictSession` and the text answer joined the seam before any release carried
+**Level.** The seam is App Kit seam level 2 (`APP_SDK_LEVEL`); `namespace`,
+`timeoutSeconds` and `result` are level 4. A host below level 2 reads `agentTools` as
+an unknown key, so an app that declares tools installs there without them.
+`strictSession` and the implicit text answer joined the seam before any release carried
 level 2; a level-3 build from before them refuses a block that declares
-`strictSession` as an unknown key, and shows a text answer as its JSON.
+`strictSession` as an unknown key, and shows a text answer as its JSON. A level-2 or
+level-3 host refuses a block carrying a level-4 key, so a pin of an app that declares
+one sets `minAppSdkLevel` to 4.
 
 Design Tweak's `design_tweak_update_thread` is the one shipped tool on the seam: its
 `app.json` declares it, with the description and schema it always had plus each string's
@@ -6253,6 +6283,24 @@ pins the rows that still name it, and `test/test_issue_radar_crew_mcp_tools.py` 
 `kirocrew-core` call path (`issue-radar.md`, "Repository boundary"). Its `radar` crew-log
 fold is still core's: there is no app-keyed fold seam yet.
 
+Dev Fleet's five pod tools are on the seam: its shipped `app.json` declares `pod_up`,
+`pod_restart`, `pod_down`, `pod_status` and `pod_ls` under the namespace `pod`, with the
+descriptions and schemas the core tools had (each string bounded as the core validator
+bounded it: a worktree at 200 characters, `memory` and `cpu` at 16), `result: "text"`,
+a 60,000-character cap, and the waits the core tools had (210s to start or restart a
+pod, 120s to stop one, 45s to read). `backend.hooks.routes`
+(`agent_tools:register_routes`) registers `POST /api/apps/dev-fleet/agent-tools` in the
+gateway, which re-asserts the pod routes' own caller gate (local origin and
+`internal_auth`) and host-exec grant, runs the same verb `agent_pod_api` serves, and
+answers the text the core tool rendered, refusals included. `mcp_tools/apps.py` no longer
+declares, handles or maps them (`TOOL_APPS`), so adoption's E10 no longer refuses
+`dev-fleet` on that table. The name-keyed governance rows stay in the core and still
+apply, because the names did not change: the channel agent's dispatch deny on `pod_up`
+and `pod_restart` (`channel.py`), the remote session's local-only fence on `pod_up`,
+`pod_restart` and `pod_down` (`session_environment.LOCAL_ONLY_CORE_TOOLS`), and the
+title rows. `test/test_dev_fleet_pod_agent_api.py` pins the declaration, the route and a
+call through the real handler and registry.
+
 Ops Mission Control's `ops_mission_control_api` still runs in the core
 (`mcp_tools/apps.py`, its validation row, its internal paths and the `channel.py`
 deny), unchanged for users. It moves onto this seam when the app serves its own route:
@@ -6265,7 +6313,9 @@ Writers: `apps/manifest_agent_tools.py`, `apps/manifest.py`, `apps/discovery.py`
 `mcp_core.py` (`_validate_args`), `mcp_core_parts/identity.py`
 (`REFLEXIVE_TOOL_MODULES`), `dashboard/handlers/app_agent_tools.py`,
 `dashboard/server_runtime/mcp_routes.py`, `dashboard/server_internal_paths.py`,
-`apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`,
+`apps/route_registry.py` (`serves`), `apps/app_sdk_level.py`,
+`website/src/app-sdk/sdkLevel.ts`, `apps/builtins/dev_fleet/app.json`,
+`apps/builtins/dev_fleet/agent_tools.py`,
 `apps/builtin_adoption_gate.py` (`adopted_under_pin_trust`, for an adopted former built-in).
 
 ## 31. A marketplace app installs disabled and is trusted by its listing
@@ -7307,8 +7357,9 @@ data-home root, outside its data directory, so they keep their core rows until t
 store moves under `apps/ops-mission-control/data/` (#32681; see `ops-mission-control.md`,
 "Repository boundary").
 
-**Seam level.** `APP_SDK_LEVEL` is 3: an app that stores a credential reads
-`ctx.sdk_level` and, below 3, knows nothing masks the file.
+**Seam level.** The masks are level 3 (`APP_SDK_LEVEL` is 4 since §30.1's tool keys):
+an app that stores a credential reads `ctx.sdk_level` and, below 3, knows nothing masks
+the file.
 
 Writers: `apps/credential_masks.py`, `apps/manifest.py`, `apps/app_sdk_level.py`,
 `website/src/app-sdk/sdkLevel.ts`, `sandbox_aliases.py`, `sandbox_argv.py`,

@@ -450,8 +450,23 @@ Contract:
   records the call.
 
 The model-facing half is the `pod_up` / `pod_restart` / `pod_down` / `pod_status` /
-`pod_ls` tools on
-`kirocrew-core` (`mcp_tools/apps.py`). The pod token is returned to the agent
+`pod_ls` tools, which this app declares in its own `app.json` (`agentTools`, namespace
+`pod`, so the names are the ones these tools always had) and `kirocrew-core` lists and
+forwards ([app-kit-platform §30.1](app-kit-platform.md)). No code of this app runs in
+that MCP server. A call reaches `POST /api/app-tools/call`, which hands it to the one
+route `backend.hooks.routes` (`agent_tools.py`) registers in the gateway,
+`POST /api/apps/dev-fleet/agent-tools`; the seam serves a tool from an app's own gateway
+route when it registered one, so the sandboxed backend is never asked. That route
+re-asserts the caller gate above and the host-exec grant, runs the same verb the
+matching `pod/*` route runs (`agent_pod_api.pod_*_response`), reads its answer as the
+core's gateway client read a route's (a refusal becomes `{error, code}` with its message
+scrubbed) and answers with the reply the core tool rendered. Each tool is
+declared `result: "text"` with the wait the core tool had (210s to start or restart,
+120s to stop, 45s to read: a pod read spawns a `python -m kiro_crew pod` child in the
+gateway, which 10s cannot cover) and the core tool's bounds (a worktree of at most 200
+characters, `memory` / `cpu` of at most 16). The `pod/*` routes above are unchanged.
+The core redacts that reply as it relays it, except the pod token: a pod start's
+answer names the token as its `credential`, so it is returned to the agent
 verbatim — redacting it would hand back an unusable handle — which is safe because it
 is a credential scoped to that pod's own gateway, minted server-side from the
 pod's own internal-API credential so the agent never touches the secret itself.
