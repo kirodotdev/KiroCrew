@@ -119,7 +119,11 @@ from kiro_crew.acp.kas_permissions import (
     withhold_answered_under_authored_rules,
     withhold_hook_gated_auto_approval,
 )
-from kiro_crew.acp.kas_projection_reads import _registry_governed, _relayed_env_references
+from kiro_crew.acp.kas_projection_reads import (
+    _gated_off_managed_servers,
+    _registry_governed,
+    _relayed_env_references,
+)
 from kiro_crew.acp.kas_prompt import (
     _KAS_FALLBACK_PROMPT,
     _KAS_FALLBACK_PROMPT_AGENTS,
@@ -647,7 +651,7 @@ def _project_mcp_servers(
     lost something to the credential filter onto ``(env key names, fields, stdio)``. Names
     only, never a value, for :mod:`kiro_crew.acp.kas_withheld_notice`.
 
-    Five subtractions, each load-bearing:
+    Six subtractions, each load-bearing:
 
     * **stubbed names** — those arrive as the session-level ``mcpServers`` param,
       which outranks an agent-declared entry. Emitting both is the double
@@ -685,6 +689,15 @@ def _project_mcp_servers(
       The mute is the user's own decision about a server they can un-mute, so
       honouring it costs no capability — unlike the credential strip above, it has
       no residue.
+    * **a managed server whose ``spec_gate`` is closed** (``kirocrew-computer``
+      while Computer Use is off or unsupported). Both spec writers withhold the
+      entry, but a spec they did not write (a legacy or hand-written agent file)
+      can still declare it. Declared, the engine launches a backend that
+      advertises no tools, and the readiness barrier waits for every managed
+      server it was sent (``mcp_session_report.required_managed_servers``), so
+      the session fails on the timeout. The gate is read with the writers' own
+      fail-closed snapshot (:func:`_gated_off_managed_servers`); the
+      ``@server`` ref in ``tools`` stays, as on a spec Crew writes.
     * **a registry-governed entry** — see :func:`_registry_governed`. The filter
       mirrors kiro-cli's, which is SYMMETRIC: in registry mode an entry survives
       only by resolving its ``"type": "registry"`` marker against the admin's
@@ -729,6 +742,7 @@ def _project_mcp_servers(
 
     out: dict[str, dict[str, Any]] = {}
     registry_mode = _registry_governed()
+    gated_off = _gated_off_managed_servers()
     relayed = _relayed_env_references()
     warned_about_the_marker = False
     launch_key = launch_key or session_key
@@ -762,6 +776,15 @@ def _project_mcp_servers(
             else:
                 why = "an MCP config scope disables it, so the user switched it off"
             logger.info("agent %r: not declaring MCP server %r — %s", agent_id, name, why)
+            continue
+        if name in gated_off:
+            logger.info(
+                "agent %r: not declaring MCP server %r: its spec_gate is closed, so a "
+                "fresh spec would not declare it, and its backend would advertise no "
+                "tools and hold the session's MCP readiness until it times out",
+                agent_id,
+                name,
+            )
             continue
         if (
             engine.MCP_REGISTRY_POINTERS in engine_features
@@ -1781,6 +1804,12 @@ def hoist_servers_for_session(
     global config (e.g. after a tool-toggle writes a ``disabledTools`` entry
     there).
 
+    A managed entry such a key keeps in the block still launches the managed
+    invocation: its ``command`` and ``args`` come from *managed_entries*
+    (:func:`~kiro_crew.agent.with_managed_launch`) and every other key stays as
+    projected, so a user spec copied from ``kirocrew.json`` does not start the
+    payload an upgrade has since removed. It gets no session token.
+
     *session_token* is this session's signed identity token, and every hoisted
     element carries it (``KIROCREW_STUB_SESSION_TOKEN``). The runtime stamps the
     token onto its session-level array BEFORE this hoist runs, so the elements
@@ -1828,6 +1857,7 @@ def hoist_servers_for_session(
         # agent/config translation machinery below as a side effect.
         return custom_agents, session_servers
     from kiro_crew.acp.session_mcp import acp_server_element
+    from kiro_crew.agent import with_managed_launch
 
     apps = app_launches or {}
     taken = {
@@ -1837,12 +1867,14 @@ def hoist_servers_for_session(
     } | (reserved_names - MANAGED_MCP_SERVER_NAMES - frozenset(apps))
     hoisted: list[dict[str, Any]] = []
     out_agents: list[dict[str, Any]] = []
+    relaunched_in_block = False
     for descriptor in custom_agents:
         declared = descriptor.get("mcpServers") if descriptor.get("id") == agent_id else None
         if not isinstance(declared, dict):
             out_agents.append(descriptor)
             continue
         remaining: dict[str, Any] = {}
+        relaunched = False
         for name, entry in declared.items():
             keep = True
             managed = name in MANAGED_MCP_SERVER_NAMES or name in apps
@@ -1862,11 +1894,25 @@ def hoist_servers_for_session(
                     hoisted.append(element)
                     taken.add(name)
                     keep = False
-            if keep:
-                remaining[name] = entry
-        if len(remaining) == len(declared):
+            if not keep:
+                continue
+            if (
+                name in MANAGED_MCP_SERVER_NAMES
+                and name not in taken
+                and isinstance(entry, dict)
+                and "command" in entry
+            ):
+                # KAS launches a block entry as declared, so a restriction that
+                # keeps it here must not also keep a launcher an upgrade removed.
+                # A name the caller's array carries is launched from there.
+                kept = with_managed_launch(entry, _managed_entry(name, managed_entries))
+                relaunched = relaunched or kept is not entry
+                entry = kept
+            remaining[name] = entry
+        if len(remaining) == len(declared) and not relaunched:
             out_agents.append(descriptor)
             continue
+        relaunched_in_block = relaunched_in_block or relaunched
         copied = dict(descriptor)
         if remaining:
             copied["mcpServers"] = remaining
@@ -1874,7 +1920,8 @@ def hoist_servers_for_session(
             del copied["mcpServers"]
         out_agents.append(copied)
     if not hoisted:
-        return custom_agents, _pin_legacy_negotiation(_managed_first(session_servers))
+        agents = out_agents if relaunched_in_block else custom_agents
+        return agents, _pin_legacy_negotiation(_managed_first(session_servers))
     hoisted.sort(key=lambda element: element["name"])
     if session_token:
         # Deferred like session_mcp above: the kiro path returns before this, and
@@ -1900,6 +1947,15 @@ def hoist_servers_for_session(
     return out_agents, _pin_legacy_negotiation(_managed_first([*session_servers, *hoisted]))
 
 
+def _managed_entry(name: str, managed_entries: Mapping[str, Any] | None) -> Any:
+    """*name*'s managed invocation: the one resolved off the loop, else resolved here."""
+    if managed_entries is not None and name in managed_entries:
+        return managed_entries[name]
+    from kiro_crew.agent import managed_mcp_spec_entry
+
+    return managed_mcp_spec_entry(name, include_opt_in=True)
+
+
 def _tokened_managed_element(
     element: dict[str, Any],
     session_token: str,
@@ -1913,13 +1969,10 @@ def _tokened_managed_element(
     the verdict ``gatewayd._spawns_own_control_plane`` reaches for the same name,
     so nothing here hands out a token the daemon would refuse.
     """
-    from kiro_crew.agent import _managed_mcp_env, managed_mcp_spec_entry
+    from kiro_crew.agent import _managed_mcp_env
 
     name = str(element.get("name", ""))
-    if managed_entries is not None and name in managed_entries:
-        managed = managed_entries[name]
-    else:
-        managed = managed_mcp_spec_entry(name, include_opt_in=True)
+    managed = _managed_entry(name, managed_entries)
     if not isinstance(managed, dict) or not managed.get("command"):
         logger.warning(
             "hoisted MCP server %r gets no session token: its managed invocation does"

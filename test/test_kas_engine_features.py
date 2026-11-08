@@ -18,7 +18,9 @@ from kiro_crew.acp.kas_agents import to_client_custom_agent
 
 _SECRET = "placeholder-client-secret-value"
 _CLIENT_ID = "placeholder-client-id"
-_MANAGED = sorted(kas_agents.MANAGED_MCP_SERVER_NAMES)[0]
+# A managed server with no spec_gate: a gated one is withheld from the projection
+# while its gate is closed, as it is on Linux and with Computer Use off.
+_MANAGED = "kirocrew-core"
 
 
 def _initialize(**kiro: object) -> dict:

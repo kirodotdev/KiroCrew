@@ -133,8 +133,10 @@ def _build_stub_entry(
     ENOENT or whose declared env is silently dropped. The one exception is a
     server :func:`_must_stay_wrapped` keeps wrapped, which must fail to start.
 
-    Preserves ``autoApprove`` on the wrapped entry so kiro-cli still honours
-    it at the UI layer. ``env`` is cleared on the wrapper — the stub passes
+    Preserves ``autoApprove`` on the wrapped entry, so it still states the agent's
+    own list. kiro-cli has no such field: a verb governance keeps runs unprompted as
+    an ``allowedTools`` entry of the agent's skill view (``acp.kas_auto_approve``).
+    ``env`` is cleared on the wrapper: the stub passes
     env separately through its flags so the gateway can hash the
     post-substitution env into the PoolKey.
     """
@@ -365,8 +367,10 @@ def _build_stub_entry(
             # ``session_servers.pooled_session_servers`` at ACP injection time,
             # where the value is in scope.
             "args": stub_argv[1:],
-            # autoApprove must stay on the wrapper — kiro-cli reads it at the
-            # permission-prompt UI layer, separately from the backend.
+            # autoApprove stays on the wrapper as the agent wrote it, so each
+            # agent's own list survives pooling. kiro-cli has no such field (a
+            # kept verb is an allowedTools entry of the skill view), and the
+            # backend never reads it.
             "autoApprove": auto_approve,
             # env cleared — the backend receives env via the gateway's spawn,
             # not via kiro-cli's subprocess environment.

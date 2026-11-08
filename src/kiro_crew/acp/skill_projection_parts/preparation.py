@@ -323,12 +323,39 @@ def project_agent_view(
                     view["tools"] = [*tools, _SEARCH_TOOL]
             if not inherited_only:
                 search = True
+    _relaunch_reserved_servers(view)
     prompt = view.get("prompt")
     if isinstance(prompt, str) and prompt.startswith("file://"):
         path = Path(prompt[7:]).expanduser()
         if not path.is_absolute():
             view["prompt"] = "file://" + (source.parent / path).absolute().as_posix()
     return view, search, None
+
+
+def _relaunch_reserved_servers(view: dict[str, Any]) -> None:
+    """Point each reserved ``kirocrew-*`` entry of *view* at Crew's installed launch.
+
+    kiro-cli starts a view's entry as written wherever no per-session element
+    replaces it: on the direct client, and on the shared runtime when a key the
+    element cannot carry (a ``timeout``) withholds the element. The managed path
+    names the installed version, so a spec copied from ``kirocrew.json`` would
+    start a payload a later upgrade removed. The view is Crew's own file, so its
+    ``command`` and ``args`` are re-derived here
+    (:func:`~kiro_crew.agent.with_managed_launch`) and every other key stays the spec's.
+    """
+    servers = view.get("mcpServers")
+    if not isinstance(servers, dict):
+        return
+    from kiro_crew.agent import managed_mcp_spec_entry, with_managed_launch
+    from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
+
+    for name in KIROCREW_BIN_MCP_SERVERS:
+        entry = servers.get(name)
+        if isinstance(entry, dict) and "command" in entry:
+            # include_opt_in: the spec already grants the server, so the question
+            # is what its launch is, not whether a rebuild would emit it.
+            managed = managed_mcp_spec_entry(name, include_opt_in=True)
+            servers[name] = with_managed_launch(entry, managed)
 
 
 def prepare_native_skill_projection(
@@ -490,6 +517,7 @@ def prepare_native_skill_projection(
     # Call-time: a module-level name here would be served by the facade as well.
     from kiro_crew import agent as agent_mod
     from kiro_crew.acp.default_crew_servers import with_default_crew_servers
+    from kiro_crew.acp.kas_auto_approve import grant_in_skill_view
 
     # A crew-bound spec's view carries only the grants the governance ceiling
     # permits: kiro-cli runs the view, not the authored file, which is never written.
@@ -530,6 +558,10 @@ def prepare_native_skill_projection(
             continue
         if governed_names is None or agent.name in governed_names:
             agent_mod.govern_shared_template_view(agent.name, view)
+        # kiro-cli has no `autoApprove` field, so a verb governance keeps runs without
+        # a prompt only as an `allowedTools` entry. Every agent's view gets that grant,
+        # the one the KAS projection derives, after the pass above.
+        grant_in_skill_view(agent.name, view)
         if search:
             search_agents.add(agent.name)
         specs[agent.name] = view

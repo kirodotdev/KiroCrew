@@ -1206,8 +1206,9 @@ onto their own crewmate file (crew-mode.md, "Existing crewmates move at startup"
 row still bound to one the ceiling holds two ways. KAS never takes grants from the file:
 Crew projects the spec at session start and filters both lists against the live ceiling
 there (`acp.kas_agents._ceiling_permitted`, `kas_permissions.merge_user_permissions`).
-kiro-cli does read them, but on kiro-cli a session normally runs a Crew-owned copy of the
-spec, not the file: the native skill projection (`acp.skill_projection`) writes each agent's
+kiro-cli does read the file's `allowedTools` (it has no `autoApprove` field and ignores the
+key), but on kiro-cli a session normally runs a Crew-owned copy of the spec, not the file:
+the native skill projection (`acp.skill_projection`) writes each agent's
 skill view into the agents directory and hands kiro-cli the view's name on `--agent` and
 `session/set_mode`. For every name a crew binding records (either spelling, below) and every
 agent a crewmate ran on before the migration, the view loses every grant the two governance
@@ -1216,11 +1217,16 @@ passes remove (`agent_materialization.shared_template_view`, over the same
 same grants and the file is never written. The removal is logged and recorded in the SEL as
 `mcp_auto_approve_withheld` once per distinct removal per process; the tools stay mounted and
 their calls go through the gate. A set of bindings that cannot be known whole governs every
-view. The view is rebuilt from the file at every spawn and every `set_mode` re-preparation,
-under a name derived from its content, so it follows an edit of the file and a change of the
-ceiling. Broker stubs injected into a governed agent's session array pass through the same
-`autoApprove` filter at `mcp_gateway.session_servers.pooled_session_servers`, before they can
-override the skill view's server entry; unbound agents' injected entries remain unchanged.
+view. After that pass every view, bound or not, gains an `allowedTools` entry for each
+`autoApprove` verb governance keeps (`acp.kas_auto_approve.grant_in_skill_view`): the refs the
+KAS projection derives, each asked of `may_skip_gate_now` again, recorded once per process as
+`mcp_auto_approve_honoured` (or `mcp_auto_approve_withheld` for a ref the ceiling refuses).
+The grant lives only in the view, so it goes with the verb. The view is rebuilt from the
+file at every spawn and every `set_mode` re-preparation, under a name derived from its
+content, so it follows an edit of the file and a change of the ceiling. Broker stubs
+injected into a governed agent's session array pass through the same `autoApprove` filter
+at `mcp_gateway.session_servers.pooled_session_servers`, before they can override the skill
+view's server entry; unbound agents' injected entries remain unchanged.
 
 The start check judges the name kiro-cli is handed. A kiro-cli start on a crew-bound spec Crew
 does not own is REFUSED while the two governance passes would remove a grant (an
