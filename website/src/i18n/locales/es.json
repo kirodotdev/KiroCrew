@@ -15974,6 +15974,7 @@
         "ingest_status_uploading": "subiendo",
         "region_format_hint": "La región debe tener el formato us-east-1 (letras, guiones, un número).",
         "live_query": "En vivo",
+        "sync_failed_notice": "La última sincronización de esta fuente falló.",
         "confirm_account_to_enable": "Confirma la cuenta de AWS de arriba para añadir esta fuente.",
         "enter_region_to_add": "Introduce la región de AWS para añadir esta fuente.",
         "profile_blank_uses_default_chain": "Déjalo en blanco para usar las credenciales de AWS predeterminadas.",

@@ -15214,6 +15214,7 @@
         "ingest_status_uploading": "アップロード中",
         "region_format_hint": "リージョンは us-east-1 の形式（英字、ハイフン、数字）で入力してください。",
         "live_query": "ライブ",
+        "sync_failed_notice": "このソースの前回の同期に失敗しました。",
         "confirm_account_to_enable": "上の AWS アカウントを確認すると、このソースを追加できます。",
         "enter_region_to_add": "このソースを追加するには AWS リージョンを入力してください。",
         "profile_blank_uses_default_chain": "空欄の場合はデフォルトの AWS 認証情報を使用します。",

@@ -15594,6 +15594,7 @@
         "ingest_status_uploading": "अपलोड हो रहा है",
         "region_format_hint": "Region का प्रारूप us-east-1 जैसा होना चाहिए (अक्षर, डैश, एक संख्या)।",
         "live_query": "लाइव",
+        "sync_failed_notice": "इस स्रोत का पिछला सिंक विफल रहा।",
         "confirm_account_to_enable": "यह स्रोत जोड़ने के लिए ऊपर AWS खाते की पुष्टि करो।",
         "enter_region_to_add": "यह स्रोत जोड़ने के लिए AWS Region दर्ज करो।",
         "profile_blank_uses_default_chain": "डिफ़ॉल्ट AWS क्रेडेंशियल उपयोग करने के लिए खाली छोड़ें।",

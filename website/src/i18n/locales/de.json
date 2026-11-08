@@ -15594,6 +15594,7 @@
         "ingest_status_uploading": "wird hochgeladen",
         "region_format_hint": "Region muss wie us-east-1 aussehen (Buchstaben, Bindestriche, eine Zahl).",
         "live_query": "Live",
+        "sync_failed_notice": "Die letzte Synchronisierung dieser Quelle ist fehlgeschlagen.",
         "confirm_account_to_enable": "Bestätige oben das AWS-Konto, um diese Quelle hinzuzufügen.",
         "enter_region_to_add": "Gib die AWS-Region ein, um diese Quelle hinzuzufügen.",
         "profile_blank_uses_default_chain": "Leer lassen, um die Standard-AWS-Anmeldedaten zu verwenden.",

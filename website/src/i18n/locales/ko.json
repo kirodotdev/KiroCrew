@@ -15214,6 +15214,7 @@
         "ingest_status_uploading": "업로드 중",
         "region_format_hint": "리전은 us-east-1 형식(문자, 하이픈, 숫자)이어야 합니다.",
         "live_query": "라이브",
+        "sync_failed_notice": "이 소스의 마지막 동기화에 실패했습니다.",
         "confirm_account_to_enable": "위의 AWS 계정을 확인하면 이 소스를 추가할 수 있습니다.",
         "enter_region_to_add": "이 소스를 추가하려면 AWS 리전을 입력하세요.",
         "profile_blank_uses_default_chain": "비워 두면 기본 AWS 자격 증명을 사용합니다.",
