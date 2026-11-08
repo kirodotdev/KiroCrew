@@ -244,13 +244,18 @@ export const specApi = {
   // spec_dir. The backend compares both and refuses a mismatch, because a
   // directory alone does not identify a creation -- delete leaves the documents on
   // disk, so a re-import under the same name and path is a DIFFERENT spec.
-  // `pastes` are the collapsed pastes `text` expanded (ChatEmbed's `meta.pastes`),
-  // sent as `meta` like the main chat's send, so the stored row keeps each chip.
-  message: (name: string, text: string, id?: SpecIdentity, pastes?: ChatEmbedSendMeta['pastes']) =>
-    req<void>('/specs/' + enc(name) + '/message', {
+  // Forward only the embed metadata this endpoint stores: collapsed pastes keep
+  // their chips, and sendId lets the embed reconcile an ambiguous send by identity.
+  message: (name: string, text: string, id?: SpecIdentity, meta?: ChatEmbedSendMeta) => {
+    const sentMeta = {
+      ...(meta?.pastes?.length ? { pastes: meta.pastes } : {}),
+      ...(typeof meta?.sendId === 'string' ? { sendId: meta.sendId } : {}),
+    }
+    return req<void>('/specs/' + enc(name) + '/message', {
       method: 'POST',
-      body: JSON.stringify({ text, ...(pastes?.length ? { meta: { pastes } } : {}), ...identity(id) }),
-    }),
+      body: JSON.stringify({ text, ...identity(id), ...(Object.keys(sentMeta).length ? { meta: sentMeta } : {}) }),
+    })
+  },
   // A decision card's answer, sent with the decision's id so the backend can
   // record it and refuse a second answer for the same decision. Same endpoint as
   // `message` — the id is what makes the write one-way.
