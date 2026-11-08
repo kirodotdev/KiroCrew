@@ -1242,8 +1242,10 @@ absolute. Copies `static/dist` does not serve are swept under the staging lock, 
 the served one by file identity rather than path spelling, and nothing is swept
 while `static/dist` is a link that resolves nowhere. A `static/dist` that is still
 a real directory is renamed aside once when the first stage replaces it with the
-link; a gateway already running then, one whose build routes were resolved from
-that directory at start, answers 404 for the build until it restarts, and the
+link (copied aside and removed instead where an overlay filesystem refuses to
+rename a directory from a lower image layer); a gateway already running then,
+one whose build routes were resolved from that directory at start, answers 404
+for the build until it restarts, and the
 stage log says to restart it. The same holds on every re-stage of an older target
 revision that builds in place: its gateway resolved the copy it started on, which
 the re-stage sweeps, so the stage log says to restart that gateway too. The run script stops at the first non-zero step,
