@@ -470,7 +470,8 @@ def read_config_document() -> ConfigDocument:
             st_mode = local_path.stat().st_mode
             if st_mode & 0o002:
                 logger.warning(
-                    "config.local.json is world-writable (%o); consider running: chmod 600 %s",
+                    "SECURITY: config.local.json is world-writable (%o); "
+                    "consider running: chmod 600 %s",
                     st_mode & 0o777,
                     local_path,
                 )
