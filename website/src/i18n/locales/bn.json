@@ -14602,6 +14602,7 @@
     },
     "connectionsPage": {
       "action_failed": "অ্যাকশন ব্যর্থ: {{error}}",
+      "approval_superseded": "এই অনুমোদনটি আর সক্রিয় নেই। বাতিল করো, তারপর নতুন একটি শুরু করতে আবার সংযুক্ত করো।",
       "before_you_connect": "সংযোগ করার আগে",
       "before_you_disconnect": "সংযোগ বিচ্ছিন্ন করার আগে",
       "cancel": "বাতিল",
