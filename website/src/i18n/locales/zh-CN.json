@@ -18774,6 +18774,7 @@
         "none": "（无）",
         "not_a_valid_id": "“{{name}}”不是有效的 ID",
         "not_connected": "未连接",
+        "owner_id_missing": "设置所有者之前，Slack 保持关闭。请在下方添加所有者 Slack 成员 ID（KIROCREW_OWNER_ID）。",
         "owner_slack_member_id": "所有者 Slack 成员 ID",
         "paste_slack_app_token_xapp": "粘贴 Slack 应用令牌（xapp-…）",
         "paste_slack_bot_token_xoxb": "粘贴 Slack 机器人令牌（xoxb-…）",

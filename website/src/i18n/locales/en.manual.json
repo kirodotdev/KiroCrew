@@ -8439,6 +8439,7 @@
         "slack_connection_failed_at_startup": "Slack connection failed at startup ({{error}}). Check network access to slack.com, then restart the gateway.",
         "slack_rejected_the_stored_tokens_invalid_auth_re": "Slack rejected the stored tokens (invalid_auth). Replace them below, then restart the gateway.",
         "tokens_are_saved_but_not_yet_active_restart_the": "Tokens are saved but not yet active. Restart the gateway to connect.",
+        "owner_id_missing": "Slack stays off until an owner is set. Add your Owner Slack member ID (KIROCREW_OWNER_ID) below.",
         "verified_with_slack_and_saved_restart_the_gatewa": "Verified with Slack and saved. Restart the gateway to connect.",
         "where_to_find_the_app_token": "Where to find the app token",
         "where_to_find_the_bot_token": "Where to find the bot token",

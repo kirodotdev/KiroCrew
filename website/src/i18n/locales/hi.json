@@ -19247,6 +19247,7 @@
         "none": "(कोई नहीं)",
         "not_a_valid_id": "\"{{name}}\" मान्य ID नहीं है",
         "not_connected": "कनेक्ट नहीं है",
+        "owner_id_missing": "जब तक स्वामी सेट नहीं होता, Slack बंद रहता है। नीचे स्वामी का Slack सदस्य ID (KIROCREW_OWNER_ID) जोड़ो।",
         "owner_slack_member_id": "स्वामी का Slack सदस्य ID",
         "paste_slack_app_token_xapp": "Slack ऐप टोकन पेस्ट करें (xapp-…)",
         "paste_slack_bot_token_xoxb": "Slack बॉट टोकन पेस्ट करें (xoxb-…)",
