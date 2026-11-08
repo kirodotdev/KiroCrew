@@ -11841,7 +11841,14 @@
         "installed_needs_newer_host": "La version installée de {{name}} nécessite une version plus récente de {{productName}}. Mets à jour {{productName}} ; tes données restent inchangées."
       },
       "grants_reconsent_composer_actions": "Boutons de l'éditeur : permet à l'app d'ajouter ces boutons au menu + de l'éditeur. Un clic insère le texte de l'app dans ton brouillon ; l'app ne peut ni voir le brouillon ni l'envoyer.",
-      "grants_reconsent_selection_actions": "Actions sur le texte sélectionné : permet aux éléments de l’app de recevoir le texte que tu sélectionnes dans les réponses du chat et de proposer un résultat à Copier ou Ouvrir."
+      "grants_reconsent_selection_actions": "Actions sur le texte sélectionné : permet aux éléments de l’app de recevoir le texte que tu sélectionnes dans les réponses du chat et de proposer un résultat à Copier ou Ouvrir.",
+      "auto_update_title": "Mises à jour",
+      "auto_update_label": "Mettre à jour automatiquement",
+      "auto_update_hint": "Toujours installe les nouvelles versions de cette application sans demander. Jamais la garde à cette version. Une mise à jour qui demande de nouvelles autorisations attend toujours ton accord.",
+      "auto_update_follow": "Suivre le réglage des mises à jour ({{mode}})",
+      "auto_update_always": "Toujours",
+      "auto_update_never": "Jamais",
+      "auto_update_save_failed": "Impossible d'enregistrer le réglage de mise à jour de cette application."
     },
     "appPage": {
       "loading_app": "Chargement de l'application…",
@@ -21140,6 +21147,20 @@
         "row_label": "Masquer les sessions ouvertes par {{app}}",
         "failed_to_save": "Impossible d’enregistrer le masquage pour {{app}}.",
         "config_load_failed": "Impossible de charger les masquages enregistrés pour tes applications. Les interrupteurs restent indisponibles jusqu’à leur chargement."
+      },
+      "appUpdates": {
+        "title": "Mises à jour des applications",
+        "mode_label": "Mettre à jour les applications automatiquement",
+        "mode_hint": "Désactivé te prévient une fois quand une nouvelle version d'une application installée est publiée. Demander ajoute un bouton Mettre à jour à cette note. Automatique l'installe dès que l'application est inactive. Une mise à jour qui demande de nouvelles autorisations attend toujours ton accord.",
+        "mode_off": "Désactivé",
+        "mode_ask": "Demander",
+        "mode_on": "Automatique",
+        "interval_label": "Rechercher les mises à jour",
+        "interval_hint": "Fréquence à laquelle la passerelle actualise les registres d'applications tant qu'une application se met à jour automatiquement.",
+        "interval_hours": "Toutes les {{hours}} h",
+        "interval_days": "Tous les {{days}} j",
+        "save_failed": "Impossible d'enregistrer le réglage de mise à jour des applications.",
+        "load_failed": "Impossible de charger les réglages de mise à jour des applications."
       }
     },
     "settingsPage": {

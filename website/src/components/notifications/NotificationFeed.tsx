@@ -18,7 +18,7 @@ import StatusNotice from '../StatusNotice'
 import { disintegrate } from '../../lib/disintegrate'
 import type { Notification } from '../../types'
 import {
-  parseTs, dateGroup, KIND_META, DEFAULT_META, fmtTime, stripMd, notePriority, noteText, safeInternalUrl,
+  parseTs, dateGroup, KIND_META, DEFAULT_META, fmtTime, stripMd, notePriority, noteText, safeInternalUrl, noteActionState,
   MAC_ACTION_BTN_CLASS, decisionFailedCopy, decidedClearFailedCopy,
 } from './notifMeta'
 import NotificationPermissionHint from './NotificationPermissionHint'
@@ -183,6 +183,12 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
   }, [filtered])
 
   const navigate = useNavigate()
+  // Router options only when a note action carries state, so every other
+  // action navigates exactly as it did.
+  const navigateNote = (to: string, state: unknown) => {
+    if (state !== undefined) navigate(to, { state })
+    else navigate(to)
+  }
   // Same gate as the detail panel: a note's action button navigates away from
   // whatever page the feed is floating over, and the ask belongs in front of the
   // handler rather than around its navigate call.
@@ -771,7 +777,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                     { id: 'approve', label: approveLabel, tone: 'ok' as const, onClick: () => resolveApprovalNote(n, 'approve') },
                     { id: 'reject', label: rejectLabel, tone: 'danger' as const, onClick: () => resolveApprovalNote(n, 'reject') },
                   ] : []),
-                  ...urlActions.map(a => ({ id: a.id, label: a.label, tone: 'text' as const, onClick: () => leave(() => navigate(a.safeUrl!), a.safeUrl!) })),
+                  ...urlActions.map(a => ({ id: a.id, label: a.label, tone: 'text' as const, onClick: () => leave(() => navigateNote(a.safeUrl!, noteActionState(n, a, a.safeUrl!)), a.safeUrl!) })),
                 ]
                 // An expanded stack gets a header row above its newest note,
                 // as macOS Notification Center does: who sent it on the left,
@@ -921,7 +927,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                               key={a.id}
                               type="button"
                               className={`${actionBtn} text-text`}
-                              onClick={e => { e.stopPropagation(); leave(() => navigate(a.safeUrl!), a.safeUrl!) }}
+                              onClick={e => { e.stopPropagation(); leave(() => navigateNote(a.safeUrl!, noteActionState(n, a, a.safeUrl!)), a.safeUrl!) }}
                             >{a.label}</button>
                           ))}
                           <span className="flex-1" />
