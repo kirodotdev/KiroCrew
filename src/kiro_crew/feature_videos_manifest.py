@@ -682,7 +682,7 @@ def _tighten_held_dir(fd: int, path: Path) -> None:
         else:
             platform_compat.restrict_dir_to_owner(path)
     except OSError:
-        logger.warning("could not restrict %s to owner-only", path, exc_info=True)
+        logger.warning("SECURITY: could not restrict %s to owner-only", path, exc_info=True)
 
 
 def _same_location(real: str, expected: Path) -> bool:
