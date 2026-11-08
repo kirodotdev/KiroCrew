@@ -759,6 +759,8 @@ _SURFACES = {
         sites=(
             _Site("reason=untrusted_sender", "host"),
             _Site("reason=hook_deny", "host"),
+            # A PreToolUse script hook (the Hooks page's or the agent spec's) refused.
+            _Site("reason=pre_tool_hook", "host"),
             # The decider said no. ``_steer_deny_cause`` steers ONLY when the
             # decider recorded a host cause (an expired prompt); a human's Deny
             # stays bare. Its audit row is written by the caller after the wire.

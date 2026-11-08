@@ -420,6 +420,8 @@ async def _run_turn(
             ),
             undelivered_watch_key=session_key,
             script_hooks=hook_turn,
+            hook_agent=agent or "",
+            is_new_session=is_new,
         )
         accumulated = await driver.run(full_message)
         if resumed_key is None:

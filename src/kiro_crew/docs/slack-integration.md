@@ -35,7 +35,7 @@ Only the owner (set via `KIROCREW_OWNER_ID`) can use these:
 | `!channel` | Show current channel activation mode |
 | `!channel always/mention/observe/review/off` | Set channel activation mode |
 | `!channel agent <name/off>` | Set per-channel agent override |
-| `!voice on/off` | Speak this thread's answers as well as typing them |
+| `!voice on/off` | Speak this thread's answers as well as typing them (only with `messaging.use_transport` off; otherwise the bot says replies stay text) |
 | `!link-to-dashboard` | Import this thread's history into a dashboard session and link it |
 
 `!allowlist` and `/kirocrew @user` are not accepted while access is owner-only, and
@@ -90,12 +90,17 @@ Available to all allowed users (no `!` prefix needed):
 
 When Kiro Crew needs to run a tool (file write, bash command, etc.):
 
-1. **Auto mode** (`!yolo on`): silently approves everything
-2. **Interactive mode** (default): posts Approve / Trust session / Reject buttons
-3. `agent.tool_approval_timeout_secs` timeout (default 600 seconds) —
-   auto-rejects if no click. The other five channels that prompt at all wait
-   five minutes, and four channels do not prompt. See [Channel capabilities](channel-capabilities.md).
-4. "Trust session" approves all remaining tools for that session
+1. **Auto mode** (default, `agent.approval_mode: "auto"`): approves every tool
+   call the tool gate allows, with no buttons. `!yolo on` switches a gateway
+   set to interactive to it, and `!yolo off` switches back.
+2. **Interactive mode** (opt in with `agent.approval_mode: "interactive"` or
+   `kirocrew gateway --approval interactive`, then restart the gateway): posts
+   Approve / Trust session / Reject buttons
+3. In interactive mode, a prompt nobody clicks is auto-rejected after
+   `agent.tool_approval_timeout_secs` (default 600 seconds). The other five
+   channels that prompt at all wait five minutes, and four channels do not
+   prompt. See [Channel capabilities](channel-capabilities.md).
+4. In interactive mode, "Trust session" approves all remaining tools for that session
 
 Approval buttons appear in both Slack and the dashboard. Approving in either
 place resolves both.
