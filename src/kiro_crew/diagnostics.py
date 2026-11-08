@@ -1500,9 +1500,22 @@ def collect_bundle(
     text_sources.append(("crash.log", home / "logs" / "crash.log", False))
     dumps_dir = home / "logs" / "crash-dumps"
     if _usable_dir(dumps_dir):
+        # The sweep keeps an unexplained exit's header on purpose, and a clean-exit
+        # marker is empty: neither may push a stall's stacks out of the bundle, so
+        # markers stay out and those headers only fill the slots left over.
+        try:
+            unexplained = set(crash_dump_store.unexplained_exits(dumps_dir))
+        except OSError:
+            unexplained = set()  # an ordering hint only; the bundle goes on without it
         dumps = sorted(
-            (p for p in dumps_dir.glob("*") if p.is_file() and not p.is_symlink()),
-            key=lambda p: p.stat().st_mtime,
+            (
+                p
+                for p in dumps_dir.glob("*")
+                if p.is_file()
+                and not p.is_symlink()
+                and not p.name.endswith(crash_dump_store.CLEAN_EXIT_SUFFIX)
+            ),
+            key=lambda p: (p not in unexplained, p.stat().st_mtime),
             reverse=True,
         )[:_MAX_CRASH_DUMPS]
         for d in dumps:

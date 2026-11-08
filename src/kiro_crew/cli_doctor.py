@@ -181,6 +181,7 @@ from kiro_crew.dashboard.crash_dump_store import (  # noqa: F401
     dumps_with_stacks,
     get_dumps_dir,
     newest_dump_with_stacks,
+    unexplained_exits,
 )
 from kiro_crew.dashboard.origin import (  # noqa: F401
     is_local_only,
