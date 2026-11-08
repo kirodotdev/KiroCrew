@@ -17,6 +17,7 @@ reclassifies strict paths as mixed.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from aiohttp import web
@@ -24,6 +25,7 @@ from aiohttp import web
 from kiro_crew.config.loader import launched_as_managed_service
 from kiro_crew.dashboard.handlers.updates_step_up import _loopback_peer
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.service.gateway_identity import service_identity
 
 logger = logging.getLogger(__name__)
 
@@ -35,10 +37,14 @@ async def api_restart_when_idle(request: web.Request) -> web.Response:
     turns stay paused until the caller's restart lands (or a short hold
     expires). ``idle: false`` reopens admission and carries the counts. The
     optional body ``{"service_managed_only": true}`` says the caller will
-    restart the kirocrew service: a gateway the service did not launch then
-    answers ``idle: false`` with ``service_managed: false`` without asking the
-    gate, so no admission is paused for a restart that will not reach it. Any
-    other body is ``400 invalid_body``. ``503 restart_gate_unavailable`` when
+    restart the kirocrew service. Without the managed-service marker the
+    handler then asks the service manager (:func:`service_identity`) and adds
+    ``service_identity``: ``"other"`` (the unit runs another process) answers
+    ``idle: false`` with ``service_managed: false`` without asking the gate, so
+    no admission is paused for a restart that will not reach it; ``"service"``
+    (the unit's main pid is this process) counts as managed; ``"unknown"``
+    asks the gate and leaves the call to the CLI. Any other body is
+    ``400 invalid_body``. ``503 restart_gate_unavailable`` when
     this process runs no orchestrator to ask.
     """
     # Both checks are load-bearing. A loopback request with no X-Internal-Secret
@@ -60,12 +66,24 @@ async def api_restart_when_idle(request: web.Request) -> web.Response:
             {"error": "invalid request body", "code": "invalid_body"}, status=400
         )
     service_managed = launched_as_managed_service()
+    identity: str | None = None
     if service_only and not service_managed:
-        # The caller's restart goes to the service, which did not launch this
-        # gateway: its idleness is not the caller's question, and pausing
+        # No marker: a unit installed before the marker existed still runs
+        # without it, so ask the service manager whose process the unit runs.
+        identity = await asyncio.to_thread(service_identity)
+        service_managed = identity == "service"
+    if identity == "other":
+        # The caller's restart goes to the service, which runs another process:
+        # this gateway's idleness is not the caller's question, and pausing
         # admission here would hold it for a restart that never comes.
         return web.json_response(
-            {"idle": False, "turns": 0, "background": 0, "service_managed": False}
+            {
+                "idle": False,
+                "turns": 0,
+                "background": 0,
+                "service_managed": False,
+                "service_identity": identity,
+            }
         )
     state: DashboardState = request.app["state"]
     gate = getattr(state, "_restart_idle_gate", None)
@@ -79,16 +97,17 @@ async def api_restart_when_idle(request: web.Request) -> web.Response:
         )
     idle, turns, background = await gate()
     logger.info("Restart idle check: idle=%s turns=%d background=%d", bool(idle), turns, background)
-    return web.json_response(
-        {
-            "idle": bool(idle),
-            "turns": max(0, int(turns)),
-            "background": max(0, int(background)),
-            # Whether a generated service definition launched this gateway, so
-            # the CLI can tell that a service restart would reach THIS gateway.
-            "service_managed": service_managed,
-        }
-    )
+    answer: dict[str, object] = {
+        "idle": bool(idle),
+        "turns": max(0, int(turns)),
+        "background": max(0, int(background)),
+        # Whether the service runs this gateway (its marker, or its unit's main
+        # pid), so the CLI can tell that a service restart would reach it.
+        "service_managed": service_managed,
+    }
+    if identity is not None:
+        answer["service_identity"] = identity
+    return web.json_response(answer)
 
 
 async def _read_service_only(request: web.Request) -> bool | None:
