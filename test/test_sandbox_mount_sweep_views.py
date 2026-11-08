@@ -291,3 +291,32 @@ def test_the_scan_still_works_where_no_view_resolves(
     assert _scan(tree) == ({PIN_A}, True, True)
     # pid 1, the leader, and its thread (the leader's own tid is skipped).
     assert len(reads) == 3
+
+
+@pytest.mark.usefixtures("views_resolve")
+class TestPinScanPassBudget:
+    """On a busy host short-lived processes exit during every pass, so a scan needs a
+    few passes before one sees no departure; too small a budget left coverage unproven
+    and every dead-pid directory held back."""
+
+    def test_churn_that_settles_within_a_few_passes_proves_coverage(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ):
+        """A task that exits before its read on each of four passes, then a quiet pass:
+        a busy host settles like this, and a later pass reads only newly listed pids,
+        so a few more passes are cheap."""
+        tree = _Tree(tmp_path)
+        tree.group("500", table=TABLE_A, ns="sandbox", root="/", threads=1)
+        real_listdir = os.listdir
+        calls = {"n": 0}
+
+        def listing(path):  # noqa: ANN001, ANN202
+            if str(path) == str(tree.proc):
+                calls["n"] += 1
+                if calls["n"] <= 4:
+                    tree.task(str(900 + calls["n"]), table=None)
+            return real_listdir(path)
+
+        monkeypatch.setattr(os, "listdir", listing)
+
+        assert _scan(tree) == ({PIN_A}, True, True)
