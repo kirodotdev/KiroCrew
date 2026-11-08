@@ -1,4 +1,4 @@
-import { forwardRef, type ComponentProps, type ReactNode } from 'react'
+import { forwardRef, useId, type ComponentProps, type ReactNode } from 'react'
 import { ListFilter, Pause, Search, X } from 'lucide-react'
 
 import { Glass } from './Glass'
@@ -153,7 +153,7 @@ export const FILTER_CHIP_ROW_CLS = 'px-3 pb-1 flex items-center gap-1.5 flex-wra
  *  `label` is the caller's — the sidebar appends its window and count, the
  *  roster its counts — so one recipe carries whatever a list has to say about
  *  the filter without knowing what it is. */
-export function FilterChip({ label, color, aggregate, paused, clearLabel, onClear, testId, gradient }: {
+export function FilterChip({ label, color, aggregate, paused, pausedLabel, clearLabel, onClear, testId, gradient }: {
   label: string
   /** The filter's colour token, e.g. `var(--accent)` or `var(--warn)`; omit for an aggregate chip. */
   color?: string
@@ -163,6 +163,15 @@ export function FilterChip({ label, color, aggregate, paused, clearLabel, onClea
    *  now (the sidebar's menu can pause every status filter at once). A mark on
    *  the chip, never a second meaning for the click: the click still clears. */
   paused?: boolean
+  /** WHY the filter is lifted, when the person did not lift it themselves (the
+   *  sidebar's chips while a search is typed: "Paused while searching"). Implies
+   *  `paused`, so the chip wears the one paused mark, and adds the reason where
+   *  the mark alone cannot say it: ahead of the clear action in the tooltip,
+   *  and as an `aria-describedby` text for focus (a native tooltip never shows
+   *  on focus). The click still clears, so the accessible name stays
+   *  `clearLabel`. Omit it for a pause the person chose from the menu: that
+   *  pause needs no explaining. */
+  pausedLabel?: string
   /** Accessible name and tooltip: what the click does ("Clear Starred filter"). */
   clearLabel: string
   onClear: () => void
@@ -170,27 +179,33 @@ export function FilterChip({ label, color, aggregate, paused, clearLabel, onClea
   /** Paint the chip in the Crew Mode gradient (`styles/crew-mode.css`) instead of `color`. */
   gradient?: boolean
 }) {
+  const pausedId = useId()
+  const isPaused = paused || !!pausedLabel
   return (
     <button
       type="button"
       className={cn(
         // The gradient fill would hide a dashed border, so a paused Crew Mode chip
         // dims and draws its dash in the gradient's own text colour instead.
-        gradient && (paused ? 'crew-grad opacity-60 border border-dashed border-current' : 'crew-grad border border-transparent'),
+        gradient && (isPaused ? 'crew-grad opacity-60 border border-dashed border-current' : 'crew-grad border border-transparent'),
         'inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-full text-[11px] cursor-pointer transition-colors',
         aggregate && 'max-w-full bg-bg-elevated/60 border border-border text-muted hover:text-text',
         // Same colour token paused or not, so the chip still reads as ITS
         // filter; the glyph and the dashed border say "not narrowing right
         // now" without leaning on contrast alone.
-        paused && 'border-dashed',
+        isPaused && 'border-dashed',
       )}
       style={gradient || aggregate || !color ? undefined : { background: `color-mix(in srgb, ${color} 10%, transparent)`, color, borderWidth: 1, borderColor: `color-mix(in srgb, ${color} 30%, transparent)` }}
       onClick={onClear}
-      title={clearLabel}
+      // Paused keeps the clear action in the hover text: the X glyph alone does
+      // not say a click clears, and the pause text alone would drop that.
+      title={pausedLabel ? `${pausedLabel} · ${clearLabel}` : clearLabel}
       aria-label={clearLabel}
+      aria-describedby={pausedLabel ? pausedId : undefined}
       data-testid={testId}
     >
-      {paused && <Pause size={11} className="shrink-0" aria-hidden="true" />}
+      {isPaused && <Pause size={11} className="shrink-0" aria-hidden="true" />}
+      {pausedLabel && <span id={pausedId} className="sr-only">{pausedLabel}</span>}
       {aggregate ? <span className="truncate">{label}</span> : label}
       <X size={11} className="shrink-0" />
     </button>
