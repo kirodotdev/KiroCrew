@@ -9999,6 +9999,7 @@
     },
     "tunnelStatus": {
       "connected": "Подключено",
+      "connected_with_error": "Подключено с ошибкой",
       "connecting": "Подключение…",
       "error": "Ошибка",
       "reconnect_attempt": "Попытка переподключения {{n}}",

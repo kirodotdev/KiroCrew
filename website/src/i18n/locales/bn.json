@@ -9549,6 +9549,7 @@
     },
     "tunnelStatus": {
       "connected": "সংযুক্ত",
+      "connected_with_error": "ত্রুটিসহ সংযুক্ত",
       "connecting": "কানেক্ট হচ্ছে…",
       "error": "ত্রুটি",
       "reconnect_attempt": "পুনঃসংযোগের চেষ্টা {{n}}",
