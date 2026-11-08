@@ -781,7 +781,10 @@ backend shares the `acp` namespace and `model_registry.lacks_acp_id` says the
 registry knows the model but gives it no kiro id, the pin is refused with no
 catalog, because nothing offline can confirm kiro-cli serves it (the registry has
 no kiro id to check against). A live catalog is still asked first and accepts the
-pin if it advertises it.
+pin if it advertises it. So a registry row for a model kiro-cli advertises must
+carry that id in `providers.acp` (Fable 5.1's row carries `claude-fable-5.1`):
+a row without one makes every kiro or KAS pin of that model fail whenever no
+live session has advertised a list, after a gateway restart for example.
 
 ## The one allowed concrete fallback
 

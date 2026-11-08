@@ -137,21 +137,37 @@ def _is_transient_resume_lock_error(exc: BaseException) -> bool:
 # codex signed out of a non-AWS provider gives too, so it alone names no AWS cause.
 _MASKED_CREDENTIAL_AUTH_RE = re.compile(r"failed to load aws credentials", re.IGNORECASE)
 
-#: Names the mask in a startup auth failure, so the deliberate layout is not taken
-#: for a broken one. Fixed text: it never echoes a path's contents or a secret.
-CREDENTIAL_MASK_AUTH_NOTE = (
-    "Kiro Crew hides ~/.aws/credentials and ~/.aws/sso/cache from {label} on "
-    "purpose; only ~/.aws/config is readable, so Bedrock via {label} needs a "
-    "self-contained credential_process in that file, not SSO or static keys. Keep "
-    "static keys in ~/.aws/credentials, not ~/.aws/config, and do not make "
-    "~/.aws/config a symlink."
-)
+
+def credential_mask_auth_note(backend: str, hidden: tuple) -> str:
+    """The note naming the credential mask in an AWS auth failure of *backend*.
+
+    Built from *hidden*, the mask this spawn actually ran under, so the stores it
+    names are the ones the child could not read. It names every entry the mask
+    hides directly under the home (``~/.aws``, ``~/.ssh``, a sign-in cookie
+    directory, ...): a ``credential_process`` runs under the same mask, so one
+    that reads a key or cookie kept in any of them fails here. Deeper entries
+    (another tool's token file, Kiro Crew's own data home) are left out to keep
+    the note short, which is why it says "including". Path names only: it never
+    echoes a path's contents or a secret.
+    """
+    home = os.path.expanduser("~")
+    stores = sorted({os.path.basename(p) for p in hidden if os.path.dirname(p) == home})
+    label = label_for(backend)
+    return (
+        f"Kiro Crew hides credential stores from {label} on purpose, including "
+        f"{', '.join(f'~/{name}' for name in stores)}; of ~/.aws only ~/.aws/config "
+        f"is readable. Bedrock via {label} needs a credential_process in that file "
+        "that reads nothing under these paths, so SSO, static keys, and a "
+        "credential_process that needs a sign-in cookie or key kept in one of them "
+        "cannot work. Keep static keys in ~/.aws/credentials, not ~/.aws/config, "
+        "and do not make ~/.aws/config a symlink."
+    )
 
 
 def _with_credential_mask_note(
     runtime: object, message: str, cause: BaseException, *, read_stderr: bool = True
 ) -> str:
-    """*message*, plus :data:`CREDENTIAL_MASK_AUTH_NOTE` when the mask explains *cause*.
+    """*message*, plus :func:`credential_mask_auth_note` when the mask explains *cause*.
 
     Added only when all three hold: this spawn ran under a credential mask, that
     mask re-exposes ``~/.aws/config`` (so ``~/.aws`` itself is hidden), and the
@@ -171,7 +187,7 @@ def _with_credential_mask_note(
     haystack = f"{cause}\n{tail if isinstance(tail, str) else ''}"
     if not _MASKED_CREDENTIAL_AUTH_RE.search(haystack):
         return message
-    note = CREDENTIAL_MASK_AUTH_NOTE.format(label=label_for(backend))
+    note = credential_mask_auth_note(backend, hidden)
     return message if note in message else f"{message} {note}"
 
 

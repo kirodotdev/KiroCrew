@@ -156,11 +156,15 @@ provider.
 | `deepseek` | DeepSeek Harness | Runs `dsh --profile acp` with Kiro Crew's gate plugin; provider keys come from `agent.deepseek_env`. |
 | `copilot` | GitHub Copilot CLI | Runs `copilot --acp --stdio`; signs in with its own login. A project carrying Copilot CLI's own hooks, settings or MCP config is refused. |
 
-Codex runs with `~/.aws/credentials` and `~/.aws/sso/cache` hidden on purpose,
-and only `~/.aws/config` readable. Codex on Amazon Bedrock therefore needs a
-self-contained `credential_process` in that file, not SSO or static keys. If a
-Codex session fails to start with an authentication error, the error says this
-too.
+Codex runs with the credential stores Kiro Crew's agent may never read hidden
+on purpose, apart from Codex's own sign-in file. They include `~/.aws`,
+`~/.ssh`, `~/.gnupg`, `~/.netrc` and the sign-in cookie directory `~/.midway`.
+Of `~/.aws` only `~/.aws/config` stays readable. Codex on Amazon Bedrock
+therefore needs a `credential_process` in that file that reads nothing under
+the hidden stores. SSO, static keys, and a `credential_process` that needs a
+sign-in cookie or key kept in one of them, such as `~/.midway`, cannot work
+there. If a Codex session or turn fails with an AWS credential error, the
+error names the stores that were hidden.
 
 - Keep static keys in `~/.aws/credentials`. Do not write them into `~/.aws/config`.
 - Do not make `~/.aws/config` a symlink. On Linux the sandbox copies whatever

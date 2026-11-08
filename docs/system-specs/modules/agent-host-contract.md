@@ -290,9 +290,14 @@ file to re-expose inside a directory the mask hides: a re-exposure is an edit to
 mask, and the mask is host-owned, so that table stays in `agent_sdk/tool_gate.py`
 (`ADAPTER_EXPOSED_CREDENTIAL_LEAVES`). When a harness with the `.aws/config`
 re-exposure fails `initialize` or `session/new` and its stderr says the AWS SDK
-could not load a credential under that mask, `providers/acp_runtime_start.py`
-appends `CREDENTIAL_MASK_AUTH_NOTE` to the surfaced error once, so the deliberate layout is not reported as a broken
-control. It also declares,
+could not load a credential under that mask, or a turn fails with that error in
+its own text, `providers/acp_runtime_start.py` appends
+`credential_mask_auth_note(backend, hidden)` to the surfaced error once, so the
+deliberate layout is not reported as a broken control. The note is built from
+the mask that spawn ran under: it names every entry the mask hides directly
+under the home (`~/.aws`, `~/.ssh`, `~/.midway`, ...), because a
+`credential_process` in `~/.aws/config` runs under the same mask and fails if
+it reads any of them. It also declares,
 structurally, whether it offers an in-product sign-in: `AgentInteractiveLogin` is
 a `runtime_checkable` protocol tested with `isinstance`, never a boolean, so a
 harness that has no flow is a shape the type system can see rather than one that
