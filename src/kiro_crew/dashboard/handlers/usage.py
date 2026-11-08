@@ -222,6 +222,7 @@ def _build_token_record(
     elapsed_ms: int = 0,
     app: str = "",
     delivered: bool | None = None,
+    transcript: str = "",
 ) -> dict[str, Any]:
     """Build the JSONL token-usage record dict (no I/O).
 
@@ -254,6 +255,12 @@ def _build_token_record(
     ``delivered`` is whether the turn streamed any reply text, so a billed turn
     that ran only tools can be told from one that answered. Only a caller that
     watched the stream knows it; ``None`` leaves the key off the row.
+
+    ``transcript`` is the key of the transcript the dashboard tab writes to. A
+    tab linked to another session (a task review, a workflow, a cron run)
+    writes under a key its name cannot reach, and this row is the one record
+    that outlives the tab, so it is what names a closed tab's transcript.
+    ``""`` leaves the key off the row.
     """
     # Usage lives on event.usage (TurnUsage). Fall back to the event itself when
     # it isn't a real TurnUsage (legacy / non-AcpEvent producers, test doubles).
@@ -305,6 +312,8 @@ def _build_token_record(
     }
     if delivered is not None:
         record["delivered"] = delivered
+    if transcript:
+        record["transcript"] = transcript
     return record
 
 
@@ -504,6 +513,7 @@ async def persist_token_record_async(
     trigger: str = TRIGGER_OTHER,
     origin: str | None = None,
     delivered: bool | None = None,
+    transcript: str = "",
 ) -> None:
     """Async variant: builds the record on-loop, offloads the file write.
 
@@ -520,7 +530,7 @@ async def persist_token_record_async(
     (no fsync, exceptions swallowed), so off-loop write loses no durability.
     See :func:`persist_token_record` for the ``surface`` / ``agent`` /
     ``context_used`` / ``context_window`` / ``elapsed_ms`` / ``model_source``
-    fields, and :func:`_build_token_record` for ``delivered``.
+    fields, and :func:`_build_token_record` for ``delivered`` and ``transcript``.
 
     ALSO emits the per-turn OTEL family — ``kirocrew.turn.duration`` plus the
     turn's usage (``kirocrew.turn.tokens`` and whichever of
@@ -564,6 +574,7 @@ async def persist_token_record_async(
             elapsed_ms=elapsed_ms,
             app=app,
             delivered=delivered,
+            transcript=transcript,
         )
         # Before the offloaded write: a file-write failure must not cost the
         # latency sample, which needs nothing from disk.
