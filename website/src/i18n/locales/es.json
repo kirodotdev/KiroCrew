@@ -14701,6 +14701,7 @@
       "mint_failure_grant_unproven": "No se pudo confirmar el inicio de sesión guardado. Intenta conectarte de nuevo.",
       "mint_failure_process_gone": "El proceso de autorización se detuvo antes de que terminara la aprobación. Intenta conectarte de nuevo.",
       "mint_failure_server_absent": "La entrada del servidor MCP desapareció antes de que pudiera comenzar la autorización. Intenta conectarte de nuevo.",
+      "mint_failure_sign_in_rejected": "El proveedor no aceptó el inicio de sesión. Vuelve a conectar.",
       "mint_failure_timed_out": "La configuración de autorización agotó el tiempo de espera antes de que la dirección de aprobación estuviera lista. Intenta conectarte de nuevo.",
       "mint_failure_unknown": "La configuración de autorización falló antes de que la dirección de aprobación estuviera lista. Intenta conectarte de nuevo.",
       "mint_failure_url_rejected": "El proveedor devolvió una dirección de aprobación que contenía datos similares a credenciales, por lo que no se mostró.",

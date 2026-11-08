@@ -173,6 +173,24 @@ before they become adoptable. A rejected warm claim is released, so a later
 Connect follows the cold path and reaches this single retry owner rather than
 carrying a second policy in the warm engine or dashboard handler.
 
+A refused sign-in ends the attempt. kiro-cli answers the loopback callback before
+it exchanges the code, so a code the provider rejects never lands a grant: kiro-cli
+reports it only as a `server_init_failure` frame for that server and closes the
+listener. The cold watcher reads its held process's frames on every grant poll, and
+the warm reaper reads each adopted row's session (`fail_refused_sign_ins`), so the
+row turns `failed` / `mint_sign_in_rejected` within one poll instead of waiting out
+the TTL, and the card says the provider did not accept the sign-in. A grant on disk
+still wins over the frame, because a server can fail its own start after a good
+exchange. So a refused row means no grant was observed or proven.
+A return address relayed from the card holds that tab's wait when the
+card's approval URL came from a `waiting` mint and it had none (after a reload the
+waiting card comes from the status feed alone), so the attempt's verdict replaces
+the "Return address delivered" line. A chat banner's sign-in gets no such wait,
+even beside a waiting mint: the banner is patched in place with its own verdict,
+and a wait would fence it off. A failed attempt re-reads the status feed at once,
+as a granted one does, so its stale `awaiting_consent` does not hold the card on
+waiting until the next poll.
+
 The status endpoint is **additive** and never mints: it observes the mint table
 to distinguish `awaiting_consent` from `not_connected`, and that is the whole of
 its relationship to minting.
