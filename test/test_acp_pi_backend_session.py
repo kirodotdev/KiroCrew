@@ -323,7 +323,8 @@ class TestTheEffortControlIsReachableOnThisHarness:
 
         resolve = inspect.getsource(provider_module.AcpProvider._resolve_effort)
         assert "advertised = self._advertised_effort_levels()" in resolve
-        assert "levels=advertised" in resolve
+        assert "levels = advertised" in resolve
+        assert "levels=levels" in resolve
 
     def test_the_shared_resolver_keeps_its_registry_behaviour_untouched(self) -> None:
         """Every existing caller omits ``levels``, so the model registry still answers."""

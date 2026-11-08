@@ -64,6 +64,8 @@ _PROVIDER_EFFORT_ID_SITES = (
     "(``ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION``)",
     "the build check in ``supports_effort``, for a harness that takes a level only "
     "through its advertised option (``ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS``)",
+    "the capability answer in ``supports_effort`` for a session serving its "
+    "pseudo-model (``ACP_BACKENDS_DEFAULT_PSEUDO_MODEL``)",
 )
 
 

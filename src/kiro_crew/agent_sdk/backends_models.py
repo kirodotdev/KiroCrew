@@ -257,10 +257,24 @@ DEFAULT_EFFORT_CONFIG_OPTION_ID = "effort"
 # "Effort configuration is currently not available on <model>", and
 # claude-agent-acp rebuilds its effort options per model from
 # ``supportedEffortLevels`` -- so the registry, which knows which model families
-# take a level, is the right authority for them.
+# take a level, is the right authority for a concrete model id. A claude session
+# on no concrete id (``ACP_BACKENDS_DEFAULT_PSEUDO_MODEL``) is the one case the
+# registry cannot name, and there the option the adapter built for that model
+# answers instead.
 ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION = frozenset(
     {ACP_BACKEND_DEEPSEEK, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE, ACP_BACKEND_PI}
 )
+
+# Backends whose unpinned session serves a pseudo-model rather than a concrete
+# id: the head of the advertised model list, which claude-agent-acp names
+# ``default`` and reports when no model setting applies, or no id at all where a
+# build reports the ``model`` option's current value as ``""``. The registry and
+# its name heuristic recognise neither, so asking them would hide the effort
+# control on every such session and drop a configured level at start. The adapter
+# still rebuilds its effort select for the model it actually serves, so for a
+# member on the pseudo-model that select answers whether a level applies
+# (``AcpProvider.supports_effort``); every concrete id keeps the registry answer.
+ACP_BACKENDS_DEFAULT_PSEUDO_MODEL = frozenset({ACP_BACKEND_CLAUDE})
 
 
 def effort_config_option_id(backend: str) -> str:
