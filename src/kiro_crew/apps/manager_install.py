@@ -440,7 +440,9 @@ def install_app(
         approvedGrantsStored=True,
         installedAt=_now_iso(),
         source=market_source or str(source),
-        origin="local" if market_source else InstalledApp.origin,
+        # Only a registry install scopes a repository; a folder or marketplace
+        # install is local.
+        origin="registry" if source_repository else "local",
         # Persist the server-resolved repository at the first durable metadata
         # write.  The registry's richer set_app_provenance bookkeeping happens
         # later and may fail after the copied app is already the live occupant;
@@ -601,10 +603,11 @@ def update_app(
         new_permissions=grant_source(manifest),
     )
     widened_grants = any(_held_back_entries(approved_grants, grant_source(manifest)).values())
+    # Same discriminator as ``manager_builtins._builtin_owns_install`` (a later
+    # owner, so not importable here): only ``register_builtin_apps`` writes it.
+    builtin_owned = existing.source == "builtin" or existing.origin == "builtin"
     if _adoption is not None:
-        # Same discriminator as ``manager_builtins._builtin_owns_install`` (a later
-        # owner, so not importable here): only ``register_builtin_apps`` writes it.
-        if not (existing.source == "builtin" or existing.origin == "builtin"):
+        if not builtin_owned:
             return AppResult(
                 ok=False,
                 name=name,
@@ -634,6 +637,9 @@ def update_app(
             widened_session_approval=widened_session_approval,
         ),
         source=str(source),
+        # A registry update makes the record a registry one; a built-in changes
+        # provenance only through adoption, below.
+        origin="registry" if source_repository and not builtin_owned else existing.origin,
         sourceUrl=source_repository.strip(),
         sourceRegistry="",
         sourceCommit="",

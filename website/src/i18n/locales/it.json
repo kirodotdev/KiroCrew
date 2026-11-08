@@ -6664,6 +6664,7 @@
         "revocable": "Puoi tornare indietro in qualsiasi momento in Impostazioni → Sicurezza → App di terze parti. L'app smette di funzionare quando lo fai.",
         "source": "Pubblicata su",
         "not_reviewed": "{{productName}} elenca questa app ma non ne ha esaminato il codice, e il nome sopra viene dall'app stessa.",
+        "not_reviewed_local": "{{productName}} non ha esaminato il codice di questa app, e il nome sopra viene dall'app stessa.",
         "registry_community": "Un registro della community ha elencato «{{app}}». I suoi contributori fanno solo un controllo leggero e il team di {{productName}} non ha verificato questa voce. Fidati solo se la riconosci.",
         "registry_community_credentialed": "Un registro della community ha elencato «{{app}}». I suoi contributori fanno solo un controllo leggero e il team di {{productName}} non ha verificato questa voce. {{productName}} la scarica con il tuo accesso Git salvato, quindi fidati solo se la riconosci.",
         "cancel": "Annulla",

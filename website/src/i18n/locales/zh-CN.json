@@ -6318,6 +6318,7 @@
         "revocable": "你可以随时在“设置 → 安全 → 第三方应用”中撤销。撤销后该应用就会停止工作。",
         "source": "发布于",
         "not_reviewed": "{{productName}} 只是收录了这个应用，并未审查它的代码；上面显示的名称也由应用自己提供。",
+        "not_reviewed_local": "{{productName}} 并未审查这个应用的代码；上面显示的名称也由应用自己提供。",
         "registry_community": "“{{app}}”由社区注册表收录。社区贡献者对收录内容只做简单检查，{{productName}} 团队没有审核这条收录。只有在你认识它时才信任它。",
         "registry_community_credentialed": "“{{app}}”由社区注册表收录。社区贡献者对收录内容只做简单检查，{{productName}} 团队没有审核这条收录。{{productName}} 会使用你保存的 Git 登录信息下载它，因此只有在你认识它时才信任它。",
         "cancel": "取消",
