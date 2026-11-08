@@ -11,6 +11,7 @@ mutation carrying only the fields that action set, and the rebuild round trip.
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 
@@ -799,6 +800,27 @@ async def test_the_rebuild_route_rebuilds_the_callers_own_board_from_real_units(
     assert header is not None and header.goal == "ship it"
     item = wl.read_work_item(CONDUCTOR, item_id)
     assert item is not None and item.title == "item one"
+
+
+@pytest.mark.asyncio
+async def test_a_reported_wake_at_rides_the_record_and_the_next_report_clears_it(monkeypatch):
+    """The fold the sidebar reads holds the declared wait, so a rebuild keeps
+    it, and a later report without one clears it there as it does in the cache."""
+    _real_units(monkeypatch)
+    item_id = await _board()
+    wake = (datetime.now(timezone.utc) + timedelta(hours=3)).replace(microsecond=0).isoformat()
+    status, body = await _report(
+        WORKER, {"status": "progress", "summary": "waiting", "wake_at": wake}
+    )
+    assert status == 200, body
+    wl.rebuild_from_projection(CONDUCTOR)
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.wake_at == wake
+    status, body = await _report(WORKER, {"status": "progress", "summary": "moving"})
+    assert status == 200, body
+    wl.rebuild_from_projection(CONDUCTOR)
+    item = wl.read_work_item(CONDUCTOR, item_id)
+    assert item is not None and item.wake_at is None
 
 
 # -- the record is refused before the commit, and answered for after it -------

@@ -58,6 +58,7 @@ from kiro_crew.work_ledger_rules import (
     _require_count,
     _require_pr,
     _require_text,
+    _require_wake_at,
     depth_cap_hint,
     is_acceptance_concrete,
     may_conduct,
@@ -712,12 +713,15 @@ def apply_worker_report(
     artifacts: Any = None,
     pr: Any = None,
     reason: Any = None,
+    wake_at: Any = None,
 ) -> dict[str, Any]:
-    """Write the fields the WORKER owns: ``status``, ``reason``, ``summary``,
-    ``artifacts``, ``pr`` and ``last_report_at``. Nothing else is reachable from here.
+    """Write the fields the WORKER owns: ``status``, ``reason``, ``wake_at``,
+    ``summary``, ``artifacts``, ``pr`` and ``last_report_at``. Nothing else is
+    reachable from here.
 
-    ``reason`` rides only on ``blocked`` / ``question`` and is replaced by every
-    report, so a later report without one clears it.
+    ``reason`` rides only on ``blocked`` / ``question``, and ``wake_at`` (when the
+    worker will resume) only on ``progress``. Every report replaces both, so a later
+    report without one clears it.
 
     No ``verdict``, ``state``, ``acceptance``, ``decision`` or ``round`` parameter,
     so a worker cannot accept itself or widen its bar; ``status: done`` only
@@ -748,6 +752,7 @@ def apply_worker_report(
                 code=CODE_INVALID_VALUE,
                 field="reason",
             )
+    checked_wake_at = _require_wake_at(wake_at, checked_status)
     checked_id = _require_item_id(item_id)
 
     with item_lock(slot_key, checked_id, create=False):
@@ -760,6 +765,7 @@ def apply_worker_report(
             raise WorkLedgerError(f"item {checked_id!r} is {item.state}", code=CODE_ITEM_CLOSED)
         item.status = checked_status
         item.reason = checked_reason
+        item.wake_at = checked_wake_at
         item.summary = checked_summary
         item.artifacts = checked_artifacts
         if checked_pr is not None:

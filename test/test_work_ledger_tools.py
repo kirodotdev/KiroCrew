@@ -412,6 +412,10 @@ async def test_every_store_code_maps_to_the_status_the_rfc_tabulates():
         "invalid_action": 400,
         "invalid_status": 400,
         "invalid_value": 400,
+        "wake_at_requires_progress": 400,
+        "wake_at_invalid": 400,
+        "wake_at_in_past": 400,
+        "wake_at_too_far": 400,
         # Maintenance-only: raised by ``purge_conductor``, reachable from no
         # route. Mapped so the exhaustiveness property above keeps its meaning.
         "ledger_not_finished": 409,
@@ -1022,7 +1026,7 @@ def test_the_schema_caps_restate_the_stores_own():
 def test_the_worker_schema_has_no_conductor_field():
     """The absence IS the guarantee — stronger than an allowlist kept correct by hand."""
     names = {f.name for f in validation.WORK_REPORT_SCHEMA.fields}
-    assert names == {"status", "summary", "artifacts", "pr", "reason"}
+    assert names == {"status", "summary", "artifacts", "pr", "reason", "wake_at"}
     for forbidden in (
         "item_id",
         "session",

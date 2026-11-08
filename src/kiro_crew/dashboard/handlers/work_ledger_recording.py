@@ -166,6 +166,7 @@ def _baseline_fields(item: Any, header: Any) -> dict[str, Any]:
         "fails": item.fails,
         "status": item.status,
         "reason": item.reason,
+        "wake_at": getattr(item, "wake_at", None) or None,
         "summary": item.summary or None,
         "artifacts": item.artifacts,
         "pr": item.pr,

@@ -404,7 +404,9 @@ def _ledger_tool_definitions() -> list[dict[str, Any]]:
                 "wake it, 'progress' does not, and a turn that ends without a report "
                 "wakes nobody — so before you stop, say why you stopped. A pause you "
                 "expect to be resumed from is a 'progress' report: it records where you "
-                "stopped and spends your conductor no turn. On 'blocked' "
+                "stopped and spends your conductor no turn. When that pause lasts "
+                "until a known time, set wake_at to it: the item is not flagged stale "
+                "before then; a wait longer than a day is a 'blocked' report. On 'blocked' "
                 "or 'question', set reason when only a person can move it: 'approval' "
                 "when a tool approval timed out or is waiting, 'needs_human' when only "
                 "a person can unblock you; leave it unset for a build or service. A "
@@ -465,6 +467,14 @@ def _ledger_tool_definitions() -> list[dict[str, Any]]:
                         "description": (
                             "On 'blocked' or 'question': the person this waits on. Refused "
                             "with 'progress' or 'done'. Each report replaces it."
+                        ),
+                    },
+                    "wake_at": {
+                        "type": "string",
+                        "description": (
+                            "On 'progress': when you will resume, an ISO-8601 time with a "
+                            "zone, ahead of now by at most 24 hours. Refused with any other "
+                            "status. Each report replaces it."
                         ),
                     },
                 },
@@ -947,7 +957,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
 
     if name == "work_report":
         payload = {
-            k: v for k, v in args.items() if k in ("status", "summary", "artifacts", "pr", "reason")
+            k: v
+            for k, v in args.items()
+            if k in ("status", "summary", "artifacts", "pr", "reason", "wake_at")
         }
         resp = _post(_REPORT_PATH, payload, session_key=caller_key)
         if resp.get("error"):
