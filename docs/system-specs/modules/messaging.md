@@ -1130,6 +1130,35 @@ a counter seeded for this one, and could resume a stale session persisted there.
 A restart re-seeds every counter from the new namespace, which is the only safe
 boundary.
 
+`agent.default_agent` is read live too, although it moves the session key just as
+`dm_scope` does: the agent is a key segment. Slack and the dashboard already follow
+it live, so a restart mark would be wrong, and the non-Slack channels need no
+applier of their own. Each of the nine dispatchers holds an
+`agent_switch_command.LiveDefaultAgent`, whose `read(boot_cfg, live_cfg)` goes
+through `default_template` (a default whose spec was removed runs `kirocrew`, as a
+new dashboard chat does) and, while the loader holds the `agent` section DISCARDED,
+keeps the value it read last (the boot copy's on a first read) rather than the
+section's defaults, as Slack's default-agent applier does.
+
+A change reaches a conversation when its next conversation starts, as a dashboard
+default reaches the next new chat. `LiveDefaultAgent.for_route` pins the value a
+route's conversation first reads in that channel's `ConversationState.pinned`, and
+an open conversation keeps that agent until it rotates: `/new`, an idle or daily
+reset, or a channel `/agent` switch (`reseed`). Each of those drops the pin BEFORE
+it applies, so the counter is reseeded from the new agent's bucket and a `/new`
+lands past every one of its saved generations. Pinning is what keeps a turn
+reachable: a message's key is fixed before the fair-admission wait and its turn
+resolves the agent after it, and `/stop` and the busy check derive the key again
+while a reply runs, so a default that moved the key in between would run another
+agent under the frozen key, or leave `/stop` and the queue pointing at a key with
+no turn. Telegram also reads the agent together with the key, before the wait,
+and hands it to `_run_turn`, so a `/new` sent while a message waits for admission
+does not change that message's agent. An `/agent` reset to the default switches
+to the live default (the one a new conversation reads), compared against what the
+current conversation runs, its pinned default included. A route first seen after the change (or after a restart, which holds no
+pins) reads the new default and resumes that agent's latest conversation. A route
+with a channel `/agent` pick keeps its pick, its bucket and its counter.
+
 **Connection fields restart ONE channel, in process.** A socket, a bot token or a
 bridge path cannot be swapped under a live connection, so the gateway reconnects
 just that channel instead of asking the operator to restart the process. Each

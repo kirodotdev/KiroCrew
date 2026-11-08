@@ -117,6 +117,52 @@ class ChannelAgentPicks(Generic[RouteT]):
             self._picks.pop(route, None)
 
 
+class LiveDefaultAgent:
+    """``agent.default_agent`` as the config in force NOW names it, for a channel.
+
+    The field applies live (it carries no ``restart`` mark, and Slack and the
+    dashboard follow it), so a channel dispatcher reads it at the point of use
+    instead of from the config it booted with. The agent is part of the session
+    key, so a conversation that follows the default moves to the new agent's
+    bucket; the dispatcher's ``ConversationState`` reseeds it there through its
+    ``bucket_fn``. Read through ``default_template``, so a default whose spec was
+    removed runs the managed template, as a new dashboard chat does.
+    """
+
+    def __init__(self) -> None:
+        self._last: str | None = None
+
+    def read(self, boot_cfg: Any, live_cfg: Any) -> str:
+        """The default agent *live_cfg* names, or the one last in force.
+
+        A DISCARDED ``agent`` section holds defaults, and reading those would
+        drop the configured agent, so the value read last stays (the boot copy's
+        on a first read), as Slack's default-agent applier keeps its own.
+        """
+        # Deferred, so importing this module does not load the config package.
+        from kiro_crew.config.loader import default_template
+
+        if "agent" in getattr(live_cfg, "degraded_sections", ()):
+            if self._last is None:
+                self._last = default_template(boot_cfg)
+            return self._last
+        self._last = default_template(live_cfg)
+        return self._last
+
+    def for_route(self, conv: Any, route: Any, boot_cfg: Any, live_cfg: Callable[[], Any]) -> str:
+        """The default *route*'s current conversation runs, pinned in *conv*.
+
+        The first read of a conversation pins the live default, and it stays until
+        the conversation rotates (``/new``, an idle or daily reset, an ``/agent``
+        switch). So a turn that is queued, admitted or running keeps the key it
+        started under, and ``/stop`` and the busy check still find it. ``None``
+        (no conversation named) reads the live default.
+        """
+        if route is None:
+            return self.read(boot_cfg, live_cfg())
+        return str(conv.pinned(route, lambda: self.read(boot_cfg, live_cfg())))
+
+
 def pickable_agent_names() -> list[str]:
     """The agents a channel ``/agent`` may switch to, sorted.
 
@@ -184,10 +230,13 @@ async def handle_channel_agent_command(
     sessions: Any,
     session_key: Callable[[], str],
     prefix: str = "/",
+    running_default: str | None = None,
 ) -> str:
     """Answer one channel ``/agent`` command and return the reply text.
 
-    *configured* is the agent a conversation runs with no pick. *session_key*
+    *configured* is the agent a NEW conversation runs with no pick (the live
+    default), which a reset switches to. *running_default* is the default the
+    route's current conversation pinned, ``None`` when it is *configured*. *session_key*
     derives the route's CURRENT key. The agent is part of the key, so a switch
     moves the route to the new agent's own bucket: *conv* (the channel's
     ``ConversationState``) is reseeded from that bucket, which resumes the new
@@ -200,7 +249,11 @@ async def handle_channel_agent_command(
     """
     word = arg.strip()
     current = picks.get(route)
-    current_label = current or f"default ({configured})"
+    running = running_default or configured
+    # *current* and *running* are read before the discovery await below; the
+    # key taken with them tells whether a /new or a turn moved the route since.
+    key_before = session_key()
+    current_label = current or f"default ({running})"
     if not word or word.lower() in _SHOW_WORDS:
         try:
             names = await asyncio.to_thread(pickable_agent_names)
@@ -237,7 +290,17 @@ async def handle_channel_agent_command(
     label = target or f"default ({configured})"
     # Compared as the agent each side RUNS: with no pick, naming the default
     # agent changes nothing, so it must not read as a switch.
-    if (target or configured) == (current or configured):
+    if (target or configured) == (current or running) and session_key() == key_before:
+        # A reset still drops the pick, with no reseed: a pick equal to the
+        # default must not stay pinned once the default moves on.
+        # The default that agent equals is the live one, so it becomes the pin.
+        if not target:
+            picks.set(route, "")
+            conv.repin(route, configured)
+        elif target != configured:
+            # Named explicitly while only the pinned default runs it: keep it past
+            # the next rotation. The key is unchanged, so no reseed.
+            picks.set(route, target)
         return f"ℹ️ Already using `{label}`."
     outcome = switch_channel_agent(
         picks, route, target, conv=conv, sessions=sessions, session_key=session_key

@@ -14,6 +14,7 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.agent_switch_command import LiveDefaultAgent
 from kiro_crew.config import live
 from kiro_crew.config.sections import _normalize_threshold_pair
 from kiro_crew.history import mint_row_mid
@@ -80,7 +81,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_AGENT = "kirocrew"
 #: Scope segment appended to a group JID for a non-operator's own session bucket
 #: in that group. Colon-free by construction, so it is one more scope segment in
 #: the ``{channel}:{agent}:{chat_type}:{scope}`` key shape.
@@ -124,12 +124,15 @@ class WhatsAppDispatcher:
         self.client: "WhatsAppClient | None" = None
         self.transport: WhatsAppTransport | None = None
         self.conv_log: Any = None
+        self._default_agent = LiveDefaultAgent()
         # Seeded from the persisted session map, as every sibling channel is: the
         # counter is in-memory, so without a seed it restarts at 0 after a gateway
         # restart and the next ``/new`` advances 0 -> 1 straight back onto the
         # ``:gen1`` still on disk, resuming the conversation the operator
         # explicitly discarded.
-        self._conv: ConversationState[str] = ConversationState(seed_fn=self._seed_gen)
+        self._conv: ConversationState[str] = ConversationState(
+            seed_fn=self._seed_gen, bucket_fn=self._resolve_agent
+        )
         # Held on self: the watcher holds the owner WEAKLY, so a subscription
         # dropped here would be collected and the applier would silently stop
         # firing.
@@ -444,7 +447,7 @@ class WhatsAppDispatcher:
             daily_reset_hour=m.daily_reset_hour,
         )
         session_key = self._session_key(scope, is_operator=is_operator)
-        agent = self._resolve_agent()
+        agent = self._resolve_agent(scope)
         unprompted = bool(verdict is not None and verdict.unprompted)
         # Interactive approval by typed reply, only for a sender allowed to
         # approve and only for a turn someone is actually watching. An
@@ -778,7 +781,7 @@ class WhatsAppDispatcher:
         gen = self._conv.current_gen(scope)
         dm_scope = str(self.cfg.messaging.dm_scope) if is_operator else DM_SCOPE_PER_CHANNEL_PEER
         if is_operator:
-            agent = self._resolve_agent()
+            agent = self._resolve_agent(scope)
             user = scope
         else:
             agent = TOOLLESS_TURN_AGENT
@@ -792,9 +795,11 @@ class WhatsAppDispatcher:
             chat_type=chat_type,
         )
 
-    def _resolve_agent(self) -> str:
+    def _resolve_agent(self, scope: str | None = None) -> str:
         """The agent every session key for this channel is built under."""
-        return self.agent or self.cfg.agent.default_agent or _DEFAULT_AGENT
+        return self.agent or self._default_agent.for_route(
+            self._conv, scope, self.cfg, self._live_cfg
+        )
 
     def _seed_gen(self, scope: str) -> int:
         """The highest generation already persisted for *scope*'s durable bucket.
@@ -823,7 +828,7 @@ class WhatsAppDispatcher:
         operator_gen = seed_generation(
             self.sessions,
             channel="whatsapp",
-            agent=self._resolve_agent(),
+            agent=self._resolve_agent(scope),
             user_id=scope,
             dm_scope=str(self.cfg.messaging.dm_scope),
             chat_type=chat_type,

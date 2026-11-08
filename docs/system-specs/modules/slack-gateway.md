@@ -1607,6 +1607,12 @@ would keep the `slack.*` paths stale for as long as `agent` stays discarded, and
 Slack work (an authorization audit record, the enterprise-id reload) would run again
 on every tick.
 
+The applier is Slack's alone. The other channels read `agent.default_agent` at the
+point of use (`agent_switch_command.LiveDefaultAgent`, keeping the last value while
+the section is discarded, as this applier does, and pinning it per conversation
+until the conversation rotates), so they need no applier; see
+[messaging](messaging.md) § Live configuration.
+
 ## Subagent & Cron Acknowledgment
 
 Subagent completion and cron execution results post to both dashboard (WebSocket) and Slack (DM with ack button). Shared `ack_button()` helper in `interactions_context.py` handles button replacement:
