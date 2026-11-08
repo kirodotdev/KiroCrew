@@ -3492,6 +3492,7 @@
         "endAndReview": "종료하고 검토",
         "ended": "종료됨",
         "endingReview": "종료 중 — 검토를 준비하고 있습니다…",
+        "exportHtml": "{{name}}의 출력을 HTML로 내보내기",
         "exportMarkdown": "{{name}}의 출력을 Markdown으로 내보내기",
         "live": "진행 중",
         "loadFailed": "이 회의를 열 수 없습니다",

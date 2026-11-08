@@ -3636,6 +3636,7 @@
         "endAndReview": "Termina e passa in revisione",
         "ended": "Terminata",
         "endingReview": "Chiusura — preparazione della revisione…",
+        "exportHtml": "Esporta l’output di {{name}} come HTML",
         "exportMarkdown": "Esporta l’output di {{name}} come Markdown",
         "live": "In corso",
         "loadFailed": "Non è stato possibile aprire questa riunione",

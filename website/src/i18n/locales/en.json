@@ -2173,6 +2173,7 @@
         "back": "Back",
         "endAndReview": "End and review",
         "ended": "Ended",
+        "exportHtml": "Export {{name}} output as HTML",
         "exportMarkdown": "Export {{name}} output as Markdown",
         "live": "Live",
         "loadFailed": "Could not open this meeting",
