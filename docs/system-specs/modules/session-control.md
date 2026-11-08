@@ -2545,7 +2545,9 @@ one set of refusal codes. The revived slot is idle — nothing runs until a
 `session_send` — and the reply carries its live key so every other verb can
 address it. A `folder_id` files it as part of the same call, after the revive
 has landed and only after the folder's existence was confirmed BEFORE anything
-was revived, so a refused filing leaves history untouched.
+was revived, so a refused filing leaves history untouched. A filing refused after
+the revive puts the session back into its own folder only while that folder still
+exists; one deleted meanwhile leaves it unfiled.
 
 **There is no live slot to authorize against, so the target-side checks read
 the persisted metadata line instead** — the same fields `authorize_target` reads

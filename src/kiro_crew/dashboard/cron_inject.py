@@ -541,7 +541,8 @@ async def _commit_cron_tab_placement(
             )
         if not committed:
             if getattr(slot, "folder_id", "") == placed:
-                slot.folder_id = restore_to
+                # `restore_to` can be deleted while the save awaits: never back into it.
+                slot.folder_id = restore_to if chat_folder_exists(state, restore_to) else ""
             logger.warning("Cron '%s': folder placement of %s did not commit", job.name, slot.key)
         state.push_slots_update()
         return committed
