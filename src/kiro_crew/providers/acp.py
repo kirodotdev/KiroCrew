@@ -178,6 +178,7 @@ class AcpProvider(LLMProvider):
         on_gate_queued: Callable[..., None] | None = None,
         disposable_work_dir: bool = False,
         side_read_only: bool = False,
+        include_memory: bool = True,
     ) -> None:
         # An unrecognized backend would pass every ``_is_<backend>`` check and
         # spawn kiro-cli, so a typo'd config would drive the wrong agent with no
@@ -207,6 +208,9 @@ class AcpProvider(LLMProvider):
             # A Side Chat session that may run read-only tools; the claude client
             # starts it confined (AcpClient._claude_session_meta). Inert on kiro-cli.
             "side_read_only": side_read_only,
+            # A sub-agent spawned with ``include_memory=false``; the claude client
+            # keeps Claude Code's auto-memory out of it. Inert on kiro-cli.
+            "include_memory": include_memory,
         }
         if agent:
             kwargs["agent"] = agent

@@ -99,6 +99,9 @@ class _Session:
     # ``allocation_identity`` so a reset successor or a compaction restart is
     # asked for the same copy rather than the bare name.
     app_launch_agent: str = ""
+    # False for a sub-agent cold-started with ``include_memory=false``. Carried by
+    # ``allocation_identity`` so its successor keeps the harness's memory out too.
+    include_memory: bool = True
     # The profile ``aws.project_profiles`` set on this session's process at its
     # cold start; ``None`` when the binding set none (no map, an unbound
     # directory, a caller that chose its own profile, a pooled process). A
