@@ -1050,6 +1050,21 @@ class TestApiTerminalCreate:
         assert resp.status == 409
 
     @pytest.mark.asyncio
+    async def test_at_the_cap_a_detached_shell_leaves_room(self):
+        # The WebSocket open that follows ends the detached shell to make room,
+        # so the create goes through and leaves that shell to the open.
+        detached = _make_session(session_id="detached", disconnect=-1e9)
+        registry = {"connected": _make_session(session_id="connected"), "detached": detached}
+        req = _make_request(registry=registry)
+        with patch.object(
+            terminal, "_get_config", return_value={"enabled": True, "max_sessions": 2}
+        ), patch.object(terminal, "_sel") as mock_sel:
+            mock_sel.return_value.log_api_access = MagicMock()
+            resp = await terminal.api_terminal_create(req)
+        assert resp.status == 200
+        assert registry["detached"] is detached and set(registry) == {"connected", "detached"}
+
+    @pytest.mark.asyncio
     async def test_respects_custom_max_sessions(self):
         registry = {"s1": _make_session()}
         req = _make_request(registry=registry)
