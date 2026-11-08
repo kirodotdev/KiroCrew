@@ -216,7 +216,8 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, prompt: 'str', run_chat_coro: 'Callable[[DashboardState, "
         "_ChatSlot, str], Coroutine[Any, Any, None]]', state: "
         "'DashboardState', *, extra_meta: 'dict[str, Any] | None' = None, "
-        "relay_meta: 'dict[str, Any] | None' = None) -> 'bool'",
+        "relay_meta: 'dict[str, Any] | None' = None, workflow_followup: 'bool' = "
+        "False) -> 'bool'",
     ),
     "flush_deferred_notes": (
         "function",

@@ -983,7 +983,7 @@ _SESSION_START_REPEAT_REFUSAL_AT = 2
 #: one above them -- the mirror of ``INJECT_KIND_OPENS_TURN`` in
 #: ``website/src/pages/chat/RecoveryCard.tsx`` (``recovery`` and
 #: ``user_replay`` continue the same turn and are deliberately absent).
-_TURN_OPENING_INJECT_KINDS = frozenset({"cron", "synthesis"})
+_TURN_OPENING_INJECT_KINDS = frozenset({"cron", "synthesis", "workflow"})
 
 
 def _has_conversation(slot: _ChatSlot) -> bool:

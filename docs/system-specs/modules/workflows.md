@@ -1601,7 +1601,9 @@ the redacted event plus the run's `session_key`, and the frontend
 (`website/src/apps/workflows/runModel.ts`) folds the stream into a phase tree and a
 budget snapshot. On a terminal state, `dashboard/workflow_inject.py` posts the
 result into the originating chat slot and starts (or queues) an agent turn so the
-user gets a synthesized answer rather than a raw blob.
+user gets a synthesized answer rather than a raw blob. That turn's prompt is the
+gateway's own words: it lands as an `inject` row (`injectKind: workflow`) on both the
+idle and the queued path, never as the user's bubble, and runs as a synthetic payload.
 
 A finished run's message carries its result as a `json` block when the serialized
 result is at most `_MAX_RESULT_CHARS` (4,000) characters. A longer result is cut to

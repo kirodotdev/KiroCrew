@@ -7,6 +7,7 @@ publication, and its cancellation at shutdown.
 from __future__ import annotations
 
 import asyncio
+import functools
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -72,7 +73,14 @@ async def _initialize_workflow_service(state: DashboardState) -> None:
                         "came back incomplete, say that plainly and state what is "
                         "still unknown."
                     )
-                    started = slot.enqueue_or_run_prompt(prompt, _run_chat, state)
+                    # The gateway's words, not the person's: an `inject` row on the
+                    # run and queued paths alike, and a synthetic payload for its turn.
+                    started = slot.enqueue_or_run_prompt(
+                        prompt,
+                        functools.partial(_run_chat, _synthetic_payload=True),
+                        state,
+                        workflow_followup=True,
+                    )
                     state.push_slots_update()
                     logger.info(
                         "workflow %s result -> chat slot %s: agent turn %s",
