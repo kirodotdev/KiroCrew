@@ -15,7 +15,20 @@ Gateway session auth (token/cookie) gates the proxy entrance as with all builtin
 
 1. **Worktree discovery** — enumerates git worktrees via `git worktree list --porcelain`,
    dropping records git flags `prunable` (checkout directory deleted without a
-   `git worktree prune`); the primary checkout is never dropped, since it anchors `is_main`
+   `git worktree prune`); the primary checkout is never dropped, since it anchors `is_main`.
+   That git runs in the agent sandbox, which masks the whole scratch root, so a worktree under
+   any session's `$KIROCREW_SCRATCH` also reads as `prunable` and is dropped. A name lookup that
+   finds nothing else (`repository._find_worktree`, behind `pod_up` / `pod_status` /
+   `pod_restart` / `pod_down`) checks for that case (`scratch_worktrees`) and answers with the
+   scratch path and the commands that recreate it under `<repo>/.worktrees/`, instead of
+   `worktree not found`: `test -d <path>` first, since the name match spans every session's
+   scratch and only the owning session can see the tree (on a missing path `git worktree
+   remove` exits 0 and drops the owner's record, dirty or not), then
+   `git worktree remove` (which refuses uncommitted work), then
+   `git worktree add` on the same branch; a detached tree first gets a branch named after
+   it (`git switch -c`), so a commit made after the refusal is not orphaned by the remove. Not
+   `git worktree move`: in an agent's sandboxed shell the scratch dir is its own mount,
+   so the move fails with `Invalid cross-device link`
 2. **Pod integration** — spin up/down/restart isolated pod instances per worktree
 3. **Pull+Build sync** — pull the resolved base branch and rebuild (venv + frontend dist)
 4. **Prune** — safely remove merged/empty worktrees with PR-shipped verification
