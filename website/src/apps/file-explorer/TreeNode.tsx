@@ -13,16 +13,24 @@ function gitBadge(code: string | null) {
   const c = code.trim()
   let color = 'var(--warn)'
   let label = c
-  if (c === '??') { label = 'U'; color = 'var(--accent)' }
-  else if (c.startsWith('M') || c.endsWith('M')) { label = 'M'; color = 'var(--warn)' }
-  else if (c.startsWith('A') || c.endsWith('A')) { label = 'A'; color = 'var(--ok)' }
-  else if (c.startsWith('D') || c.endsWith('D')) { label = 'D'; color = 'var(--danger)' }
-  else if (c.startsWith('R')) { label = 'R'; color = 'var(--accent)' }
+  let name = ''
+  if (c === '??') { label = 'U'; color = 'var(--accent)'; name = i18nT('apps.fileExplorer.treeNode.git_untracked') }
+  else if (c.startsWith('M') || c.endsWith('M')) { label = 'M'; color = 'var(--warn)'; name = i18nT('apps.fileExplorer.treeNode.git_modified') }
+  else if (c.startsWith('A') || c.endsWith('A')) { label = 'A'; color = 'var(--ok)'; name = i18nT('apps.fileExplorer.treeNode.git_added') }
+  else if (c.startsWith('D') || c.endsWith('D')) { label = 'D'; color = 'var(--danger)'; name = i18nT('apps.fileExplorer.treeNode.git_deleted') }
+  else if (c.startsWith('R')) { label = 'R'; color = 'var(--accent)'; name = i18nT('apps.fileExplorer.treeNode.git_renamed') }
   else if (c === '!!') return null
+  else name = i18nT('apps.fileExplorer.treeNode.git_status_code', { code: c })
+  // The letter is a sighted shorthand: inside the row's name a screen reader read
+  // "app.py M". It hears the status word instead, in the reader's language.
   return (
-    <span title={`git: ${c}`} style={{ fontSize: 9, fontWeight: 600, color, marginLeft: 4, border: `1px solid ${color}`, borderRadius: 3, padding: '0 3px', lineHeight: '12px' }}>
-      {label}
-    </span>
+    <>
+      <span aria-hidden="true" title={`git: ${c}`} style={{ fontSize: 9, fontWeight: 600, color, marginLeft: 4, border: `1px solid ${color}`, borderRadius: 3, padding: '0 3px', lineHeight: '12px' }}>
+        {label}
+      </span>
+      {/* Leading space: an inline name computation joins sibling spans with none. */}
+      <span className="sr-only">{` ${name}`}</span>
+    </>
   )
 }
 

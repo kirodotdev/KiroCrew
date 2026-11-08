@@ -2275,7 +2275,13 @@
         "rename_workspace_tab": "Renommer l'onglet d'espace de travail"
       },
       "treeNode": {
-        "loading": "chargement..."
+        "loading": "chargement...",
+        "git_added": "ajouté",
+        "git_deleted": "supprimé",
+        "git_modified": "modifié",
+        "git_status_code": "état git {{code}}",
+        "git_renamed": "renommé",
+        "git_untracked": "non suivi"
       }
     },
     "issueRadar": {

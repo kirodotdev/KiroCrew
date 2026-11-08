@@ -2261,7 +2261,13 @@
         "rename_workspace_tab": "Переименовать вкладку рабочей области"
       },
       "treeNode": {
-        "loading": "загрузка..."
+        "loading": "загрузка...",
+        "git_added": "добавлен",
+        "git_deleted": "удалён",
+        "git_modified": "изменён",
+        "git_status_code": "статус git {{code}}",
+        "git_renamed": "переименован",
+        "git_untracked": "не отслеживается"
       }
     },
     "issueRadar": {

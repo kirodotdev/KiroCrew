@@ -2185,7 +2185,13 @@
         "rename_workspace_tab": "Rinomina la scheda del workspace"
       },
       "treeNode": {
-        "loading": "caricamento..."
+        "loading": "caricamento...",
+        "git_added": "aggiunto",
+        "git_deleted": "eliminato",
+        "git_modified": "modificato",
+        "git_status_code": "stato git {{code}}",
+        "git_renamed": "rinominato",
+        "git_untracked": "non tracciato"
       }
     },
     "issueRadar": {

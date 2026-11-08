@@ -2198,7 +2198,13 @@
         "rename_workspace_tab": "Workspace-Tab umbenennen"
       },
       "treeNode": {
-        "loading": "wird geladen…"
+        "loading": "wird geladen…",
+        "git_added": "hinzugefügt",
+        "git_deleted": "gelöscht",
+        "git_modified": "geändert",
+        "git_status_code": "Git-Status {{code}}",
+        "git_renamed": "umbenannt",
+        "git_untracked": "nicht verfolgt"
       }
     },
     "issueRadar": {
