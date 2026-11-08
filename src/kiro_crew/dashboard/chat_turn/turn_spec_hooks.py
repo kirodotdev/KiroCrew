@@ -687,6 +687,11 @@ async def _surface_withheld_project_hooks(
         )
 
 
+def _on_kas(client) -> bool:
+    """Whether *client* runs on KAS."""
+    return capabilities_of(client).backend == ACP_BACKEND_KAS
+
+
 async def _fire(
     turn,
     event: str,

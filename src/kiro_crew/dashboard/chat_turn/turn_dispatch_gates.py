@@ -70,7 +70,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.turn_context import _detach_appended_context
     from kiro_crew.dashboard.chat_turn.turn_entry import _stop_pressed
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
-    from kiro_crew.dashboard.chat_turn.turn_spec_hooks import _fire
+    from kiro_crew.dashboard.chat_turn.turn_spec_hooks import _fire, _on_kas
 
 
 async def _turn_dispatch_prep(turn: _ChatTurn) -> None:
@@ -318,6 +318,17 @@ async def _turn_dispatch_gates(turn: _ChatTurn) -> _Flow | None:
         return _Flow.END
     if is_new and _sends_prompt:
         spawn_injected = await _fire(turn, HOOK_EVENT_AGENT_SPAWN, session_key)
+        # Defensive on the accessor, like ``turn_bracket.consume_reinjection``.
+        remember = getattr(state.sessions, "remember_agent_spawn_context", None)
+        if callable(remember):
+            remember(session_key, spawn_injected)
+    elif _sends_prompt and turn._needs_reinjection and _on_kas(client):
+        # kiro-cli sends the agentSpawn output with every request; on KAS it
+        # lives only in the history, which a compaction summarized away. Send
+        # the kept output once more, on this first turn after it, unrun.
+        read_kept = getattr(state.sessions, "agent_spawn_context", None)
+        kept = read_kept(session_key) if callable(read_kept) else ()
+        spawn_injected = list(kept) if isinstance(kept, tuple) else []
     else:
         spawn_injected = []
 
