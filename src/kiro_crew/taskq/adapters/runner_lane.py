@@ -284,9 +284,11 @@ class RunnerLane:
             # its queue entry goes (``_running`` is untouched). A future that
             # already holds a grant was resolved before the cancel landed:
             # that slot is handed on. Mirrors ``asyncio.Semaphore.acquire``.
+            # A future :meth:`pump` refused carries an exception, not a grant,
+            # so its cancel has no slot to give back.
             if fut.cancelled():
                 self._waiters = deque(w for w in self._waiters if w[0] is not fut)
-            else:
+            elif fut.exception() is None:
                 self.release(task_id)
             raise
 
