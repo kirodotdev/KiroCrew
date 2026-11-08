@@ -15,6 +15,7 @@ binding; ``kiro_crew.agent`` holds the live one, which the functions read and re
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
@@ -47,6 +48,22 @@ _main_spec_episode_revision = 0
 #: episode. A later skip under the same generation has nothing new to re-filter,
 #: so it runs no sibling pass (:func:`_skip_unreadable_main_spec`).
 _main_spec_skip_generation: int | None = None
+
+#: When (on :data:`_held_pass_clock`) the last sibling pass of this episode ran
+#: and held a sibling spec, or ``None``. A held pass is re-run under an unchanged
+#: generation only once :data:`HELD_SIBLING_PASS_RETRY_SECS` have passed, so the
+#: config watcher's 2-second retry of a pending default-model change does not
+#: rewrite every sibling spec on each tick while one of them stays unreadable.
+_main_spec_held_pass_at: float | None = None
+
+#: How long a held sibling pass waits before the same generation runs it again on
+#: an ordinary skip (the config watcher's retry). The hourly maintenance wake does
+#: not wait for it: it makes the pass due first (:func:`_make_held_sibling_pass_due`).
+HELD_SIBLING_PASS_RETRY_SECS = 1800.0
+
+#: The clock of :data:`_main_spec_held_pass_at`, a module attribute so a test can
+#: step it without touching the process-wide ``time.monotonic``.
+_held_pass_clock = time.monotonic
 
 #: Guards the episode state above and the warning state below. Held only for
 #: bookkeeping, never across a rebuild or a log call.
@@ -111,7 +128,7 @@ def _skip_unreadable_main_spec(
     default-model change every tick, and each retry lands here.
     """
     global _conductor_spec_held, _main_spec_unreadable, _main_spec_skip_generation
-    global _main_spec_episode_revision
+    global _main_spec_episode_revision, _main_spec_held_pass_at
     from kiro_crew.platform.governance_profiles import governance_answer_generation
 
     cause = exc.__cause__
@@ -133,12 +150,20 @@ def _skip_unreadable_main_spec(
     # retries a pending default-model change every tick, and each retry lands
     # here, where a repeat pass under an unchanged generation re-filters nothing.
     # A pure read, no filesystem access.
-    # The generation is recorded only after a pass that raised nothing, held no
-    # conductor write and left no fork refresh deferred: a deferred refresh (the
-    # boot path) settles after this returns, and a crew-bound shared template it
-    # then holds is retried only by a later pass under the same generation.
+    # The generation is recorded only after a pass that raised nothing and left
+    # no fork refresh deferred: a deferred refresh (the boot path) settles after
+    # this returns, and a crew-bound shared template it then holds is retried
+    # only by a later pass under the same generation. A pass that held a sibling
+    # spec records the generation too, with its time, and runs again under it
+    # once HELD_SIBLING_PASS_RETRY_SECS have passed (the hourly maintenance wake),
+    # not on each 2-second config-watch retry.
     generation = governance_answer_generation()
-    if first_skip or generation != _main_spec_skip_generation:
+    now = _held_pass_clock()
+    held_retry_due = (
+        _main_spec_held_pass_at is not None
+        and now - _main_spec_held_pass_at >= HELD_SIBLING_PASS_RETRY_SECS
+    )
+    if first_skip or generation != _main_spec_skip_generation or held_retry_due:
         try:
             gated_off = managed_mcp._gated_off_servers()
             sibling_held = _install_sibling_specs(
@@ -149,14 +174,30 @@ def _skip_unreadable_main_spec(
             # conductor installers' own verdict, which knows nothing of this skip.
             with _main_spec_episode_lock:
                 _conductor_spec_held = True
-        if not sibling_held and refresh_forks != "defer":
+        if refresh_forks != "defer":
             with _main_spec_episode_lock:
                 _main_spec_skip_generation = generation
+                _main_spec_held_pass_at = now if sibling_held else None
     if wrote_out is not None:
         wrote_out.append(False)
     if held_out is not None:
         held_out.append(True)
     return path
+
+
+def _make_held_sibling_pass_due() -> None:
+    """Let the next skip re-run a held sibling pass now, whatever its interval.
+
+    The hourly maintenance wake (``retry_held_conductor_specs``) calls this before its
+    rebuild. That wake is the retry a held conductor spec relies on, and it runs on its
+    own schedule, so it may land inside :data:`HELD_SIBLING_PASS_RETRY_SECS` of a pass
+    another rebuild (the ceiling hook, the profile watch) ran; only the config watcher's
+    2-second retries are held to the interval.
+    """
+    global _main_spec_held_pass_at
+    with _main_spec_episode_lock:
+        if _main_spec_held_pass_at is not None:
+            _main_spec_held_pass_at = float("-inf")
 
 
 def _note_main_spec_readable(path: Path, episode_revision: int) -> None:
@@ -167,12 +208,13 @@ def _note_main_spec_readable(path: Path, episode_revision: int) -> None:
     this write never read past, so it stays open and held. Clears the episode's
     warning state too, so the next episode warns again.
     """
-    global _main_spec_unreadable, _main_spec_skip_generation
+    global _main_spec_unreadable, _main_spec_skip_generation, _main_spec_held_pass_at
     with _main_spec_episode_lock:
         if _main_spec_episode_revision != episode_revision:
             return
         was_open = _main_spec_unreadable
         _main_spec_skip_generation = None
+        _main_spec_held_pass_at = None
         _main_spec_unreadable = False
         _main_spec_warned.clear()
     if was_open:
