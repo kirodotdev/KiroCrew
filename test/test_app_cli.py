@@ -237,11 +237,12 @@ class TestHandleApp:
 
 
 class TestFileOnlyInstallRegistration:
-    """A file-only `app install` registers under the gateway's install rule.
+    """A file-only `app install` registers nothing, under the gateway's install rule.
 
-    The gateway's install route registers a fresh install's resources unless the
-    app waits for session-approval consent (``_app_may_run_after_install``). The
-    CLI path, taken when no gateway answers, follows the same rule.
+    The gateway's install route registers resources only for an enabled record
+    (``_app_may_run_after_install``), and an install writes its record disabled.
+    The CLI path, taken when no gateway answers, follows the same rule and leaves
+    registration to ``app enable``.
     """
 
     def _install(self, monkeypatch, src):
@@ -281,13 +282,22 @@ class TestFileOnlyInstallRegistration:
         assert "stays off until enabled from the dashboard" in out
         assert "Run: kirocrew app enable cli-test-app" in out
 
-    def test_a_plain_app_still_registers(self, tmp_path, app_env, monkeypatch, capsys):
+    def test_a_plain_app_registers_nothing_until_enabled(
+        self, tmp_path, app_env, monkeypatch, capsys
+    ):
+        from kiro_crew.apps.manager import _read_installed
+
         src = _make_app_source(tmp_path)
 
         registered = self._install(monkeypatch, src)
 
-        assert registered == ["cli-test-app"]
-        assert "session approval" not in capsys.readouterr().out
+        assert registered == []
+        meta = _read_installed("cli-test-app")
+        assert meta is not None
+        assert meta.enabled is False
+        out = capsys.readouterr().out
+        assert "session approval" not in out
+        assert "Run: kirocrew app enable cli-test-app" in out
 
 
 class TestEnableWarnsHooksNeedRestart:
