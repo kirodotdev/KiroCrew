@@ -7023,6 +7023,7 @@
       "stop_failed_server": "Le serveur a rencontré un problème et n’a pas pu arrêter ce tour. Appuie de nouveau sur Arrêter.",
       "stop_failed_signed_out": "Tu es déconnecté, rien n’a été arrêté. Reconnecte-toi, puis appuie sur Arrêter.",
       "stop_failed_network": "Impossible de joindre le serveur pour arrêter ce tour. Appuyez de nouveau sur Arrêter.",
+      "stop_failed_owner_only": "Seul le propriétaire du tableau de bord peut arrêter cette exécution. Demande-lui de l’arrêter.",
       "split_down": "Diviser vers le bas",
       "split_right": "Diviser vers la droite",
       "split_right_d": "Diviser vers la droite (⌘D)",

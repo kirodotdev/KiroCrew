@@ -6842,6 +6842,7 @@
       "stop_failed_server": "Auf dem Server ist ein Fehler aufgetreten, der Zug wurde nicht gestoppt. Drücke erneut auf „Stopp“.",
       "stop_failed_signed_out": "Du bist abgemeldet, es wurde nichts gestoppt. Melde dich erneut an und drücke dann „Stopp“.",
       "stop_failed_network": "Der Server war nicht erreichbar, der Zug konnte nicht gestoppt werden. Drücken Sie erneut auf „Stopp“.",
+      "stop_failed_owner_only": "Nur der Besitzer des Dashboards kann diesen Lauf stoppen. Bitte den Besitzer, ihn zu stoppen.",
       "split_down": "Nach unten teilen",
       "split_right": "Nach rechts teilen",
       "split_right_d": "Nach rechts teilen (⌘D)",

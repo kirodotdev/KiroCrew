@@ -7023,6 +7023,7 @@
       "stop_failed_server": "El servidor tuvo un problema y no pudo detener este turno. Pulsa Detener de nuevo.",
       "stop_failed_signed_out": "Has cerrado sesión, así que no se detuvo nada. Inicia sesión de nuevo y pulsa Detener.",
       "stop_failed_network": "No se pudo contactar con el servidor para detener este turno. Pulsa Detener de nuevo.",
+      "stop_failed_owner_only": "Solo el propietario del panel puede detener esta ejecución. Pídele que la detenga.",
       "split_down": "Dividir abajo",
       "split_right": "Dividir a la derecha",
       "split_right_d": "Dividir a la derecha (⌘D)",

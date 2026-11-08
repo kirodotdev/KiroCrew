@@ -713,10 +713,16 @@ async def stop_slot_turn(
             )
             return {"ok": True, "info": "stopping linked turn"}
         if cancel_key.startswith("cron:") and not cron_cancel:
-            # A caller the cron cancel route refuses leaves the run alone, as a cron
-            # tab's Stop always did before it could reach the run.
-            logger.info("Stop: slot %s not running, ignoring", name)
-            return {"ok": True, "info": "not running"}
+            # A caller the cron cancel route refuses leaves the run alone, and is
+            # told so with that route's own code: "not running" would idle the
+            # pane and hide Stop while the run goes on.
+            logger.info("Stop: slot %s runs a cron this caller may not cancel", name)
+            return {
+                "ok": False,
+                "error": "only the dashboard owner can stop a scheduled run",
+                "code": "owner_only",
+                "retryable": False,
+            }
         # Same escape rules as the dashboard's own turn above: a hard stop is
         # only the way out of a compaction decline (the armed second press, or
         # an explicit force), and a marker for a compaction that has ended is
