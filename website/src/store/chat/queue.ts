@@ -5,7 +5,7 @@ import type { PayloadAction } from '@reduxjs/toolkit'
 import type { ChatMessage } from '../../types'
 import type { ChatState } from './state'
 import { quoteBlock } from '../../chat-core/composer/messageQuote'
-import { isUnsafeKey, queueEntryAttachments, queueEntryBanner, queueEntryPastes, queueEntryQuote, queueEntryRelay, queueEntrySendId, safeKey, type QueueEntryAttachments, type SlotQueueItem } from './wire'
+import { isUnsafeKey, queueEntryAttachments, queueEntryBanner, queueEntryKnowledgeEnvelope, queueEntryPastes, queueEntryQuote, queueEntryRelay, queueEntrySendId, safeKey, type QueueEntryAttachments, type SlotQueueItem } from './wire'
 import type { PasteBlock } from '../../utils/pasteTokens'
 
 /** A queued row's paste blocks (`queueEntryPastes` put them there): what the
@@ -301,7 +301,7 @@ export const queueReducers = {
       // `kind` and `appLabel` too, as hydration keeps them: a cron or app card
       // classifies by them (not editable, not restored into the composer).
       const tags = (meta ?? {}) as Record<string, unknown>
-      appendCorrelatedQueue(msgs, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(typeof tags.kind === 'string' && tags.kind ? { kind: tags.kind } : {}), ...(typeof tags.appLabel === 'string' && tags.appLabel ? { appLabel: tags.appLabel } : {}), ...(tags.requeuedSteer === true ? { requeuedSteer: true } : {}), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntryBanner(meta), ...queueEntrySendId(meta), ...queueEntryPastes(content) } })
+      appendCorrelatedQueue(msgs, { role: 'queued', content, cls: 'msg msg-queued', ts, meta: { queueId, ...(typeof tags.kind === 'string' && tags.kind ? { kind: tags.kind } : {}), ...(typeof tags.appLabel === 'string' && tags.appLabel ? { appLabel: tags.appLabel } : {}), ...(tags.requeuedSteer === true ? { requeuedSteer: true } : {}), ...queueEntryAttachments(meta), ...queueEntryQuote(meta), ...queueEntryBanner(meta), ...queueEntrySendId(meta), ...queueEntryKnowledgeEnvelope(meta), ...queueEntryPastes(content) } })
     },
     prepare(payload: { slot: string; content: string; ts: string; queue_id?: string; meta?: unknown }) {
       return { payload: { ...payload, queueId: payload.queue_id || crypto.randomUUID() } }

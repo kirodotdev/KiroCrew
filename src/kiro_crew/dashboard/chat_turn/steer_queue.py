@@ -11,6 +11,7 @@ from kiro_crew.dashboard.chat_delivery import (
     STEER_STATE_REQUEUED,
     attachment_meta,
     find_written_steer_row,
+    knowledge_meta,
     queued_text_for_display,
     quote_meta,
 )
@@ -468,6 +469,7 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
                 # Same rule the entry's text follows (`queue_entry_is_user_origin`):
                 # the human's own words stay as typed, anyone else's are redacted.
                 **quote_meta(_meta, user_origin=_requeue_user_origin and not _channel),
+                **knowledge_meta(_meta),
             }
             from kiro_crew.dashboard.chat_delivery import normalize_send_id
 

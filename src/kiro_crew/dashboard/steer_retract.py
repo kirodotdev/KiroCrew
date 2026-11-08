@@ -54,6 +54,7 @@ from kiro_crew.dashboard.chat_delivery import (
     attachment_meta,
     banner_meta,
     find_written_steer_row,
+    knowledge_meta,
     queue_for_next_turn,
     quote_meta,
 )
@@ -407,6 +408,7 @@ def take_back(state: "DashboardState", slot: "_ChatSlot", record: SteerRetract) 
             attachments=attachment_meta(held),
             quote=quote_meta(held).get("quote"),
             banner=banner_meta(held).get(CHAT_BANNER_META_KEY, ""),
+            knowledge=knowledge_meta(held),
             admission=record.admission,
         )
         crew_steer_requeued(

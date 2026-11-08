@@ -56,6 +56,7 @@ if TYPE_CHECKING:
         effective_session_key,
         is_claude_code,
         is_registered_agent_name,
+        knowledge_meta,
         load_window_off_loop,
         logger,
         maybe_auto_link_slack,
@@ -1301,6 +1302,7 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             attachments=attachment_meta(user_meta),
             quote=quote_meta(user_meta).get("quote"),
             banner=banner,
+            knowledge=knowledge_meta(user_meta),
             # The receipt travels whichever way the send went, including the one
             # case where the two disagree: `auto` answered steer and the steer was
             # UNAVAILABLE, so this path runs with a record saying steer. That is the
@@ -1392,6 +1394,8 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         _hold_attachments = attachment_meta(user_meta)
         _hold_meta.update(_hold_attachments)
         _hold_meta.update(quote_meta(user_meta))
+        _hold_knowledge = knowledge_meta(user_meta)
+        _hold_meta.update(_hold_knowledge)
         if banner:
             _hold_meta[CHAT_BANNER_META_KEY] = banner
         if request_app or cron_creator or _agent_origin:
@@ -1456,6 +1460,8 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             _hold_push.setdefault("meta", {})["quote"] = _hold_meta["quote"]
         if banner:
             _hold_push.setdefault("meta", {})[CHAT_BANNER_META_KEY] = banner
+        if _hold_knowledge:
+            _hold_push.setdefault("meta", {}).update(_hold_knowledge)
         state.broadcast_ws("queue_push", _hold_push)
         if _teardown_hold:
             # Deduped, so this only matters when no decline armed one: the retry

@@ -858,7 +858,9 @@ describe('SideChat: the conversation closes in another tab while a question is o
     const socket = WS_INSTANCES[0]
     const user = userEvent.setup()
     await user.click(screen.getByLabelText('Edit queued message'))
-    expect(screen.getByLabelText('Edit queued message')).toHaveValue('saved question')
+    // A side card carries no envelope mark (side chat sends no knowledge), so
+    // the editor opens on the whole text.
+    expect(screen.getByLabelText('Edit queued message')).toHaveValue(saved)
     await user.clear(screen.getByLabelText('Edit queued message'))
 
     act(() => {
