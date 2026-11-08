@@ -151,7 +151,11 @@ from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import canonical_key
-from kiro_crew.messaging.renderer import count_redaction_tags, redaction_notice
+from kiro_crew.messaging.renderer import (  # noqa: F401 - read by the owners
+    count_redaction_tags,
+    redaction_notice,
+    trusted_mcp_identity,
+)
 from kiro_crew.messaging.session_trust import _trusted_sessions as _shared_trusted_sessions
 from kiro_crew.messaging.session_trust import (  # noqa: F401 - read by the owners
     add_trusted_session as _add_trusted_session,
@@ -225,6 +229,7 @@ from kiro_crew.slack.format import (  # noqa: F401 - read by the owners
     SLACK_MSG_LIMIT,
     TRUNCATION_NOTICE,
     _convert_tables,
+    escape_mrkdwn,
     extract_options,
     is_wait_identity,
     render_one_for_slack,
@@ -287,6 +292,7 @@ from kiro_crew.slack.handler_runtime.approvals import (  # noqa: F401
     _LinkedApprovalEvent,
     _PendingApproval,
     _resolve_linked_click,
+    mcp_identity_text,
     post_linked_approval,
     resolve_linked_approval,
 )
@@ -490,6 +496,11 @@ _SLACK_SECTION_TEXT_LIMIT = 2900
 
 # Truncation marker appended when tool_input exceeds the limit
 _TRUNCATION_MARKER = "\n… [truncated]"
+
+# Bound on each name an approval card's MCP identity line shows, taken before
+# escaping: a kept name runs to 512 characters and escaping can grow it fourfold,
+# so two unbounded names could pass the 3000 characters Slack allows one text.
+_IDENTITY_NAME_MAX = 200
 
 # Slack UX strings
 _THINKING = "_Thinking…_"

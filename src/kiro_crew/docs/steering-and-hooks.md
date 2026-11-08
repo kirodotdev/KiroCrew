@@ -173,6 +173,13 @@ tool is running by the time hooks fire, so the same hook is informational there
 Write a `PreToolUse` hook as a policy that holds where it is consulted, not as a
 guarantee the tool can never run.
 
+**Approving a call does not run its `PreToolUse` hooks again.** The approval
+card adds no run of its own. On a backend that also reports a call's start to
+the gateway, as kiro-cli does, a Hooks-tab hook also gets the informational run
+at that notice, described just above, so a hook that counts, rate-limits or
+audits calls sees a call that asks for approval twice there: once at the notice
+and once at its approval request.
+
 On every other event a non-zero exit is warn-only: the run is recorded against
 the hook with its error, and the turn continues.
 

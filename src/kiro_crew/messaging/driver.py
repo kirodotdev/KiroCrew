@@ -79,6 +79,7 @@ from kiro_crew.messaging.renderer import (
     TOOL_RESULT,
     OutputEvent,
     Renderer,
+    trusted_mcp_identity,
 )
 from kiro_crew.messaging.script_hooks import (
     ScriptHookTurn,
@@ -1251,6 +1252,9 @@ class TurnDriver:
                     # not immediately preceded by its own, informed consent on a
                     # security prompt, so the correct name travels WITH the ask.
                     _tool_call_id = str(getattr(event, "tool_call_id", "") or "")
+                    # WHICH server the call goes to, from the trusted identity
+                    # only: the title cannot say, and the model wrote it.
+                    _mcp_server, _mcp_tool = trusted_mcp_identity(event)
                     await self.renderer.dispatch(
                         OutputEvent(
                             kind=PROMPT_CHOICE,
@@ -1266,6 +1270,8 @@ class TurnDriver:
                             # channel, so it takes the same redaction as everything
                             # else on this path.
                             tool_input=_redact(getattr(event, "tool_input", "") or ""),
+                            mcp_server=_redact(_mcp_server),
+                            tool_name=_redact(_mcp_tool),
                         )
                     )
                 approved = await self._approve(event)
