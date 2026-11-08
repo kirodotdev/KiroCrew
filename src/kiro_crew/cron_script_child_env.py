@@ -58,12 +58,28 @@ def _clean_cron_env() -> dict[str, str]:
     key of it that is present is re-pointed at :func:`_default_temp_dir`, so a
     child never inherits a temp directory that has vanished under this
     process (see that function). Absent keys stay absent.
+
+    ``PATH`` is composed the way an agent session's is, so a cron child resolves
+    the same tools an agent child does. Blocking: a ``~user`` contributed dir is
+    expanded through a directory-service lookup, so call it off the event loop
+    (every caller runs on the cron worker thread or in the script child).
     """
     env = {
         k: v
         for k, v in os.environ.items()
         if k not in _CRON_ENV_DENY and k not in _GRANTED_ENV_KEYS
     }
+    if "PATH" in env:
+        # The PATH an agent session child gets (``acp.launch``): the well-known
+        # user tool dirs, then the contributed MCP dirs trailing. A gateway
+        # started from the Dock or a service unit carries a bare system PATH, so
+        # without this a command cron, a script's bare subprocess and the MCP
+        # servers ``ctx.call_tool`` starts cannot find ``node`` or a tool in
+        # ``~/.local/bin``. An absent PATH stays absent. Imported here,
+        # as ``_publish_script_session_token`` does, so the facade serves no new name.
+        from kiro_crew.env import append_mcp_path_dirs, augmented_path
+
+        env["PATH"] = append_mcp_path_dirs(augmented_path(env["PATH"]))
     present = [k for k in CANONICAL_TEMP_KEYS if k in env]
     if present:
         temp_dir = _default_temp_dir()

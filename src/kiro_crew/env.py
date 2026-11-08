@@ -101,6 +101,8 @@ _EXTRA_PATH_DIRS = (
 # even so -- :func:`augmented_path` and :func:`spec_env_path` keep the
 # contribution out, :func:`mcp_runtime_path` wraps the former rather than
 # altering it, and nothing is persisted.
+# A script or command cron child gets the same PATH as the agent child
+# (``cron_script_child_env._clean_cron_env``).
 #
 # A second exception, the agent child (kiro-cli), which starts an unwrapped
 # bare-name server itself: see :func:`append_mcp_path_dirs`.
