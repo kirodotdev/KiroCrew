@@ -51,15 +51,20 @@ def viewer(monkeypatch):
         tunnel.relay_viewer_enabled = state.enabled
         return tunnel
 
-    async def _bearer(ref):
-        return BEARER
+    state.token_type = ""
+    state.token_types = []
 
-    async def _list(url, bearer):
+    async def _bearer(ref, rejected=""):
+        return BEARER, state.token_type
+
+    async def _list(url, bearer, *, token_type=""):
         state.calls.append(("list", bearer))
+        state.token_types.append(("list", token_type))
         return (CREW,)
 
-    async def _mint(url, bearer, endpoint_id):
+    async def _mint(url, bearer, endpoint_id, *, token_type=""):
         state.calls.append(("mint", endpoint_id))
+        state.token_types.append(("mint", token_type))
         return cps.CrewAccessToken(ACCESS, 2000.0, 240.0, 1700.0)
 
     async def _owner(request, operation):
@@ -146,7 +151,7 @@ async def test_crews_needs_the_owner(viewer) -> None:
 
 @pytest.mark.asyncio
 async def test_a_cps_refusal_passes_its_code_through(viewer, monkeypatch) -> None:
-    async def _throttled(url, bearer):
+    async def _throttled(url, bearer, *, token_type=""):
         raise cps.CpsRefused(cps.THROTTLED, "slow down", status=429, retry_after=7.0)
 
     monkeypatch.setattr(cps, "list_crew_endpoints", _throttled)
@@ -275,3 +280,180 @@ async def test_sign_in_missing_is_signed_out(monkeypatch) -> None:
     with pytest.raises(cps.CpsRefused) as exc:
         await rv._bearer("")
     assert exc.value.code == cps.SIGNED_OUT
+
+
+@pytest.mark.asyncio
+async def test_the_token_type_reaches_both_the_list_and_the_mint(viewer) -> None:
+    viewer.token_type = "EXTERNAL_IDP"
+    async with _client() as client:
+        assert (await client.get("/api/relay-viewer/crews")).status == 200
+        assert (await _mint(client)).status == 200
+    assert viewer.token_types == [
+        ("list", "EXTERNAL_IDP"),
+        ("list", "EXTERNAL_IDP"),
+        ("mint", "EXTERNAL_IDP"),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("auth_method", "token_type"),
+    [("external_idp", "EXTERNAL_IDP"), ("identity_center", ""), (None, "")],
+)
+async def test_the_sign_in_names_its_token_type(monkeypatch, auth_method, token_type) -> None:
+    from kiro_crew.auth.provider import KasAuthProvider
+
+    async def _current(self):
+        return SimpleNamespace(access_token=BEARER, auth_method=auth_method)
+
+    monkeypatch.setattr(KasAuthProvider, "current", _current)
+    assert await rv._bearer("") == (BEARER, token_type)
+
+
+@pytest.mark.asyncio
+async def test_the_test_credential_sends_no_token_type(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "kiro_crew.relay_client.lease.read_lease_credential", lambda ref: "test-credential-value"
+    )
+    assert await rv._bearer("file:/somewhere") == ("test-credential-value", "")
+
+
+FRESH = "bearer-sign-in-refreshed-0a1b2c"
+
+
+def _refusing_list(viewer, monkeypatch, refusals):
+    """``list_crew_endpoints`` answers each scripted HTTP status as a refusal, then lists."""
+    seen = []
+
+    async def _bearer(ref, rejected=""):
+        seen.append(rejected)
+        return (FRESH if rejected else BEARER), ""
+
+    async def _list(url, bearer, *, token_type=""):
+        viewer.calls.append(("list", bearer))
+        if refusals:
+            status = refusals.pop(0)
+            code = cps.SIGNED_OUT if status == 401 else cps.ACCESS_DENIED
+            raise cps.CpsRefused(code, "refused", status=status)
+        return (CREW,)
+
+    monkeypatch.setattr(rv, "_bearer", _bearer)
+    monkeypatch.setattr(cps, "list_crew_endpoints", _list)
+    return seen
+
+
+@pytest.mark.asyncio
+async def test_a_cps_401_refreshes_the_sign_in_and_resends_once(viewer, monkeypatch) -> None:
+    seen = _refusing_list(viewer, monkeypatch, [401])
+    async with _client() as client:
+        resp = await _mint(client)
+    assert resp.status == 200
+    assert seen == ["", BEARER]
+    assert viewer.calls == [("list", BEARER), ("list", FRESH), ("mint", EP)]
+
+
+@pytest.mark.asyncio
+async def test_a_second_cps_401_is_signed_out_after_one_refresh(viewer, monkeypatch) -> None:
+    seen = _refusing_list(viewer, monkeypatch, [401, 401])
+    async with _client() as client:
+        resp = await client.get("/api/relay-viewer/crews")
+        body = await resp.json()
+    assert (resp.status, body["code"]) == (409, "SIGNED_OUT")
+    assert seen == ["", BEARER]
+    assert viewer.calls == [("list", BEARER), ("list", FRESH)]
+
+
+@pytest.mark.asyncio
+async def test_a_cps_403_does_not_refresh(viewer, monkeypatch) -> None:
+    seen = _refusing_list(viewer, monkeypatch, [403])
+    async with _client() as client:
+        resp = await client.get("/api/relay-viewer/crews")
+    assert resp.status == 403
+    assert seen == [""]
+
+
+@pytest.mark.asyncio
+async def test_the_forced_refresh_waits_out_its_cooldown(monkeypatch, caplog) -> None:
+    from kiro_crew.auth.provider import KasAuthProvider
+
+    caplog.set_level(logging.DEBUG)
+    forced = []
+
+    async def _current(self, *, rejected_access_token=None):
+        forced.append(rejected_access_token)
+        return SimpleNamespace(
+            access_token=FRESH if rejected_access_token else BEARER,
+            auth_method=None,
+            identity="identity_center",
+        )
+
+    monkeypatch.setattr(KasAuthProvider, "current", _current)
+    monkeypatch.setattr(rv, "_FORCED_AT", {})
+    monkeypatch.setattr(rv, "_FORCE_LOCKS", {})
+    now = [1000.0]
+    monkeypatch.setattr(rv, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    assert await rv._bearer("", rejected=BEARER) == (FRESH, "")
+    now[0] += rv.FORCE_COOLDOWN_SECONDS - 1
+    # Inside the cooldown: read again, not forced, so the caller sees the same sign-in.
+    assert await rv._bearer("", rejected=BEARER) == (BEARER, "")
+    now[0] += 1
+    assert await rv._bearer("", rejected=BEARER) == (FRESH, "")
+    # Each call reads once, then again under the lock, and forces only outside the cooldown.
+    assert forced == [None, None, BEARER, None, None, None, None, BEARER]
+    for secret in (BEARER, FRESH):
+        assert secret not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_a_peer_refreshed_sign_in_is_not_forced(monkeypatch) -> None:
+    from kiro_crew.auth.provider import KasAuthProvider
+
+    forced = []
+
+    async def _current(self, *, rejected_access_token=None):
+        forced.append(rejected_access_token)
+        return SimpleNamespace(access_token=FRESH, auth_method=None, identity="identity_center")
+
+    monkeypatch.setattr(KasAuthProvider, "current", _current)
+    monkeypatch.setattr(rv, "_FORCED_AT", {})
+    assert await rv._bearer("", rejected=BEARER) == (FRESH, "")
+    assert forced == [None]
+
+
+@pytest.mark.asyncio
+async def test_two_concurrent_401s_share_one_refresh_and_both_resend(monkeypatch) -> None:
+    import asyncio
+
+    from kiro_crew.auth.provider import KasAuthProvider
+    from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
+
+    stored = [BEARER]
+    refreshes = []
+    sent = []
+    both_refused = asyncio.Event()
+
+    async def _current(self, *, rejected_access_token=None):
+        if rejected_access_token is not None and stored[0] == rejected_access_token:
+            refreshes.append(1)
+            # The refresh is still in flight when the second request is refused.
+            await asyncio.wait_for(both_refused.wait(), FALLBACK_TIMEOUT_SECS)
+            stored[0] = FRESH
+        return SimpleNamespace(access_token=stored[0], auth_method=None, identity="identity_center")
+
+    async def _call(bearer, token_type):
+        sent.append(bearer)
+        if bearer == BEARER:
+            if sent.count(BEARER) == 2:
+                both_refused.set()
+            raise cps.CpsRefused(cps.SIGNED_OUT, "refused", status=401)
+        return bearer
+
+    monkeypatch.setattr(KasAuthProvider, "current", _current)
+    monkeypatch.setattr(rv, "_FORCED_AT", {})
+    monkeypatch.setattr(rv, "_FORCE_LOCKS", {})
+    assert await asyncio.gather(rv._with_sign_in("", _call), rv._with_sign_in("", _call)) == [
+        FRESH,
+        FRESH,
+    ]
+    assert refreshes == [1]
+    assert sorted(sent) == sorted([BEARER, BEARER, FRESH, FRESH])

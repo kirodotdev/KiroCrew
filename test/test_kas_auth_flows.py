@@ -749,3 +749,45 @@ async def test_provider_maps_rejection_to_the_same_failure_as_before(tmp_path: P
     with pytest.raises(RefreshRejected):
         await provider.current()
     assert store.refresh_rejected("social") is not None
+
+
+# ---- a forced refresh of a token a service refused before its expiry -----------
+
+
+def _new_social() -> _FakeResp:
+    body = {"accessToken": "new-at", "refreshToken": "new-rt", "expiresIn": 3600}
+    return _FakeResp(200, {**body, "profileArn": "arn:x"})
+
+
+async def test_a_rejected_token_still_stored_is_refreshed_before_expiry(tmp_path: Path):
+    store = TokenStore(tmp_path)
+    tok = _fresh("social", "Google")
+    store.save(tok)
+    session = _FakeSession([_new_social()])
+    out = await ensure_fresh(store, tok, session=session, rejected_access_token=tok.access_token)
+    assert out.access_token == "new-at"
+    assert len(session.calls) == 1
+    assert store.load("social").access_token == "new-at"
+
+
+async def test_a_rejected_token_a_peer_already_replaced_is_not_refreshed(tmp_path: Path):
+    store = TokenStore(tmp_path)
+    tok = _fresh("social", "Google")
+    from dataclasses import replace
+
+    store.save(replace(_fresh("social", "Google"), access_token="peer-at"))
+    session = _FakeSession([])  # must not be called
+    out = await ensure_fresh(store, tok, session=session, rejected_access_token=tok.access_token)
+    assert out.access_token == "peer-at"
+    assert session.calls == []
+
+
+async def test_a_rejected_token_whose_identity_is_gone_is_signed_out(tmp_path: Path):
+    tok = _fresh("social", "Google")
+    with pytest.raises(IdentitySignedOut):
+        await ensure_fresh(
+            TokenStore(tmp_path),
+            tok,
+            session=_FakeSession([]),
+            rejected_access_token=tok.access_token,
+        )
