@@ -212,7 +212,7 @@ test("a mint that lands after the window closed is dropped", async () => {
 test("the stop refusals are exactly the ones no retry can fix", () => {
   assert.deepEqual([...STOP_REFUSALS].sort(), [
     "ACCESS_DENIED", "CREW_ACCESS_NOT_GRANTED", "CREW_OFFLINE", "INVALID_REQUEST",
-    "NOT_SET_UP", "REMOTE_ACCESS_DISABLED", "SIGNED_OUT",
+    "NOT_SET_UP", "REMOTE_ACCESS_DISABLED", "SIGNED_OUT", "SIGN_IN_CHANGED",
   ]);
   for (const code of STOP_REFUSALS) assert.equal(OUTCOME[code], code);
 });

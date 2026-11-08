@@ -22,6 +22,7 @@ import {
 import Clickable from '../../components/Clickable'
 import ErrorNotice from '../../components/ErrorNotice'
 import { FolderBody } from '../../components/FolderBody'
+import { RadioChipGroup, radioChip } from '../../components/RadioChipGroup'
 import {
   DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
 } from '../../components/ui/dropdown-menu'
@@ -379,7 +380,7 @@ export default function DesignTweak() {
     setNewPath, detecting, devOpen, setDevOpen, devDraft, setDevDraft, starting, devError, histOpen,
     setHistOpen, previewId, setPreviewNonce, dimsOpen, setDimsOpen, dims, setDimsFor, mode, status,
     setStatus, bridgeError, setBridgeError, reqOpen, sendingId, iframeRef, projects, booting, refresh,
-    withFollowUpLabels, toggleReq, postToOverlay, railW, onDragStart, selected, connected, switchTo,
+    withFollowUpLabels, toggleReq, postToOverlay, railW, railResize, selected, connected, switchTo,
     connect, disconnect, removeProject, addProject, pickFolder, sendRequest, missingIds, resendRequest,
     previewProject, myPending, myHistory, previewSrc, previewState, previewNote, isDevServer,
     markFramed, pinItems, focusComment, openInChat, archiveReq, deleteComment, setDevServer,
@@ -679,15 +680,14 @@ export default function DesignTweak() {
           OUT of the tab order: the width it adjusts is cosmetic, both panels
           scroll and stay fully operable at any width, so there is no content or
           control here that only the pointer can reach. */}
-      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- pointer-only splitter: `onMouseDown` starts the drag, and a separator with no tab stop has no keyboard operation to mirror it with */}
       <div
         role="separator"
         aria-orientation="vertical"
         aria-label={i18nT('apps.designTweak.layout.drag_to_resize')}
-        onMouseDown={onDragStart}
+        {...railResize}
         title={i18nT('apps.designTweak.layout.drag_to_resize')}
         className="shrink-0 cursor-col-resize"
-        style={{ width: '11px' }}
+        style={{ width: '11px', touchAction: 'none' }}
       />
 
       {/* ================= RIGHT PANEL (bordered container: preview + action bar) ================= */}
@@ -980,7 +980,12 @@ export default function DesignTweak() {
             >
               <RefreshCw size={15} />
             </button>
-            <div
+            {/* Preview / Edit is a mode of the same preview frame (Edit turns
+                the overlay's element picking on), not a panel switch, so it is
+                a radio group: the chosen mode is announced, not shown by
+                colour alone (#32040). */}
+            <RadioChipGroup
+              ariaLabel={i18nT('apps.designTweak.modes.label')}
               className="flex items-center gap-1"
               style={{
                 background: 'rgba(0,0,0,0.25)',   // theme-agnostic "darker" recessed track
@@ -988,6 +993,8 @@ export default function DesignTweak() {
               }}
             >
               <button
+                type="button"
+                {...radioChip(mode === 'preview')}
                 onClick={() => setEditMode('preview')}
                 className={`flex items-center justify-center gap-1.5 h-8 px-3 text-[13px] font-bold cursor-pointer transition-all ${mode === 'preview' ? 'text-accent-fg' : 'text-text hover:text-text'}`}
                 style={{ borderRadius: '10px', background: mode === 'preview' ? 'var(--accent)' : 'transparent' }}
@@ -996,6 +1003,8 @@ export default function DesignTweak() {
                 {i18nT('apps.designTweak.modes.preview')}
               </button>
               <button
+                type="button"
+                {...radioChip(mode === 'edit')}
                 onClick={() => setEditMode('edit')}
                 className={`flex items-center justify-center gap-1.5 h-8 px-3 text-[13px] font-bold cursor-pointer transition-all ${mode === 'edit' ? 'text-accent-fg' : 'text-text hover:text-text'}`}
                 style={{ borderRadius: '10px', background: mode === 'edit' ? 'var(--accent)' : 'transparent' }}
@@ -1003,7 +1012,7 @@ export default function DesignTweak() {
                 <Pencil size={14} />
                 {i18nT('apps.designTweak.modes.edit')}
               </button>
-            </div>
+            </RadioChipGroup>
           </div>
         </div>
       </div>

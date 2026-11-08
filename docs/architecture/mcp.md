@@ -668,7 +668,7 @@ Probes run from `POST /api/mcp/probe`:
   grant for the url to set `authGrantPresent`: kiro-cli's cache (a stat of its
   paired grant artifacts) and the KAS grant vault (whether an entry name is
   listed; see below). A server whose sign-in Crew holds (`crew_oauth.owns`:
-  `connections.crew_oauth` on KAS) is the exception: `authGrantPresent` is
+  `dashboard.feature_previews.crew_oauth` on KAS) is the exception: `authGrantPresent` is
   Crew's vault (`crew_oauth.holds_grant`) and the row carries `authCrewHeld`,
   so the table drops Sign in again and the KAS caveat, both false there because
   Crew serves KAS chats through its proxy. A cached Crew answer is not served
@@ -2030,7 +2030,7 @@ govern the sign-in.
 One missing identity reaches a reader through three refusals -- this
 `identity_unattested` text when a key is declared, the strict-identity diagnosis behind
 `memory_recall` and every other reflexive tool when none is, and the lesson writers'
-(`learn_add`, `learn_remove`) answer to the gateway's `400 missing_session_key` (mapped
+(`learn_add`, `learn_remove`, `learn_update`) answer to the gateway's `400 missing_session_key` (mapped
 onto the same established-session refusal instead of echoing the header name). When the
 process carries neither the session token nor a launcher host pid
 (`mcp_shared.spawned_without_gateway_identity`), nothing the gateway does at spawn
@@ -2907,10 +2907,14 @@ answers `tools/list` from):
   `workflow_library_list`, `workflow_status`, `workflow_result`, `workflow_list`,
   `workflow_cancel`, `workflow_rerun_subtree`, `register_hook`
 - **App bridges:** `issue_radar_record_investigation`,
-  `ops_mission_control_api`, `design_tweak_update_thread`, `pod_up`, `pod_restart`,
+  `ops_mission_control_api`, `pod_up`, `pod_restart`,
   `pod_down`, `pod_status`, `pod_ls`, `issue_radar_crew_read`, `issue_radar_crew_record`.
   Listed only while the app each one reaches is enabled — see § An app's tools
   follow the app's enablement below.
+- **App-declared tools:** whatever a first-party app declares in its manifest
+  `agentTools` block, such as Design Tweak's `design_tweak_update_thread`. The app
+  serves each call from its own process; this server lists the tool and forwards the
+  call (below).
 - **Browser:** `browser`
 - **Diagnostics:** `resource_status`, `kiro_cli_logs` — a redacted tail of kiro-cli's own mcp/lsp protocol logs, so
   the agent can self-diagnose a rejected turn. Reads log files only: never the
@@ -2942,17 +2946,20 @@ answers `tools/list` from):
   process holds the gateway's internal secret and forwards only a frozen
   (method, path) allowlist of Ops Mission Control routes; the agent never
   sees a credential (same shape as `issue_radar_record_investigation`).
-  `design_tweak_update_thread` — the same shape for the Design Tweak app: the
-  server forwards a single route (`POST /apps/design-tweak/api/thread`, the
-  gateway's app reverse-proxy path) so
-  the agent can mark a batched visual-edit comment in progress or done as it
-  applies it. `status` is restricted to `done` (forward progress only — no
-  clear/dismiss), and the gateway admits only that one path for internal-secret
-  callers, never the app's state-mutating routes. The tool is the app's own
-  data: its `agent_tools.py` declares the descriptor, the fields, the route and
-  the body, and the core builds the tool from that declaration and runs it with
-  one handler of its own (`mcp_tools/apps.py` `builtin_agent_tool`; see
-  [app-kit-platform § 30.1](../system-specs/modules/app-kit-platform.md#301-a-built-ins-agent-tool-is-the-built-ins-own-data))
+- **App-declared tools (credentialed, app-served):** the `app_tools` domain
+  (`mcp_tools/app_tools.py`, the last in `DOMAIN_MODULES`) lists each tool a
+  first-party app declares in its manifest `agentTools` block (a third-party app
+  would inherit this server's whole-server auto-approval, so its block lists
+  nothing; app-kit-platform.md section 30.1), validates a call
+  against the declared schema, and posts `{tool, arguments}` to the strict
+  internal route `POST /api/app-tools/call`. The gateway checks the call again
+  against the declaration and hands it to the declaring app's own route, through
+  the signed app proxy or the app route registry, so no app code runs in this
+  server and no app route is admitted to internal-secret callers. A name another
+  domain declares is never an app's. Design Tweak's `design_tweak_update_thread`
+  is served this way: `status` is restricted to `done` and every string is
+  bounded by its declaration. See
+  [app-kit-platform § 30.1](../system-specs/modules/app-kit-platform.md#301-an-apps-agent-tools-are-declared-in-its-manifest-and-served-by-the-app)
 
 ### Server instructions travel with the server
 
@@ -3108,7 +3115,12 @@ change card, and the server is written to the template's additions record
   `DELETE /api/agents/detail/{name}/mcp-additions/{server}?card_id=<card>`, both
   card-hooked routes that refuse any internal caller `403 owner_only`; the POST
   also refuses a request with no card (`403 card_required`), so the only entry
-  ever recorded is one a card showed. The Undo calls `remove_addition` with the
+  ever recorded is one a card showed. The one exception is the Settings write
+  (Settings > Developer > Agent MCP servers): a card-less body of exactly
+  `{server, mount_only: true}` for a set in
+  `template_server_request.MANAGED_MOUNT_ONLY_SETS` on the default agent. It
+  sends no entry, so the gateway builds the managed launch line, and it is
+  recorded under `SETTINGS_CARD_ID`. The Undo calls `remove_addition` with the
   card id, so a later approval of the same server on another card survives it.
   The Apply records with `only_if_absent=True` too: a server another card added
   after this card's own check answers `409 already_added` and is left as it is.
@@ -3144,7 +3156,9 @@ nothing at runtime notices when only one half lands:
   descriptor, never add or reshape one
   (`test_a_domain_advertises_only_what_it_declares`). The names-only build
   (`build_tool_names`, the in-process discovery read) takes `schemas()` and never
-  consults `advertised()`. `apps` is the one domain that defines one, below.
+  consults `advertised()`. `apps` defines one, below, and so does `app_tools`, whose
+  `schemas()` names every tool a shipped first-party manifest declares so an app
+  agent's deny universe holds it before the app is installed.
 - Its **handler** is an entry in that module's `HANDLERS` map, called as
   `handler(name, args)`. `dispatch()` finds it by name and
   `mcp_core._call_tool_inner` delegates to that.
@@ -3178,17 +3192,18 @@ of its responsibility:
 
 ### An app's tools follow the app's enablement
 
-The ten `apps`-domain tools each reach one built-in app — Issue Radar
+The nine `apps`-domain tools each reach one built-in app — Issue Radar
 (`issue_radar_record_investigation`, `issue_radar_crew_read`,
 `issue_radar_crew_record`), Dev Fleet (`pod_up`, `pod_restart`, `pod_down`,
-`pod_status`, `pod_ls`), Ops Mission Control (`ops_mission_control_api`) and Design Tweak
-(`design_tweak_update_thread`) — through gateway routes that refuse the call with
-HTTP 403 while the app is disabled, on `kiro_crew.apps.manager`'s read of the
-app's `installed.json`. The refusal body differs per app — Dev Fleet's routes and
-the app reverse proxy Design Tweak sits behind (`handle_app_api_proxy`) name it
-`app_not_enabled` (#10742), Ops Mission Control `app_disabled`, Issue Radar
-carries no `code` — so nothing here keys on a code; the predicate behind all four
-is the same `is_app_enabled` read. `tools/list` advertised every one of them
+`pod_status`, `pod_ls`) and Ops Mission Control (`ops_mission_control_api`) — through
+gateway routes that refuse the call with HTTP 403 while the app is disabled, on
+`kiro_crew.apps.manager`'s read of the app's `installed.json`. The refusal body
+differs per app — Dev Fleet's routes name it `app_not_enabled` (#10742), Ops Mission
+Control `app_disabled`, Issue Radar carries no `code` — so nothing here keys on a
+code; the predicate behind all three is the same `is_app_enabled` read. A tool an app
+declares in its manifest follows the same rule in the `app_tools` domain: its
+`advertised()` hides it on a readable `False`, and `POST /api/app-tools/call` refuses
+the call with `app_not_enabled`. `tools/list` advertised every one of them
 regardless (#16099), so a
 session with none of the apps enabled was told about tools that could only
 refuse — and because kiro-cli reads `tools/list` once per session and Crew's own
@@ -5321,7 +5336,10 @@ decodes the marker, applies the effect against **its own** `slot.key`, then
 strips the marker from the stored transcript. Sub-agent isolation is therefore
 structural rather than cryptographic: a sub-agent's tool result flows through the
 sub-agent's own runner, so it can only bind to the sub-agent's session. There is
-no walk to get wrong.
+no walk to get wrong. The model still reads the marker, so a reply that repeats the
+result carries the marker line too; the dashboard's segment flush drops each line
+that is only such a marker from the saved reply
+(`session_directive.strip_quoted_markers`) and keeps the reply's other lines.
 
 A second, provider-neutral channel covers a backend that emits no
 `_meta.kiro` identity. After encoding, the tool reports the CALL (tool name and

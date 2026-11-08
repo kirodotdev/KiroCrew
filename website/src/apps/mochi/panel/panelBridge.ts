@@ -346,7 +346,7 @@ export function isRenderableChatRole(role: unknown): boolean {
  *
  * The pet's turn runs on this dashboard slot, and — unlike Slack/background
  * approvals, which emit a dedicated `approval` frame via `state.request_approval`
- * — `chat_runner` surfaces an interactive tool approval as a `permission`-role
+ * — `_on_permission_prompt` (chat_turn/permission_prompt.py) surfaces an interactive tool approval as a `permission`-role
  * `chat_message` whose `cls` field holds the approval metadata
  * (`request_id` / `tool_title` / `tool_input`, and `resolved` once answered).
  * The panel drops `permission` as a non-renderable role, so without this the
@@ -441,11 +441,13 @@ export function permissionApprovalFromFrame(
     purpose?: string
     target?: ApprovalTarget
   } = { id, tool }
-  if (typeof m.tool_input === 'string' && m.tool_input) {
-    req.toolInput = m.tool_input
-    const purpose = purposeFromToolInput(m.tool_input)
-    if (purpose !== undefined) req.purpose = purpose
-  }
+  if (typeof m.tool_input === 'string' && m.tool_input) req.toolInput = m.tool_input
+  // The gateway reads `tool_purpose` through a Tool Search envelope, which the
+  // raw input's top level does not show; the raw read covers a row without it.
+  const purpose =
+    (typeof m.tool_purpose === 'string' && m.tool_purpose.trim()) ||
+    (req.toolInput ? purposeFromToolInput(req.toolInput) : undefined)
+  if (purpose) req.purpose = purpose
   if (typeof m.full_command === 'string' && m.full_command) req.fullCommand = m.full_command
   if (typeof m.base_command === 'string' && m.base_command) req.baseCommand = m.base_command
   // Proof is server-authored on the pending card. Scope strings are display

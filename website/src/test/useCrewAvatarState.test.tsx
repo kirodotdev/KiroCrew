@@ -188,6 +188,13 @@ describe('useCrewAvatarState — the sound', () => {
     expect(played).not.toHaveBeenCalled()
   })
 
+  it('honours a timed mute that has not run out', () => {
+    settings.mockReturnValue({ enabled: true, volume: 0.5, perCategory: {}, mutedUntil: Number.MAX_SAFE_INTEGER })
+    const { rerender } = mount(false, [slot()], { working: 'blip' })
+    act(() => { rerender(true) })
+    expect(played).not.toHaveBeenCalled()
+  })
+
   it('plays once when a flapping running flag re-enters the same state', () => {
     const { rerender } = mount(true, [slot({ running: true })], { done: 'chime' })
     act(() => { rerender(false) })

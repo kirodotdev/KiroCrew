@@ -425,6 +425,12 @@ region, so `voice_polly_rejected` is a client-fallback code alongside
 payloads carry `speakable`, and a manual Read aloud that allowed the fallback
 speaks the reply on the client instead of showing the notice.
 
+A stream that ends with no audio is probed the way the built-in engine's
+single-file path is: `voice_unavailable` only when `resolve_polly_cli()` finds no
+AWS CLI, and otherwise `voice_synthesis_failed`. An access or credential error
+that skipped every sentence therefore reaches the generic notice instead of being
+masked by browser speech.
+
 Every Polly `aws` child gets its environment through `sandbox.without_python_env`:
 the catalogue's `describe-voices`, the consent gate's probes and synthesis.
 aws-cli v1 is a Python program, so this keeps the gateway's `PYTHONPATH` /

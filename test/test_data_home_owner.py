@@ -10,6 +10,7 @@ import pytest
 
 from kiro_crew import data_home_owner
 from kiro_crew.platform_compat import IS_POSIX
+from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
 
 pytestmark = pytest.mark.skipif(not IS_POSIX, reason="ownership by uid is POSIX only")
 
@@ -42,7 +43,7 @@ def test_files_another_account_owns_are_reported_with_the_fix(tmp_path, monkeypa
     access = data_home_owner.check_data_home(home)
     assert not access.ok
     assert access.foreign == (str(home), str(home / "config.json"), str(home / "members"))
-    assert access.fix_command.startswith(f"sudo find {home} -xdev ! -user ")
+    assert access.fix_command.startswith(f"sudo find -P {home} -xdev ! -user ")
     assert access.fix_command.endswith(f" && chmod -R u+rwX {home}")
     assert access.to_json()["ok"] is False
 
@@ -52,14 +53,77 @@ def test_the_privileged_part_skips_hard_links_and_symlink_targets(tmp_path):
 
     words = shlex.split(data_home_owner.fix_command(tmp_path))
     privileged = words[: words.index("&&")]
-    assert privileged[:3] == ["sudo", "find", str(tmp_path.resolve())]
+    # -P: the walk never follows a symlink.
+    assert privileged[:4] == ["sudo", "find", "-P", str(tmp_path.resolve())]
     # Only another account's entries, on this filesystem, and a non-directory
     # only while it has a single link.
-    assert privileged[3:6] == ["-xdev", "!", "-user"]
-    assert privileged[7:13] == ["(", "-type", "d", "-o", "-links", "1"]
-    # chown -h changes a symlink itself; nothing here follows one.
-    assert privileged[14:17] == ["-exec", "chown", "-h"]
-    assert "-R" not in privileged and "-L" not in privileged
+    assert privileged[4:7] == ["-xdev", "!", "-user"]
+    assert privileged[8:14] == ["(", "-type", "d", "-o", "-links", "1"]
+    # chown -h changes a symlink itself, and -execdir hands it ./<name> from the
+    # entry's own directory, never a full path.
+    assert privileged[15:18] == ["-execdir", "chown", "-h"]
+    assert privileged[-1] == ";"
+    assert "-R" not in privileged and "-L" not in privileged and "-exec" not in privileged
+
+
+_FAKE_CHOWN = """
+import os, sys
+home, outside, log = sys.argv[1:4]
+paths = sys.argv[6:]
+inner = os.path.join(home, "a")
+if not os.path.islink(inner) and any(os.path.basename(p) == "f" for p in paths):
+    # The race: once the walk has found a/f, swap a for a symlink to outside.
+    os.rename(inner, inner + ".real")
+    os.symlink(outside, inner)
+with open(log, "a", encoding="utf-8") as out:
+    for p in paths:
+        # chown -h follows every parent but not the last name.
+        parent = os.path.realpath(os.path.dirname(p) or ".")
+        out.write(os.path.join(parent, os.path.basename(p)) + "\\n")
+"""
+
+
+def test_a_parent_swapped_for_a_symlink_mid_repair_is_not_followed(tmp_path, monkeypatch):
+    import shlex
+    import shutil
+    import subprocess
+
+    if shutil.which("find") is None:
+        pytest.skip("no find on this host")
+    root = tmp_path.resolve()
+    home = root / "crew"
+    (home / "a").mkdir(parents=True)
+    (home / "a" / "f").write_text("x", encoding="utf-8")
+    outside = root / "outside"
+    outside.mkdir()
+    (outside / "f").write_text("system", encoding="utf-8")
+    log = root / "chowned.log"
+    bindir = root / "bin"
+    bindir.mkdir()
+    (bindir / "fake_chown.py").write_text(_FAKE_CHOWN, encoding="utf-8")
+    chown = bindir / "chown"
+    chown.write_text(
+        "#!/bin/sh\n"
+        f'exec {shlex.quote(sys.executable)} {shlex.quote(str(bindir / "fake_chown.py"))} '
+        f'{shlex.quote(str(home))} {shlex.quote(str(outside))} {shlex.quote(str(log))} "$@"\n',
+        encoding="utf-8",
+    )
+    chown.chmod(0o755)
+    # Seen as another account's files, so every entry is selected.
+    monkeypatch.setattr(data_home_owner, "_account_name", lambda uid: str(os.geteuid() + 1))
+    words = shlex.split(data_home_owner.fix_command(home))
+    privileged = words[1 : words.index("&&")]
+    subprocess.run(
+        privileged,
+        env={"PATH": f"{bindir}:/usr/bin:/bin"},
+        capture_output=True,
+        encoding="utf-8",
+        timeout=FALLBACK_TIMEOUT_SECS,
+        check=False,
+    )
+    changed = log.read_text(encoding="utf-8").split()
+    assert str(home / "a.real" / "f") in changed
+    assert not [p for p in changed if p.startswith(str(outside))]
 
 
 def test_a_linked_home_is_checked_and_repaired_at_its_real_folder(tmp_path):
@@ -67,7 +131,7 @@ def test_a_linked_home_is_checked_and_repaired_at_its_real_folder(tmp_path):
     link = tmp_path / "linked"
     link.symlink_to(real)
     assert data_home_owner.check_data_home(link).ok
-    assert data_home_owner.fix_command(link).startswith(f"sudo find {real} ")
+    assert data_home_owner.fix_command(link).startswith(f"sudo find -P {real} ")
 
 
 def test_a_symlinked_config_is_not_reported_or_followed(tmp_path, monkeypatch):

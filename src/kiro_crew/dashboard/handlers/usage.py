@@ -14,7 +14,7 @@
 #   ``usage_context`` -- context-window occupancy and a session's context trace
 #   ``usage_cost`` -- the Telemetry panel's spend breakdown
 #   ``usage_history`` -- the Usage page's per-day token history
-#   ``usage_sessions`` -- the Usage page's kiro-cli session activity and its cached parse
+#   ``usage_sessions`` -- the Usage page's kiro-cli and KAS session activity and its cached parse
 
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ from aiohttp import web
 
 from kiro_crew import _facade_mirror
 from kiro_crew.acp.types import TurnUsage
+from kiro_crew.dashboard.handlers.codex_usage import read_codex_rate_limits
 from kiro_crew.dashboard.handlers.usage_sessions import _CACHE_TTL, _usage_sessions_snapshot
 from kiro_crew.dashboard.handlers.usage_store import (  # noqa: F401 - usage_series reads these per row
     _coerce_int,
@@ -221,6 +222,7 @@ def _build_token_record(
     elapsed_ms: int = 0,
     app: str = "",
     delivered: bool | None = None,
+    transcript: str = "",
 ) -> dict[str, Any]:
     """Build the JSONL token-usage record dict (no I/O).
 
@@ -253,6 +255,12 @@ def _build_token_record(
     ``delivered`` is whether the turn streamed any reply text, so a billed turn
     that ran only tools can be told from one that answered. Only a caller that
     watched the stream knows it; ``None`` leaves the key off the row.
+
+    ``transcript`` is the key of the transcript the dashboard tab writes to. A
+    tab linked to another session (a task review, a workflow, a cron run)
+    writes under a key its name cannot reach, and this row is the one record
+    that outlives the tab, so it is what names a closed tab's transcript.
+    ``""`` leaves the key off the row.
     """
     # Usage lives on event.usage (TurnUsage). Fall back to the event itself when
     # it isn't a real TurnUsage (legacy / non-AcpEvent producers, test doubles).
@@ -304,6 +312,8 @@ def _build_token_record(
     }
     if delivered is not None:
         record["delivered"] = delivered
+    if transcript:
+        record["transcript"] = transcript
     return record
 
 
@@ -503,6 +513,7 @@ async def persist_token_record_async(
     trigger: str = TRIGGER_OTHER,
     origin: str | None = None,
     delivered: bool | None = None,
+    transcript: str = "",
 ) -> None:
     """Async variant: builds the record on-loop, offloads the file write.
 
@@ -519,7 +530,7 @@ async def persist_token_record_async(
     (no fsync, exceptions swallowed), so off-loop write loses no durability.
     See :func:`persist_token_record` for the ``surface`` / ``agent`` /
     ``context_used`` / ``context_window`` / ``elapsed_ms`` / ``model_source``
-    fields, and :func:`_build_token_record` for ``delivered``.
+    fields, and :func:`_build_token_record` for ``delivered`` and ``transcript``.
 
     ALSO emits the per-turn OTEL family — ``kirocrew.turn.duration`` plus the
     turn's usage (``kirocrew.turn.tokens`` and whichever of
@@ -563,6 +574,7 @@ async def persist_token_record_async(
             elapsed_ms=elapsed_ms,
             app=app,
             delivered=delivered,
+            transcript=transcript,
         )
         # Before the offloaded write: a file-write failure must not cost the
         # latency sample, which needs nothing from disk.
@@ -659,7 +671,7 @@ def get_usage_cache() -> dict:
 
 
 async def api_kiro_usage(request: web.Request) -> web.Response:
-    """GET /api/usage/kiro — local session analytics + cached billing."""
+    """GET /api/usage/kiro — local session analytics, cached billing and Codex's windows."""
     global _CACHE, _CACHE_TS
     now = time.time()
 
@@ -699,6 +711,7 @@ async def api_kiro_usage(request: web.Request) -> web.Response:
             "username": username,
             "sessions": sessions,
             "billing": billing,
+            "codex": await asyncio.to_thread(read_codex_rate_limits),
             "refreshing": refreshing,
         }
 
@@ -774,11 +787,16 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _SESSIONS_CACHE,
         _SESSIONS_CACHE_LOCK,
         _SESSIONS_CACHE_TS,
+        _TRANSCRIPT_COUNTS,
         _USAGE_SESSION_REFRESH_TASK,
         _USAGE_SESSION_WAIT_SECONDS,
         _cached_parse_sessions,
+        _count_row,
+        _count_transcript,
         _empty_session_summary,
+        _kas_transcripts,
         _parse_sessions,
+        _pin_listing_dir,
     )
     from kiro_crew.dashboard.handlers.usage_spend import (  # noqa: F401
         _BARE_CHAT_SLOT_RE,
@@ -815,7 +833,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
-    from kiro_crew import model_registry  # noqa: F401
+    from kiro_crew import model_registry, platform_compat  # noqa: F401
     from kiro_crew.config.paths import data_home, kiro_sessions_dir  # noqa: F401
     from kiro_crew.constants import crew_log_enabled, env_file_display  # noqa: F401
     from kiro_crew.context_blocks import USER_LABEL  # noqa: F401

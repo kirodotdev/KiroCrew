@@ -76,7 +76,7 @@ BLOCKED_LINKS_ORDERED_KEY = "blocked_links_ordered"
 
 
 def variant_from_row(row: dict) -> dict:
-    """Stash a row as a variant, taking its redaction records with it.
+    """Stash a row as a variant, taking its redaction records and turn stats with it.
 
     The mirror of ``adopt_variant_text``: that one moves a variant onto the row,
     this one moves the row into the variant list. Both directions carry the
@@ -84,7 +84,8 @@ def variant_from_row(row: dict) -> dict:
     content is already redacted, so what they describe is gone and a rescan
     finds nothing to describe. A stash that dropped them would destroy the
     explanation for good, and the reader switching back would be handed a bare
-    placeholder with no way to learn what was removed.
+    placeholder with no way to learn what was removed. The turn stats (model,
+    credits, time) are that reply's own too, and nothing can measure them again.
     """
     entry = {"content": row.get("content", ""), "ts": row.get("ts", "")}
     meta = row.get("meta")
@@ -97,6 +98,10 @@ def variant_from_row(row: dict) -> dict:
                 entry[key] = records
         if entry.get("blocked_links") and meta.get(BLOCKED_LINKS_ORDERED_KEY) is True:
             entry[BLOCKED_LINKS_ORDERED_KEY] = True
+        stats = meta.get("turn_stats")
+        if isinstance(stats, dict):
+            # Redacted as the row's meta is when it is saved: the list is saved too.
+            entry["turn_stats"] = _redact_value(stats)
     return entry
 
 
@@ -153,13 +158,15 @@ def _variant_for_emit(variant: dict) -> dict:
             bounded["blocked_links"] = left
         else:
             bounded.pop("blocked_links", None)
-    return with_bounded_redaction_records(
-        {**bounded, "content": redact_display_content(bounded.get("content", ""))}
-    )
+    out = {**bounded, "content": redact_display_content(bounded.get("content", ""))}
+    # The page reads a reply's stats from its row, which a switch updates; the
+    # variant's copy is only there for the switch to put back.
+    out.pop("turn_stats", None)
+    return with_bounded_redaction_records(out)
 
 
 def adopt_variant_text(row: dict, variant: dict) -> None:
-    """Move a row onto one of its variants, text and redaction records together.
+    """Move a row onto one of its variants: text, redaction records and turn stats.
 
     A record describes ONE text: it names what was removed from a placeholder
     standing in that text. A caller that takes a variant's content without its
@@ -185,6 +192,21 @@ def adopt_variant_text(row: dict, variant: dict) -> None:
         meta.pop(BLOCKED_LINKS_ORDERED_KEY, None)
         if meta.get("blocked_links") and variant.get(BLOCKED_LINKS_ORDERED_KEY) is True:
             meta[BLOCKED_LINKS_ORDERED_KEY] = True
+    # The page reads a row's turn stats as the end of its turn, so they move only
+    # on the row its turn stamped, which is when the newest variant carries them.
+    # The first row of a reply that ran tools carries none and stays unstamped; a
+    # list saved before variants carried stats keeps the row's stats as they are.
+    variants = row.get("variants")
+    newest = variants[-1] if isinstance(variants, list) and variants else None
+    if isinstance(newest, dict) and isinstance(newest.get("turn_stats"), dict):
+        stats = variant.get("turn_stats")
+        if isinstance(stats, dict):
+            if not isinstance(meta, dict):
+                meta = {}
+                row["meta"] = meta
+            meta["turn_stats"] = dict(stats)
+        elif isinstance(meta, dict):
+            meta.pop("turn_stats", None)
     if isinstance(meta, dict) and not meta:
         row.pop("meta", None)
 

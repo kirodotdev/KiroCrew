@@ -8,7 +8,7 @@ pause, delete). ``execute_plan`` and ``retry_from_task`` stay ``TaskRunner`` met
 ``taskrunner.py``, where mypy keeps the narrowing their background closures read; a new
 entry point that starts or stops a run still goes here.
 
-Instance fields written: ``_agent``, ``_last_id_suffix``, ``_run_session_keys``, ``_runs``,
+Instance fields written: ``_last_id_suffix``, ``_run_session_keys``, ``_runs``,
 ``_shutdown_started``, ``_stall_cancelled_ids``, ``_start_ids_in_flight``, ``_stop_frozen``,
 ``_stop_settles``, ``_tasks``.
 
@@ -155,6 +155,7 @@ async def run(
         last_task_time=time.time(),
         status="running",
         source=source,
+        agent=existing.agent if existing else "",
         workflow_run_id=existing.workflow_run_id if existing else "",
         workflow_id=existing.workflow_id if existing else "",
         workflow_slug=existing.workflow_slug if existing else "",
@@ -202,9 +203,11 @@ async def run(
                     "YAML spec %s is not in workflow format; falling back to LLM decomposition",
                     spec_path.name,
                 )
-                run.tasks = await self._decompose(spec_content, run.work_dir, task_id)
+                run.tasks = await self._decompose(
+                    spec_content, run.work_dir, task_id, agent=run.agent
+                )
         else:
-            run.tasks = await self._decompose(spec_content, run.work_dir, task_id)
+            run.tasks = await self._decompose(spec_content, run.work_dir, task_id, agent=run.agent)
         if not run.tasks:
             run.status = "failed"
             run.error = "Failed to decompose spec into tasks"
@@ -374,7 +377,6 @@ async def start_background(
     # Validate the per-run workspace override before entering the admission
     # lock so a bad/sensitive path fails without blocking other starts.
     _resolve_workspace_dir(workspace_dir)
-    self._agent = agent
     try:
         from kiro_crew.hooks import validate_file_path
 
@@ -443,6 +445,7 @@ async def start_background(
                 started_at=time.time(),
                 source=source,
                 auto_approve=bool(auto_approve),
+                agent=agent,
                 execution_context=execution,
             )
             await self._bind_run_execution(

@@ -91,6 +91,17 @@ launcher registers that record for you, and the task runs no gateway to reach.
 The registry file (`~/.kiro/crew/instances.json`) holds connection coordinates
 only. No key, password or token is ever written there.
 
+**From a link (desktop app).** A page that lists your machines can offer a
+`kirocrew://remote-crew/add?host=<ssh host>&user=<user>&port=<n>&name=<label>`
+link. Opening it brings the desktop app forward on this panel with the add form
+filled in and a line saying so. Only `host` is required; `user` becomes
+`user@host`, and `port` is the remote gateway's port (the Remote port field),
+not the port ssh dials. Nothing is saved and nothing connects until you press
+**Add remote crew**, so first check that the SSH host is a machine you use:
+after that click the crew is like one you typed in, and with **Auto-connect crews** on (the default) it
+connects as soon as it is added. A link with any other key, a host the SSH host
+field would refuse, or a malformed port or label opens nothing.
+
 **Editing and removing** live in each row's overflow menu. Changing anything the
 tunnel is built from — the host, the port, the transport — drops the live tunnel
 first, so the row comes back offering **Connect** rather than quietly forwarding

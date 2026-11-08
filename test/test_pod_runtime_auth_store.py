@@ -7,8 +7,8 @@ kiro-cli resolves its token from `.local/share/kiro-cli` (or `amazon-q`), not fr
 from __future__ import annotations
 
 import contextlib
+import errno
 import os
-import sqlite3
 import stat
 import sys
 from pathlib import Path
@@ -18,12 +18,15 @@ import pytest
 from kiro_crew import pinned_fs
 from kiro_crew import sandbox as sb
 from kiro_crew import security
+from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.identity_stores import fenced_home_dirs, store_mappings
+from kiro_crew.pod import runtime_home
 from kiro_crew.pod.runtime import (
     _RUNTIME_AUTH_STORE_FILE_CAP,
     _is_sqlite_sidecar,
     _runtime_auth_store_mappings,
     _stage_runtime_auth_store,
+    _stage_runtime_auth_store_windows,
 )
 
 
@@ -267,6 +270,81 @@ def test_the_exec_repair_changes_only_a_plain_0600_copy(tmp_path: Path, host_hom
     assert _mode(target / "plain-source") == 0o600
     assert _mode(target / "linked-source") == 0o600
     assert _mode(target / "fifo-source") == 0o600
+
+
+#: Both staging twins, each with the directory openers whose descriptors it holds.
+_STAGING_TWINS = [
+    pytest.param(
+        _stage_runtime_auth_store,
+        [(pinned_fs, "open_dir_pinned"), (pinned_fs, "create_and_open_dir_pinned")],
+        marks=requires_pinned_walk,
+        id="posix",
+    ),
+    pytest.param(_stage_runtime_auth_store_windows, [(runtime_home, "pin_directory")], id="win32"),
+]
+
+
+@pytest.mark.parametrize(("stage", "_openers"), _STAGING_TWINS)
+def test_the_runtimes_engine_is_left_for_it_to_unpack(
+    tmp_path: Path, host_home: Path, stage, _openers
+) -> None:
+    """kiro-cli unpacks an absent engine again but fails on a partial one, so none is staged."""
+    store = host_home / ".local" / "share" / "kiro-cli"
+    for root in (store, store / "cache"):
+        (root / "kas" / "3.0.0-abc").mkdir(parents=True)
+        (root / "kas" / "3.0.0-abc" / "index.js").write_text("module.exports = {}")
+    os_home = tmp_path / "pod" / "os-home"
+    os_home.mkdir(parents=True)
+
+    stage(os_home, _kiro_mapping(host_home))
+
+    target = os_home / ".local" / "share" / "kiro-cli"
+    assert not (target / "kas").exists()
+    assert (target / "cache" / "kas" / "3.0.0-abc" / "index.js").is_file()
+
+
+@pytest.mark.parametrize(("stage", "openers"), _STAGING_TWINS)
+def test_a_store_with_more_levels_than_descriptors_stages_completely(
+    tmp_path: Path, host_home: Path, monkeypatch: pytest.MonkeyPatch, stage, openers
+) -> None:
+    """A pod boots under a 1024-descriptor soft limit, and a store can have many levels.
+
+    Holding every level's descriptors until the walk ended ran out of them part way,
+    and every later level was skipped without a word. Scaled down here to a budget of
+    16 directory descriptors held at once.
+    """
+    store = host_home / ".local" / "share" / "kiro-cli"
+    levels = [f"level-{i:02d}" for i in range(20)]
+    for name in levels:
+        (store / "knowledge_bases" / name).mkdir(parents=True)
+        (store / "knowledge_bases" / name / "index.json").write_text(name)
+    held: set[int] = set()
+    real_close = os.close
+
+    def spy_close(fd: int) -> None:
+        held.discard(fd)
+        real_close(fd)
+
+    def budgeted(opener):
+        def open_dir(*args, **kwargs):
+            if len(held) >= 16:
+                raise OSError(errno.EMFILE, "Too many open files")
+            fd = opener(*args, **kwargs)
+            held.add(fd)
+            return fd
+
+        return open_dir
+
+    monkeypatch.setattr(os, "close", spy_close)
+    for module, name in openers:
+        monkeypatch.setattr(module, name, budgeted(getattr(module, name)))
+    os_home = tmp_path / "pod" / "os-home"
+    os_home.mkdir(parents=True)
+
+    stage(os_home, _kiro_mapping(host_home))
+
+    staged = os_home / ".local" / "share" / "kiro-cli" / "knowledge_bases"
+    assert sorted(p.name for p in staged.iterdir() if (p / "index.json").is_file()) == levels
 
 
 def test_the_mapping_set_is_derived_from_the_store_table(

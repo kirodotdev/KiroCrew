@@ -56,8 +56,8 @@ describe('settingsExtract — multi-target panels', () => {
     )
     // Webex is deliberately absent: channel=webex mounts the standalone
     // WebexPanel, so a fan-out entry would deep-link to controls it lacks.
-    expect(entries).toHaveLength(3)
-    expect(entries.map(e => e.params?.channel)).toEqual(['discord', 'telegram', 'wecom'])
+    expect(entries).toHaveLength(4)
+    expect(entries.map(e => e.params?.channel)).toEqual(['discord', 'telegram', 'wecom', 'feishu'])
     expect(new Set(entries.map(e => e.tab))).toEqual(new Set(['channels']))
   })
 
@@ -67,13 +67,13 @@ describe('settingsExtract — multi-target panels', () => {
       BOT_FILE,
     )
     const labels = entries.map(e => e.label)
-    expect(new Set(labels).size).toBe(3)
+    expect(new Set(labels).size).toBe(4)
     expect(labels[0]).toMatch(/\(Discord\)$/)
     // labelKey stays the un-suffixed catalog key: highlight-time DOM lookup
     // resolves it to the rendered label, which carries no suffix. The raw
     // suffix rides along separately so a localized display can re-append it.
     expect(new Set(entries.map(e => e.labelKey)).size).toBe(1)
-    expect(entries.map(e => e.labelSuffix)).toEqual(['Discord', 'Telegram', 'WeCom'])
+    expect(entries.map(e => e.labelSuffix)).toEqual(['Discord', 'Telegram', 'WeCom', 'Feishu'])
   })
 
   it('keeps a literal label byte-identical (no suffix) across targets', () => {
@@ -81,7 +81,7 @@ describe('settingsExtract — multi-target panels', () => {
       `<SettingsInput label="Bot token" value={x} onChange={f} />`,
       BOT_FILE,
     )
-    expect(entries).toHaveLength(3)
+    expect(entries).toHaveLength(4)
     expect(new Set(entries.map(e => e.label))).toEqual(new Set(['Bot token']))
     expect(entries.every(e => e.labelSuffix === undefined)).toBe(true)
   })

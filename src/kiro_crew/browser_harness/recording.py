@@ -51,6 +51,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from kiro_crew.atomic_write import replace_with_retry
+
 logger = logging.getLogger(__name__)
 
 #: Directory under the data home every recording lives in.
@@ -450,7 +452,7 @@ class RecordingStore:
         except FileNotFoundError:
             pass
         self._write_new(tmp, data)
-        os.replace(tmp, tdir / "meta.json")
+        replace_with_retry(tmp, tdir / "meta.json")
 
     @staticmethod
     def _read_bytes(path: Path) -> bytes | None:

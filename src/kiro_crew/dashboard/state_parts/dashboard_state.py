@@ -248,6 +248,11 @@ class DashboardState:
     # unreadable or remote-only seed is not. Same frozenset baseline as above.
     deferred_member_slot_keys: "frozenset[str] | set[str]" = frozenset()
 
+    # Those deferred keys as the restore reported them, kept after the retry empties
+    # the set above: ``slot_list_held_keys`` holds each one while it is still in the
+    # reopen seed, so a complete slot list cannot drain its unread mark first.
+    restore_deferred_slot_keys: frozenset[str] = frozenset()
+
     # Whether the last open-tab restore could READ the registry at all. False means
     # every generation that might hold the set was refused by the OS, so this process
     # has no basis for treating ``_slots`` as the authoritative open-tab set and
@@ -529,8 +534,21 @@ class DashboardState:
         # The bridge runs after it, so a chat transport never delays the
         # dashboard (notifications/bridge.py).
         self.notification_bridge = BridgeDispatcher(
-            settings=lambda: self.notification_channel_settings
+            settings=lambda: self.notification_channel_settings,
+            subjects=lambda note, publisher: _dashboard_services.bridge_subjects(
+                self, note, publisher
+            ),
+            # A keyed note's replacement is written and committed asynchronously,
+            # and the write can fail: the bridge waits for that commit.
+            committed=lambda note: self.last_notification_persist if note.get("key") else None,
         )
+        # Lazy: the sink pulls in the Slack formatter, which a state import skips.
+        from kiro_crew.notifications.bridge_slack import SlackBridgeSink
+        from kiro_crew.notifications.bridge_transport import TRANSPORT_SINKS, TransportBridgeSink
+
+        self.notification_bridge.register_sink(SlackBridgeSink(self))
+        for transport in TRANSPORT_SINKS:
+            self.notification_bridge.register_sink(TransportBridgeSink(self, transport))
         self.notification_bus = NotificationBus(
             sink=composite_sink(self._deliver_note, self._bridge_note)
         )
@@ -927,6 +945,10 @@ class DashboardState:
             self.context_builder.memory_mode_for_session = lambda key: resolve_session_memory_mode(
                 self, key
             )
+            # A channel turn's build reads the sub-agent notices queued on its tab.
+            from kiro_crew.dashboard.chat_runner import read_tab_notices
+
+            self.context_builder.tab_notices_for_session = lambda key: read_tab_notices(self, key)
 
     def note_crew_log_class(self, slot: Any) -> None:
         """Record *slot*'s current class in its crew log, if it has moved.

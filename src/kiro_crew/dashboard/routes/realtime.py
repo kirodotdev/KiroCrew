@@ -22,7 +22,7 @@ from kiro_crew.feature_videos_cache import (
     api_feature_videos_fetch_all,
 )
 from kiro_crew.suggestions import api_suggestions
-from kiro_crew.tips import api_tips_feedback, api_tips_next, api_tips_status
+from kiro_crew.tips import api_tips_all, api_tips_feedback, api_tips_next, api_tips_status
 
 
 def register(app: web.Application) -> None:
@@ -132,6 +132,7 @@ def register(app: web.Application) -> None:
     # Tips (feature discovery)
     app.router.add_get("/api/tips/next", api_tips_next)
     app.router.add_get("/api/tips/status", api_tips_status)
+    app.router.add_get("/api/tips/all", api_tips_all)
     app.router.add_post("/api/tips/feedback", api_tips_feedback)
 
     # Feature videos (feature-intro clips, sibling of tips above)

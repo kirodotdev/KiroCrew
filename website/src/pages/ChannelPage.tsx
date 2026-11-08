@@ -8,6 +8,7 @@ import { api } from '../api/client'
 import { ApiError } from '../api/apiError'
 import ApprovalCard from '../components/ApprovalCard'
 import ErrorNotice from '../components/ErrorNotice'
+import { RadioChipGroup, radioChip } from '../components/RadioChipGroup'
 import { useConfirm } from '../components/ConfirmDialog'
 import { Btn, Input, Badge, EmptyState, PageHeader } from '../components/ui'
 import MarkdownRenderer from '../components/MarkdownRenderer'
@@ -60,6 +61,7 @@ export interface ApprovalMeta {
   command_grantable?: string
   base_derivable?: string
   base_command?: string
+  name_grants_refused?: string
 }
 
 interface Channel {
@@ -199,6 +201,15 @@ const CHANNEL_TRUSTED_LABEL_KEYS = {
   trust_base: 'components.approvalCard.trusted_channel_base',
 } as const
 
+/** The same tiers when the server says this host refuses every name grant
+ *  (`meta.name_grants_refused`): the grant is recorded, but no later run is
+ *  auto-approved, so the confirmation says the agent will ask again. */
+const CHANNEL_REFUSED_LABEL_KEYS = {
+  ...CHANNEL_TRUSTED_LABEL_KEYS,
+  trust_command: 'components.approvalCard.trusted_channel_still_asks',
+  trust_base: 'components.approvalCard.trusted_channel_still_asks',
+} as const
+
 /** Exported for the capture entries only, alongside `approvalToolTitle`: an
  *  approval's posted TEXT is rendered here, above the card, so a frame that
  *  mounts the card alone cannot show what a channel reader actually reads. */
@@ -248,7 +259,7 @@ export function MessageBubble({ msg, agents, onReply, onOpenThread, onApprove }:
               trustAllLabelKey="components.trustDropdown.trust_all_tools_channel"
               trustCommandLabelKey="components.trustDropdown.trust_this_command_channel"
               trustBaseLabelKey="components.trustDropdown.trust_all_base_channel"
-              trustedLabelKeys={CHANNEL_TRUSTED_LABEL_KEYS}
+              trustedLabelKeys={msg.meta?.name_grants_refused === '1' ? CHANNEL_REFUSED_LABEL_KEYS : CHANNEL_TRUSTED_LABEL_KEYS}
               labelValues={{ role: msg.fromRole }}
               onApprove={onApprove} />
           </div>
@@ -549,15 +560,18 @@ function NewChannelDialog({ onClose, onCreate, onClosedError, presets }: {
         className="w-full mb-4"
         placeholder={i18nT('pages.channelPage.e_g_investigate_gamma_deployment_failure')} />
       <span id="new-channel-preset-label" className="block text-[13px] font-medium text-muted mb-1">{i18nT('pages.channelPage.team_preset')}</span>
-      <div role="radiogroup" aria-labelledby="new-channel-preset-label" className="space-y-1.5">
+      {/* The shared group, not a bare role="radiogroup": it gives each option its
+          checked state and one Tab stop with arrow keys, so the picked preset is
+          announced, not shown by colour alone. */}
+      <RadioChipGroup ariaLabelledBy="new-channel-preset-label" className="space-y-1.5">
         {presets.map(p => (
-          <Btn key={p.id} onClick={() => { if (!save.saving) setPreset(p.id) }} aria-disabled={save.saving}
+          <Btn key={p.id} {...radioChip(preset === p.id)} onClick={() => { if (!save.saving) setPreset(p.id) }} aria-disabled={save.saving}
             className={`w-full text-left px-3 py-2 !rounded-lg text-sm ${preset === p.id ? '!border-accent bg-accent/10 text-text-strong' : '!border-border text-muted hover:bg-bg-hover'}`}>
             <span className="font-medium">{presetLabel(p)}</span>
             {p.agents.length > 0 && <span className="text-[13px] text-muted ml-2">({fmtList(p.agents.map(a => a.role))})</span>}
           </Btn>
         ))}
-      </div>
+      </RadioChipGroup>
     </Modal>
   )
 }

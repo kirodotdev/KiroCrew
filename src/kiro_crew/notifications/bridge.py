@@ -11,8 +11,10 @@ Routing comes from each source channel's settings
 ``deliver_min_priority`` the floor a note's EFFECTIVE priority (after the user's
 overrides and mutes) must clear. A silenced note never routes, whatever the floor.
 
-Transports plug in as :class:`BridgeSink` objects. This module ships none: a
-routed transport with no registered sink is skipped.
+Transports plug in as :class:`BridgeSink` objects (``bridge_slack.py`` is the
+first); a routed transport with no registered sink is skipped. Each delivery is
+governance-vetted, rate-limited per transport, redacted, and SEL-audited by the
+dispatcher itself (``bridge_egress.py``), so a sink only renders and sends.
 
 Loop safety: nothing here publishes to the notification bus. The dispatcher
 holds no reference to it and only ever calls its sinks, so a bridged delivery
@@ -24,9 +26,12 @@ from __future__ import annotations
 import asyncio
 import copy
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
+
+from kiro_crew.notifications.bridge_egress import audit_delivery, redact_note, vet_delivery
+from kiro_crew.notifications.rate_limit import AppRateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +53,10 @@ _FLOOR_ADMITS: dict[str, frozenset[str]] = {
 }
 
 
+class BridgeTransportUnavailable(Exception):
+    """A sink's transport is not connected; the delivery is skipped and audited."""
+
+
 class BridgeSink(Protocol):
     """One chat transport's delivery of a bridged note to the owner."""
 
@@ -55,7 +64,12 @@ class BridgeSink(Protocol):
     transport: str
 
     async def deliver(self, note: Mapping[str, Any]) -> None:
-        """Deliver *note*. Raising is logged; it never reaches the bus or the dashboard."""
+        """Deliver an already vetted and redacted *note*.
+
+        Raise :class:`BridgeTransportUnavailable` when the transport is not
+        connected. Any other raise is audited as an error and logged; it never
+        reaches the bus or the dashboard.
+        """
         ...
 
 
@@ -92,19 +106,22 @@ def rule_from_settings(entry: Mapping[str, Any] | None) -> DeliveryRule:
 
 def composite_sink(
     local: Callable[[dict[str, Any]], None],
-    bridge: Callable[[dict[str, Any]], None],
+    bridge: Callable[[dict[str, Any], str], None],
 ) -> Callable[[dict[str, Any]], None]:
     """The bus sink: *local* first and synchronously, then *bridge*.
 
-    A local failure propagates as it always has, and the bridge is not reached.
+    *bridge* also gets the note's ``publisher_session``, read before *local* runs:
+    the local sink pops that delivery-only field, and the bridge vets and
+    attributes each delivery on it. A local failure propagates as it always has, and the bridge is not reached.
     A bridge failure is logged and swallowed, so it can never fail the producer's
     ``push`` or the local delivery that already happened.
     """
 
     def _sink(note: dict[str, Any]) -> None:
+        publisher = note.get("publisher_session")
         local(note)
         try:
-            bridge(note)
+            bridge(note, publisher if isinstance(publisher, str) else "")
         except Exception:
             logger.warning("Notification bridge could not schedule a delivery", exc_info=True)
 
@@ -119,8 +136,23 @@ class BridgeDispatcher:
     dispatcher holds until they finish, so the loop never drops one mid-flight.
     """
 
-    def __init__(self, settings: Callable[[], Any]) -> None:
+    def __init__(
+        self,
+        settings: Callable[[], Any],
+        subjects: Callable[[Mapping[str, Any], str], tuple[str, ...]] | None = None,
+        committed: Callable[[Mapping[str, Any]], Awaitable[bool] | None] | None = None,
+    ) -> None:
         self._settings = settings
+        # The local sink's still-pending write for a note, or None once it is done:
+        # the gateway hands back a keyed replacement's commit, which can fail.
+        self._committed = committed or (lambda note: None)
+        # Maps a note and its publisher to the session keys governance vets it for.
+        # The gateway resolves slot keys to the session their turns run on; with no
+        # resolver the publisher is taken as given.
+        self._subjects = subjects or (lambda note, publisher: (publisher,) if publisher else ())
+        # One token bucket per transport (the app-ingress budget's shape), so a
+        # channel routed at the ``all`` floor cannot flood a chat surface.
+        self._limiter = AppRateLimiter()
         self._sinks: dict[str, BridgeSink] = {}
         self._tasks: set[asyncio.Task[None]] = set()
 
@@ -129,6 +161,15 @@ class BridgeDispatcher:
         if sink.transport not in BRIDGE_TRANSPORTS:
             raise ValueError(f"unknown bridge transport {sink.transport!r}")
         self._sinks[sink.transport] = sink
+
+    @property
+    def transports(self) -> tuple[str, ...]:
+        """The transports a route can deliver to: those with a registered sink.
+
+        In :data:`BRIDGE_TRANSPORTS` order. A route may still NAME a transport with no
+        sink (it is skipped at delivery), so the Settings UI offers only these.
+        """
+        return tuple(t for t in BRIDGE_TRANSPORTS if t in self._sinks)
 
     def rule_for(self, channel: Any) -> DeliveryRule:
         """The route stored for *channel*; no route when settings cannot be read."""
@@ -150,8 +191,13 @@ class BridgeDispatcher:
             return ()
         return rule.transports
 
-    def schedule(self, note: Mapping[str, Any], *, serving_loop: Any = None) -> None:
+    def schedule(
+        self, note: Mapping[str, Any], *, serving_loop: Any = None, publisher: str = ""
+    ) -> None:
         """Hand *note* to its routed sinks without waiting for them.
+
+        *publisher* is the session that published the note, if any: governance is
+        vetted for it as well as the host, and the delivery is attributed to it.
 
         Called right after the local sink. On the event loop the route is matched
         and the deliveries start as a tracked task. On a worker thread the local
@@ -164,7 +210,7 @@ class BridgeDispatcher:
         except RuntimeError:
             loop = None
         if loop is not None:
-            self._start(loop, note)
+            self._start(loop, note, publisher)
             return
         if serving_loop is None or serving_loop.is_closed() or not serving_loop.is_running():
             # shortcut: with no running loop there is nothing to run a delivery on (a
@@ -172,13 +218,54 @@ class BridgeDispatcher:
             # loop-less gateway path ever needs to bridge.
             return
         try:
-            serving_loop.call_soon_threadsafe(self._start, serving_loop, note)
+            serving_loop.call_soon_threadsafe(self._start, serving_loop, note, publisher)
         except RuntimeError:
             return  # The loop closed between the check and the call.
 
-    def _start(self, loop: asyncio.AbstractEventLoop, note: Mapping[str, Any]) -> None:
+    def _start(
+        self, loop: asyncio.AbstractEventLoop, note: Mapping[str, Any], publisher: str = ""
+    ) -> None:
+        try:
+            commit = self._committed(note)
+        except Exception:
+            logger.warning("Notification bridge could not read a note's commit", exc_info=True)
+            return
+        if commit is None:
+            self._fan_out(loop, note, publisher)
+            return
+        # The local sink's write is still in flight (a keyed replacement): bridge
+        # only what the dashboard actually committed, so a refused update never
+        # reaches a chat app and a retried publish never sends a second copy.
+        task = loop.create_task(self._fan_out_once_committed(loop, commit, note, publisher))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _fan_out_once_committed(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        commit: Awaitable[bool],
+        note: Mapping[str, Any],
+        publisher: str,
+    ) -> None:
+        try:
+            committed = await commit
+        except Exception:
+            # A failed write committed nothing; nothing is bridged.
+            return
+        if committed:
+            self._fan_out(loop, note, publisher)
+
+    def _fan_out(
+        self, loop: asyncio.AbstractEventLoop, note: Mapping[str, Any], publisher: str
+    ) -> None:
         transports = self.routes(note)
         if not transports:
+            return
+        try:
+            subjects = tuple(self._subjects(note, publisher))
+        except Exception:
+            # Not knowing who a note speaks for must not send it as the host alone.
+            logger.warning("Notification bridge could not resolve a note's sessions", exc_info=True)
             return
         for transport in transports:
             sink = self._sinks.get(transport)
@@ -188,19 +275,39 @@ class BridgeDispatcher:
             # One task per transport, so a slow one never holds up the rest, and a
             # private copy each: a sink can neither see later edits to the stored
             # note nor change what the dashboard or another sink holds.
-            task = loop.create_task(self._deliver_one(sink, copy.deepcopy(dict(note))))
+            task = loop.create_task(self._deliver_one(sink, copy.deepcopy(dict(note)), subjects))
             self._tasks.add(task)
             task.add_done_callback(self._tasks.discard)
 
-    @staticmethod
-    async def _deliver_one(sink: BridgeSink, note: dict[str, Any]) -> None:
+    async def _deliver_one(
+        self, sink: BridgeSink, note: dict[str, Any], subjects: tuple[str, ...]
+    ) -> None:
+        transport = sink.transport
+        publisher = subjects[0] if subjects else ""
         try:
-            await sink.deliver(note)
+            denied = await asyncio.to_thread(vet_delivery, transport, note, subjects)
         except Exception:
-            # A transport's failure never reaches the dashboard or the other sinks.
-            logger.warning(
-                "Notification bridge delivery to %s failed", sink.transport, exc_info=True
-            )
+            denied = "governance evaluation failed; denying (fail-closed)"
+        if denied:
+            audit_delivery(transport, note, "denied", publisher=publisher, error=denied)
+            return
+        if not self._limiter.allow(transport):
+            audit_delivery(transport, note, "rate_limited", publisher=publisher)
+            return
+        try:
+            await sink.deliver(redact_note(note))
+        except BridgeTransportUnavailable as exc:
+            # Not connected: an audited no-op. Nothing was sent, so the budget is kept.
+            self._limiter.refund(transport)
+            audit_delivery(transport, note, "skipped", publisher=publisher, error=str(exc))
+            return
+        except Exception as exc:
+            # A transport's failure never reaches the dashboard or the other sinks. The
+            # token is kept: a failed call may still have posted.
+            audit_delivery(transport, note, "error", publisher=publisher, error=type(exc).__name__)
+            logger.warning("Notification bridge delivery to %s failed", transport, exc_info=True)
+            return
+        audit_delivery(transport, note, "completed", publisher=publisher)
 
     async def drain(self) -> None:
         """Wait for every delivery started so far (shutdown and tests)."""

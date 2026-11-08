@@ -69,6 +69,16 @@ class TestInventory:
         assert install_row["manifest"] == expected
         assert display_row["manifest"] == expected
 
+    def test_worker_auto_approve_is_disclosed_beside_session_approval(self, monkeypatch):
+        entry = catalog_git(permissions={"workerAutoApprove": True, "sessionApproval": "yes"})
+        (install_row,) = oc.inventory([entry])
+        monkeypatch.setattr(oc, "load_official_catalog", lambda: [entry])
+        (display_row,) = oc.list_catalog_rows()
+
+        expected = {"permissions": {"workerAutoApprove": True}}
+        assert install_row["manifest"] == expected
+        assert display_row["manifest"] == expected
+
     @pytest.mark.parametrize("raw", ["true", "yes", 1, False, {}, [], None])
     def test_session_approval_disclosure_requires_json_true(self, monkeypatch, raw):
         entry = catalog_git(permissions={"sessionApproval": raw})

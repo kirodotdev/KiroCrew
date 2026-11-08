@@ -1557,7 +1557,8 @@ append and its publish to the slot's `work-unit-order` file are two steps, and t
 and `workstreams` folds read that file as "which unit holds the newest record", so two units
 of one slot on two lanes could publish in the reverse of their append order. The key is
 noted when a unit's opening entry is handed over and when the board relay resolves a
-target, never read under the writer's lock; a unit with no key is held alone. A lane stops when every owed session is held
+target (on the relay's own thread, `crew_log/work_relay_feed.py`), never read under the
+writer's lock; a unit with no key is held alone. A lane stops when every owed session is held
 by another lane; that lane looks again after it lets its session go. A producer starts
 another lane while fewer than `lanes` run and more sessions are owed or held than lanes run.
 More lanes than `lanes` stuck at once is the old single-worker behaviour again: the rest
@@ -1596,8 +1597,11 @@ carries a `GroupPart`, and a pass writes a session's consecutive run of them wit
 exists because on a loaded host every syscall of an append re-takes the GIL, so the writer
 thread paid the whole lock/stat/open/fsync sequence per entry (#31502). The contract an
 acknowledgement gives does not change: a member's post-append step (`on_settled`'s "wrote",
-the eager wake, the board relay) and its `after` run only once the whole run's `append_many`
-returned, so nothing is reported recorded before it is durable. A run fails, is retained
+the eager wake, the board relay's queue put) and its `after` run only once the whole run's
+`append_many` returned, so nothing is reported recorded before it is durable. Neither
+post-append step lists the store on the lane: the eager wake is one `put_nowait`, and the
+relay's newest-unit lookup runs on its own consumer thread, which hands the copies back
+as one follow-on per board unit (`crew-log-projection.md`). A run fails, is retained
 and is dropped as a whole, with the usual `write/dropped` marker. A run that is REFUSED
 (decided before any byte, e.g. one oversize or malformed entry) is retried one job at a
 time, so the bad entry stays the only casualty. A job without a part (a lifecycle record

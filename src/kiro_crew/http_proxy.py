@@ -14,6 +14,12 @@ def resolve_proxy(url: str) -> str | None:
     """
     proxies = urllib.request.getproxies()
     proxy = proxies.get("https") or proxies.get("http")
-    if proxy and urllib.request.proxy_bypass(urllib.parse.urlparse(url).hostname or ""):
+    if not proxy:
+        return None
+    parsed = urllib.parse.urlparse(url)
+    host = parsed.hostname or ""
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    # A bypass entry may name the bare host or ``host:port``, as Socket Mode checks.
+    if urllib.request.proxy_bypass(host) or urllib.request.proxy_bypass(f"{host}:{port}"):
         return None
     return proxy

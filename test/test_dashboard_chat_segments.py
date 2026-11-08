@@ -297,6 +297,33 @@ class TestRunChatSegmentFlush:
         assert "[REDACTED: credential]" in wire
 
     @pytest.mark.asyncio
+    async def test_reply_quoting_a_render_result_is_saved_without_the_marker(
+        self, tmp_path, monkeypatch
+    ):
+        """A reply that repeats an MCP app tool's result is saved without its render
+        marker; the marker split across two deltas is cut too."""
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        sid = "0123456789abcdef0123456789abcdef"
+        events = [
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="Result:\n[kirocrew-mcp-app:0123456789"),
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text=f"{sid[10:]}] 3 rows found\nDONE"),
+            LLMEvent(kind=EVENT_COMPLETE),
+        ]
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "render the app, then repeat the tool result")
+
+        assert [m["content"] for m in slot.messages if m.get("role") == "assistant"] == [
+            "Result:\n3 rows found\nDONE"
+        ]
+
+    @pytest.mark.asyncio
     async def test_text_tool_text_complete_produces_two_segments(self, tmp_path, monkeypatch):
         """Mock event stream: text → tool_call → text → complete produces
         two assistant messages and one tool message.
@@ -336,6 +363,36 @@ class TestRunChatSegmentFlush:
         ws_types = [t for t, _ in ws_calls]
         assert "chat_segment" in ws_types
         assert "tool_call" in ws_types
+
+    @pytest.mark.asyncio
+    async def test_reply_quoting_a_directive_result_is_saved_without_the_marker(
+        self, tmp_path, monkeypatch
+    ):
+        """A reply that repeats a directive tool's result is saved without its marker line.
+
+        The directive was applied from its tool row; the saved reply row is what
+        the finished bubble and every reload show, so the marker must not be in it.
+        """
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        events = [
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="Tagged.\n[[KIROCREW_SESSION_DIRECTIVE]]"),
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text='{"kind":"chat_tag","args":{"add":["x"]}}'),
+            LLMEvent(kind=EVENT_TEXT_CHUNK, text="\nDONE"),
+            LLMEvent(kind=EVENT_COMPLETE),
+        ]
+        state = self._make_state_for_run_chat(tmp_path, monkeypatch)
+        slot = state.get_or_create_slot("s1")
+        client = self._make_mock_client(events)
+        state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+
+        from kiro_crew.dashboard.chat import _run_chat
+
+        await _run_chat(state, slot, "tag this chat, then repeat the tool result")
+
+        assert [m["content"] for m in slot.messages if m.get("role") == "assistant"] == [
+            "Tagged.\nDONE"
+        ]
 
     @pytest.mark.asyncio
     async def test_tool_turn_progress_claim_surfaces_idle_notice(self, tmp_path, monkeypatch):

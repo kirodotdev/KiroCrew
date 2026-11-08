@@ -266,3 +266,15 @@ async def test_no_sign_in_or_token_reaches_the_log(
     assert TEAM in caplog.text
     for secret in (BEARER, "example-access-token-not-a-credential"):
         assert secret not in caplog.text
+
+
+async def test_an_external_idp_sign_in_sends_the_token_type_on_both_calls(fake: FakeCps) -> None:
+    fake.answer(200, page(1))
+    fake.answer(200, MINT["examples"][0]["body"])
+    await list_crew_endpoints(fake.url, BEARER, token_type="EXTERNAL_IDP")
+    await create_crew_access_token(fake.url, BEARER, TEAM, token_type="EXTERNAL_IDP")
+    for request in fake.requests:
+        headers = {k.lower(): v for k, v in request["headers"].items()}
+        assert headers["tokentype"] == "EXTERNAL_IDP"
+        assert headers["authorization"] == f"Bearer {BEARER}"
+        assert headers["content-type"] == "application/x-amz-json-1.0"

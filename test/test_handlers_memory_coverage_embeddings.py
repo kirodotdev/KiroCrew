@@ -214,6 +214,19 @@ class TestEmbeddingModelEndpoint:
         assert _body(resp)["code"] == "env_override_active"
 
     @pytest.mark.asyncio
+    async def test_ollama_provider_refuses_the_apply_with_409(self) -> None:
+        state = _make_state()
+        req = _make_request(state, method="POST", json_body={"path": ""})
+        with (
+            patch(f"{_MOD}.ollama_backend_selected", return_value=True),
+            patch(f"{_MOD}._apply_embedding_model") as apply_mock,
+        ):
+            resp = await mem_mod.api_memory_embedding_model(req)
+        assert resp.status == 409
+        assert _body(resp)["code"] == "ollama_provider_active"
+        apply_mock.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_apply_in_progress_is_409(self) -> None:
         state = _make_state()
         req = _make_request(state, method="POST", json_body={"path": ""})
@@ -402,6 +415,59 @@ class TestEmbeddingStatusRuntimeLoad:
         assert body["setup_error_code"] == ""
         assert body["setup_step"] == "idle"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("server_ready", [True, False])
+    async def test_ollama_backend_ignores_the_native_runtime_and_model_file(
+        self, server_ready: bool
+    ) -> None:
+        # The Ollama server makes the vectors: a failed native runtime, a missing
+        # GGUF file and a failed bundled download are not its faults. Health is
+        # the server probe alone.
+        mgr = MagicMock()
+        mgr.status = {"step": "failed", "error": "download failed", "attempt": 3}
+        with contextlib.ExitStack() as stack:
+            for p in self._patches(self._FAILED, model_present=False):
+                stack.enter_context(p)
+            embedder = MagicMock(model_id="ollama:nomic-embed-text", dim=768)
+            embedder.is_ready.return_value = server_ready
+            stack.enter_context(patch(f"{_MOD}.get_shared_embedder", return_value=embedder))
+            stack.enter_context(patch(f"{_MOD}.model_download_manager", return_value=mgr))
+            stack.enter_context(
+                patch(
+                    f"{_MOD}._read_memory_config",
+                    return_value={
+                        "embedding_provider": "ollama_http",
+                        "ollama_model": "nomic-embed-text",
+                    },
+                )
+            )
+            body = _body(await mem_mod.api_memory_embedding_status(_make_request(_make_state())))
+        assert body["server_healthy"] is server_ready
+        assert body["model_available"] is server_ready
+        assert body["setup_error_code"] == ""
+        assert body["setup_error"] == ""
+        assert body["setup_step"] == "done"
+        assert body["can_retry"] is False
+
+    @pytest.mark.asyncio
+    async def test_an_unusable_ollama_config_reports_its_reason(self) -> None:
+        # memory.ollama_model left empty: the backend sends nothing, and the
+        # status must say why instead of reading as a finished setup.
+        with contextlib.ExitStack() as stack:
+            for p in self._patches(self._IMPORTABLE):
+                stack.enter_context(p)
+            stack.enter_context(
+                patch(
+                    f"{_MOD}._read_memory_config",
+                    return_value={"embedding_provider": "ollama_http"},
+                )
+            )
+            body = _body(await mem_mod.api_memory_embedding_status(_make_request(_make_state())))
+        assert body["setup_step"] == "error"
+        assert body["setup_error_code"] == "ollama_config_invalid"
+        assert "ollama_model" in body["setup_error"]
+        assert body["can_retry"] is False
+
 
 # _write_embed_model_config
 
@@ -550,6 +616,22 @@ async def _drain(state: Any) -> None:
 
 
 class TestEnableDisableEmbeddings:
+    @pytest.mark.asyncio
+    async def test_enable_refused_with_the_ollama_provider(self) -> None:
+        # Setup would write embedding_provider = "llama_cpp" over the user's choice.
+        state = _make_state()
+        mgr = _dl_mgr("idle")
+        with (
+            patch(f"{_MOD}.ollama_backend_selected", return_value=True),
+            patch(f"{_MOD}.model_download_manager", return_value=mgr),
+            patch(f"{_MOD}.run_config_write") as write_mock,
+        ):
+            resp = await mem_mod.api_memory_enable_embeddings(_make_request(state, method="POST"))
+        assert resp.status == 409
+        assert _body(resp)["code"] == "ollama_provider_active"
+        mgr.ensure_model.assert_not_called()
+        write_mock.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_disable_is_a_deliberate_410(self) -> None:
         resp = await mem_mod.api_memory_disable_embeddings(_make_request(_make_state()))

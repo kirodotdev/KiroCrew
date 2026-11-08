@@ -66,6 +66,51 @@ class TestEnableRefusesAppTokens:
             assert resp.status == 200
         assert routes_mod.get_app(APP)["enabled"] is True
 
+    @pytest.mark.parametrize(
+        ("body", "status", "scope_consented"),
+        [
+            # The chat-only dialog was confirmed: it did not name member threads.
+            pytest.param({"sessionApprovalConsent": True}, 400, None, id="chat-only"),
+            pytest.param(
+                {"sessionApprovalConsent": True, "memberThreadsConsent": True},
+                200,
+                True,
+                id="scope-named",
+            ),
+            # A scope consent qualifies the grant consent and means nothing alone.
+            pytest.param({"memberThreadsConsent": True}, 400, None, id="scope-alone"),
+            pytest.param(
+                {"sessionApprovalConsent": True, "memberThreadsConsent": "yes"},
+                400,
+                None,
+                id="not-a-boolean",
+            ),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_member_thread_scope_consent_must_be_sent_with_the_grant_consent(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        body: dict[str, Any],
+        status: int,
+        scope_consented: bool | None,
+    ) -> None:
+        _setup_env(tmp_path, monkeypatch)
+        _install(tmp_path, permissions={"sessionApproval": True, "memberThreads": True})
+        monkeypatch.setattr(routes_mod, "start_app_backend", lambda n: None)
+        async with TestClient(TestServer(_make_app(dashboard_user="owner"))) as client:
+            resp = await client.post(f"/api/apps/{APP}/enable", json=body)
+            payload = await resp.json()
+        assert resp.status == status
+        info = routes_mod.get_app(APP)
+        if status == 200:
+            assert info["enabled"] is True
+            assert info["memberThreadsConsented"] is scope_consented
+        else:
+            assert payload["code"] == "session_approval_consent_required"
+            assert (info["enabled"], info["sessionApprovalConsentPending"]) == (False, True)
+
     @pytest.mark.asyncio
     async def test_grants_consent_must_name_the_entries_shown(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

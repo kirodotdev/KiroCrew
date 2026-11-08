@@ -49,6 +49,7 @@ const EVENT_STYLE: Record<string, string> = {
   FileEdited: 'bg-ok-subtle text-ok-text border-ok/30',
   FileDeleted: 'bg-warn-subtle text-warn-text border-warn/30',
   UserTriggered: 'bg-accent/15 text-accent border-accent/30',
+  SessionLaneChanged: 'bg-accent/15 text-accent border-accent/30',
 }
 
 const EVENT_BADGE: Record<string, 'ok' | 'err' | 'warn' | 'aim'> = {
@@ -57,6 +58,7 @@ const EVENT_BADGE: Record<string, 'ok' | 'err' | 'warn' | 'aim'> = {
   PreTaskExecution: 'aim', PostTaskExecution: 'aim',
   FileCreated: 'ok', FileEdited: 'ok', FileDeleted: 'warn',
   UserTriggered: 'ok',
+  SessionLaneChanged: 'ok',
 }
 
 const EVENT_ORDER = Object.fromEntries(EVENTS.map((e, i) => [e, i]))
@@ -594,10 +596,10 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                           // and nothing else, so a keyboard or touch user met an ON switch
                           // beside `never fires` with nothing reconciling them. The action
                           // stays first, so the control still announces what it does.
-                          aria-label={[
-                            h.enabled ? i18nT('pages.hooksPage.disable_hook') : i18nT('pages.hooksPage.enable_hook'),
-                            h.enabled ? dormantOnNote(h.event) : '',
-                          ].filter(Boolean).join(' — ')}
+                          aria-label={!h.enabled ? i18nT('pages.hooksPage.enable_hook')
+                            : dormantOnNote(h.event)
+                              ? i18nT('pages.hooksPage.disable_hook_with_note', { note: dormantOnNote(h.event) })
+                              : i18nT('pages.hooksPage.disable_hook')}
                           title={h.enabled ? dormantOnNote(h.event) : undefined}
                         >
                           <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${h.enabled ? 'left-[18px]' : 'left-0.5'}`} />
@@ -853,7 +855,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                   hand-off while a HookForm (`creating` / `editing`) is open;
                   otherwise this read-only view holds nothing to lose. */}
               <ErrorNotice
-                title={i18nT('pages.hooksPage.failed_to_load', { section: provider.labels.hooksSection.toLowerCase() })}
+                title={i18nT('pages.hooksPage.failed_to_load', { section: provider.labels.hooksSection })}
                 message={providerHookErr instanceof Error ? providerHookErr.message : String(providerHookErr)}
                 askAgent={handoffSafe}
                 className="flex-1"
@@ -931,7 +933,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
                             <Badge
                               variant="muted"
                               title={reason}
-                              aria-label={`${i18nT('pages.hooksPage.stored_only')} — ${reason}`}
+                              aria-label={i18nT('pages.hooksPage.stored_only_reason', { reason })}
                               className="whitespace-normal text-[11px] leading-[1.15] max-w-[4.75rem] bg-transparent border border-dashed border-border"
                             >{i18nT('pages.hooksPage.stored_only')}</Badge>
                           </span>
@@ -948,7 +950,7 @@ export default function HooksPage({ embedded }: { embedded?: boolean } = {}) {
               </table>
             </div>
           ) : (
-            <EmptyState icon={<Link2 className="lucide-inline" />} title={i18nT('pages.hooksPage.none_configured', { section: provider.labels.hooksSection.toLowerCase() })} subtitle={provider.labels.configFile ? i18nT('pages.hooksPage.configure_via', { path: provider.labels.configFile }) : ''} />
+            <EmptyState icon={<Link2 className="lucide-inline" />} title={i18nT('pages.hooksPage.none_configured', { section: provider.labels.hooksSection })} subtitle={provider.labels.configFile ? i18nT('pages.hooksPage.configure_via', { path: provider.labels.configFile }) : ''} />
           )}
         </Card>
         )}

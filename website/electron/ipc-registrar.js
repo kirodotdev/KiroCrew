@@ -22,6 +22,10 @@ const { crashNoticeSummary } = require("./crash-collector");
 const { PREFIX: PANE_ASSETS_PREFIX, purgeableOrigin } = require("./pane-asset-journal");
 const { safeFilename } = require("./download-handler");
 const { saveThemeSplash } = require("./theme-splash");
+const { createRelayCrewOpener, isEndpointId } = require("./relay-crew-open");
+const { requestRelayCrewToken } = require("./relay-crew-client");
+const { openRelayCrewWindow, createTokenHolder } = require("./relay-crew-window");
+const { createRelayCrewRenewal } = require("./relay-crew-renewal");
 
 /**
  * Register the Electron shell's renderer bridges without taking ownership of
@@ -59,6 +63,9 @@ function createIpcRegistrar({
   // build). See runtime/update/policy-channel.js.
   getRequiredChannel = requiredUpdateChannelFor(),
   clipboardImageTimeoutMs = 1000,
+  // The relay Crew opener behind `relay-crew:open`. Built on first use from the
+  // injected Electron when absent; tests pass a fake.
+  relayCrewOpenerOverride = null,
 } = {}) {
   if (!electron) throw new Error("createIpcRegistrar: electron is required");
   if (!store) throw new Error("createIpcRegistrar: store is required");
@@ -166,6 +173,24 @@ function createIpcRegistrar({
       );
       throw new Error(`${channel} is restricted to the local dashboard`);
     }
+  };
+
+  let relayOpener = relayCrewOpenerOverride;
+  const relayCrewOpener = () => {
+    if (!relayOpener) {
+      const { BaseWindow, WebContentsView, session } = electron;
+      const windowDeps = { BaseWindow, WebContentsView, session, shell, log };
+      relayOpener = createRelayCrewOpener({
+        requestToken: (endpointId, signInMarker) => requestRelayCrewToken({
+          backendUrl, endpointId, signInMarker, getSecret: readInternalSecret, fetchFn,
+        }),
+        openWindow: (opts) => openRelayCrewWindow(opts, windowDeps),
+        createRenewal: createRelayCrewRenewal,
+        createTokenHolder,
+        log,
+      });
+    }
+    return relayOpener;
   };
 
   setGlobalHotkeyLogger(log);
@@ -672,6 +697,23 @@ function createIpcRegistrar({
         fetchFn,
         log,
       });
+    });
+
+    // Open a remote Crew reached through the Kiro relay, in its own window
+    // (relay-crew-open.js). The renderer sends only the endpoint ID; main asks
+    // this shell's own gateway for the access token with the local secret, so
+    // neither the token nor the Crew URL crosses the bridge. Gated like
+    // `external-terminal:open`, because a connection window pointed at a
+    // remote gateway shares this preload. Never rejects: the dashboard gets
+    // `{ ok }` or `{ ok: false, error }`.
+    ipcMain.handle("relay-crew:open", async (event, endpointId) => {
+      if (!isEndpointId(endpointId)) return { ok: false, error: "INVALID_ENDPOINT" };
+      try {
+        await assertLocalDashboard(event, "relay-crew:open");
+      } catch {
+        return { ok: false, error: "UNAVAILABLE" };
+      }
+      return relayCrewOpener().open(endpointId);
     });
 
     ipcMain.handle("zoom:get", (event) =>

@@ -33,7 +33,6 @@ from kiro_crew.config.loader import (
     _workspace_dir_file,
     coerce_config_field,
     config_path,
-    env_bom_prefix,
     env_path,
     normalize_workspace_path,
     read_config_text,
@@ -46,7 +45,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.config.superseded_defaults import ack_explicit_write
 from kiro_crew.constants import MIN_NODE_VERSION, format_node_version
 from kiro_crew.dashboard.urls import _resolve_hostname_bounded
-from kiro_crew.hidden_leaf_staging import EnvStagingRefused, publish_env
+from kiro_crew.hidden_leaf_staging import EnvStagingRefused
 from kiro_crew.host_timezone import LOCAL_TIMEZONE, detect_host_timezone, is_local_timezone
 from kiro_crew.sandbox import unavailable_kind
 from kiro_crew.secrets.migrate import _env_lock_path
@@ -790,6 +789,9 @@ def _read_env_pairs(cred_path: Path) -> dict[str, str]:
     pairs: dict[str, str] = {}
     if cred_path.exists():
         for line in read_env_text(cred_path, encoding="utf-8").splitlines():
+            # Stripped first, as the boot parser does, so an indented
+            # ``  # KEY=value`` comment is a comment and not a ``# KEY`` key.
+            line = line.strip()
             if "=" in line and not line.startswith("#"):
                 k, _, v = line.partition("=")
                 pairs[k.strip()] = v.strip()
@@ -929,10 +931,12 @@ def _setup_slack_tokens() -> None:
             # overwrite it.
             _print_wide_env_remedy(cred_path, exc)
             return
-        merged[CRED_SLACK_APP_TOKEN] = app_token
-        merged[CRED_SLACK_BOT_TOKEN] = bot_token
+        updates: dict[str, str | None] = {
+            CRED_SLACK_APP_TOKEN: app_token,
+            CRED_SLACK_BOT_TOKEN: bot_token,
+        }
         if owner_id:
-            merged[CRED_OWNER_ID] = owner_id
+            updates[CRED_OWNER_ID] = owner_id
         elif owner_rejected and merged.get(CRED_OWNER_ID):
             # The operator's member ID was rejected, so `merged` still holds the
             # PREVIOUS one, re-read from disk — and the tokens above are brand new.
@@ -949,7 +953,7 @@ def _setup_slack_tokens() -> None:
             stale_owner = merged[CRED_OWNER_ID]
             stale_ok, stale_detail = _verify_slack_owner_id(bot_token or "", stale_owner)
             if stale_ok is False:
-                del merged[CRED_OWNER_ID]
+                updates[CRED_OWNER_ID] = None
                 print(
                     f"  ⚠️  Also dropped the saved member ID {stale_owner} — it is not "
                     f"valid for these tokens ({stale_detail}). Set it with "
@@ -957,18 +961,30 @@ def _setup_slack_tokens() -> None:
                 )
             else:
                 print(f"  ℹ️  Keeping the saved member ID {stale_owner}.\n")
-        lines = [f"{k}={v}" for k, v in merged.items()]
-        # publish_env, not write_text + chmod(0o600) or a plain atomic_write: a
-        # bare chmod is a silent no-op for Windows ACLs, and a plain atomic_write
-        # stages its temp beside .env, at a name no sandbox mask covers. The
-        # helper stages inside the masked staging directory, locks the temp down
+        if CRED_OWNER_ID not in updates and CRED_OWNER_ID in merged:
+            # A kept member ID is written back under its one folded spelling.
+            updates[CRED_OWNER_ID] = merged[CRED_OWNER_ID]
+        # Only the lines of the keys above are replaced (every case-equivalent
+        # spelling of each, as the read above folds them); every other line --
+        # comments, blank lines, unrelated keys -- is kept byte for byte, and a
+        # key not yet in the file is appended. The dashboard credential writer
+        # does the same, so this reuses its locked rewrite: the .env lock is
+        # already held here, and that function never takes it. Imported here,
+        # not at module top, so the wizard loads the dashboard handlers only
+        # when it saves.
+        from kiro_crew.dashboard.handlers.messaging import _write_env_updates_locked
+
+        # That rewrite publishes through publish_env, not write_text +
+        # chmod(0o600) or a plain atomic_write: a bare chmod is a silent no-op
+        # for Windows ACLs, and a plain atomic_write stages its temp beside
+        # .env, at a name no sandbox mask covers. publish_env stages inside the masked staging directory, locks the temp down
         # to its owner before any content reaches it and renames only on success,
         # so the tokens never sit under a wider mode or an unmasked name, and a
         # failure leaves the previous .env untouched. A refused lockdown of the
         # temp file warns, as the dashboard credential writers do. An unusable
         # staging directory refuses the save and prints its fix, not a traceback.
         try:
-            publish_env(cred_path, env_bom_prefix(cred_path) + "\n".join(lines) + "\n")
+            _write_env_updates_locked(cred_path, updates)
         except EnvStagingRefused as exc:
             print(f"  ⚠  Nothing was saved. {exc}\n")
             return
@@ -999,12 +1015,9 @@ def _setup_whatsapp() -> None:
     neonize or opens the session store: the wizard reports on the credential's
     path, never through it.
     """
+    from kiro_crew import extras
     from kiro_crew.config.paths import data_home
-    from kiro_crew.whatsapp.client import (
-        MISSING_EXTRA_HINT,
-        default_db_path,
-        neonize_available,
-    )
+    from kiro_crew.whatsapp.client import default_db_path, neonize_available
 
     print("── WhatsApp ──\n")
     print("  WhatsApp links as a device on your OWN account. There is no bot")
@@ -1016,8 +1029,14 @@ def _setup_whatsapp() -> None:
     if neonize_available():
         print("  ✅ The 'whatsapp' dependency extra is installed")
     else:
-        print("  ⚠️  The 'whatsapp' extra is NOT installed, so the channel cannot start")
-        print(f"     {MISSING_EXTRA_HINT}")
+        print("  ⚠️  The 'whatsapp' extra (neonize) is NOT installed, so the channel cannot start")
+        # Same rule as the doctor's rows: name THIS interpreter, and only where
+        # pip can install into it (never on the desktop app's bundled Python).
+        if extras.pip_install_channel_available():
+            print(f"     Install: {extras.pip_install_command('whatsapp')}")
+        else:
+            print("     This install's Python cannot add packages with pip;")
+            print("     see Settings → Messaging Channels → WhatsApp")
 
     store = default_db_path(data_home())
     if store.exists():

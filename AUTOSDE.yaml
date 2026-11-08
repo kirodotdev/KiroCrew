@@ -305,7 +305,7 @@ custom-rules:
         and can run the legacy migration), pins the import-time `~/.kiro`
         bindings via `_isolate_shared_kiro_paths`, scrubs the inherited
         shell-preload and exported-function variables `name_grant` refuses on
-        (`BASH_ENV`/`ENV`/..., `BASH_FUNC_*`), pins the SEL default dir
+        (`BASH_ENV`/`SHELLOPTS`/..., `BASH_FUNC_*`), pins the SEL default dir
         session-wide, redirects `tempfile`'s base with residue reported,
         restores the session CWD in a `tryfirst` teardown hook before fixture
         finalizers run, and fails the run on residue at the repository root.

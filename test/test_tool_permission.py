@@ -1068,7 +1068,7 @@ async def test_spec_hooks_consult_the_gate_on_gated_and_ungated_turns():
         return "guard.sh: hook denied"
 
     event = _event(tool_input='{"command": "ls"}', mcp_server_name="srv", harness_tool_id="bash")
-    ask = Ask(event, None, "k")
+    ask = Ask(event, AcpWire(SimpleNamespace(session_id="sess_abc")), "k")
     floor = SpecHooks(
         TurnSpecHooks(["h"], "/w", False, True),
         store=lambda: "store",
@@ -1090,6 +1090,7 @@ async def test_spec_hooks_consult_the_gate_on_gated_and_ungated_turns():
                 "tool_identity": "execute_bash",
                 "mcp_server": "srv",
                 "harness_tool_id": "bash",
+                "acp_session_id": "sess_abc",
                 "parent_session_key": "p",
                 "agent_role": "role",
             },
@@ -1808,6 +1809,8 @@ async def test_each_ladder_gives_its_spec_hooks_the_callers_identity(monkeypatch
                 "tool_identity": "execute_bash",
                 "mcp_server": "srv",
                 "harness_tool_id": "h1",
+                # The wire has no client, so no session id.
+                "acp_session_id": None,
                 **identity,
             },
         )

@@ -236,6 +236,7 @@ class AcpRuntimeProtocol(Protocol):
         params: dict[str, Any],
         *,
         on_reserved: Callable[[int], None] | None = None,
+        before_write: Callable[[], None] | None = None,
     ) -> int: ...
 
     async def probe_advertised_models(

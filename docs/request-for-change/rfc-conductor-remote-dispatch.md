@@ -422,7 +422,8 @@ ones.
 - **Owner-only.** A `crew=` call, and any placed create, is admitted only from an
   owner-minted dashboard session. Wave 1 adds this caller rule itself; no such
   rule exists on main today. Channel-born, app, cron and workflow callers are
-  refused. The proxy route stays owner-only.
+  refused. The session must also be an Ultra Mode chat; a plain chat on any
+  other agent is refused `ultra_mode_only`. The proxy route stays owner-only.
 - **Only its own sessions.** `send`, `read`, `stop` and `close` with a crew reach
   only a peer slot that is the `worker_session_key` of an item in the caller's
   ledger with a matching `worker_instance_id`. A conductor cannot drive the

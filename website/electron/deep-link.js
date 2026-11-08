@@ -1,20 +1,22 @@
 // kirocrew:// deep links for the Kiro Crew Electron app.
 //
 // Other programs on the machine (a companion app, a Slack button, a Raycast
-// script, `kirocrew open`) use this scheme to open the desktop app on one
-// session, or on one app's detail page, rather than only bring its window
-// forward. A link carries the same target as the dashboard's own browser URL
-// (`/chat?sid=<slot key>`, `/apps/detail/<name>`) and is delivered through the
-// same `navigate` IPC the Crew Companion overlay's "Open session" uses inside
-// the process.
+// script, `kirocrew open`, a web page listing the user's machines) use this
+// scheme to open the desktop app on one session, on one app's detail page, or
+// on Settings -> Remote Crew's add form filled in with one machine, rather than
+// only bring its window forward. A link carries the same target as the
+// dashboard's own browser URL (`/chat?sid=<slot key>`, `/apps/detail/<name>`,
+// `/settings/instances`) and is delivered through the same `navigate` IPC the
+// Crew Companion overlay's "Open session" uses inside the process.
 //
 // This module owns the one decision that matters for a scheme handler: which
 // URLs are allowed to drive navigation. The string comes from the OS, which
 // hands the app whatever any other program asked LaunchServices (or the
 // Windows/Linux registration) to open, so it is untrusted input. The rule is an
-// allowlist of three shapes -- raise the window, open one session, or show one
-// app's detail page -- mirroring `external-scheme.js`'s stance on outbound
-// schemes: a deny-by-default shape, never a pass-through.
+// allowlist of four shapes -- raise the window, open one session, show one
+// app's detail page, or fill in the Remote Crew add form -- mirroring
+// `external-scheme.js`'s stance on outbound schemes: a deny-by-default shape,
+// never a pass-through.
 //
 // Electron-free on purpose (like display-media.js and external-scheme.js) so
 // the parsing and the allowlist are unit-tested without a live app;
@@ -52,11 +54,14 @@ function deepLinkFromArgv(argv) {
 /**
  * Resolve a kirocrew:// URL to the dashboard route it may open.
  *
- * Exactly three forms are accepted:
+ * Exactly four forms are accepted:
  *
  *   kirocrew://                       -> { route: "" }           (raise the window)
  *   kirocrew://chat?sid=<slot key>    -> { route: "/chat?sid=<encoded key>", slotKey }
  *   kirocrew://apps/detail/<name>     -> { route: "/apps/detail/<name>" }   (one app's detail page)
+ *   kirocrew://remote-crew/add?host=<ssh host>[&user=<u>][&port=<n>][&name=<label>]
+ *                                     -> { route: "/settings/instances?host=<[u@]ssh host>[&port=<n>][&name=<label>]" }
+ *                                        (the Remote Crew add form, filled in; see resolveRemoteCrewAdd)
  *
  * Anything else -- another scheme, an unknown host, an extra path segment, a
  * missing or malformed sid or app name, any other query parameter -- is refused
@@ -124,7 +129,56 @@ function resolveDeepLink(raw) {
     return { ok: true, route: `/apps/detail/${encodeURIComponent(name)}`, slotKey: "" };
   }
 
+  if (host === "remote-crew") return resolveRemoteCrewAdd(raw, segments, url.searchParams);
+
   return refuse("unknown route");
+}
+
+// A Remote Crew add link FILLS IN Settings -> Remote Crew's add form and does
+// nothing else: nothing is saved, no tunnel opens and no command runs until the
+// user reads the fields and presses Add. From that click on, the crew is one the
+// user added by hand, so with Auto-connect crews on it connects once added. So
+// whatever can make the OS open this URL can put in that form only text the
+// user could have typed, under a line saying where it came from.
+//
+// The whole URL is capped before anything is read from it, each key may appear
+// once, and an unknown key refuses the link instead of being dropped, so a link
+// is taken whole or not at all.
+const REMOTE_CREW_LINK_MAX_LENGTH = 8192;
+const REMOTE_CREW_ADD_KEYS = ["host", "user", "port", "name"];
+
+/**
+ * `host` (required) and `user` (optional) become the form's SSH host, `user@host`
+ * when both are given, and must pass `isSshHost`. `port` is the REMOTE GATEWAY's
+ * port, the form's Remote port field; the port ssh dials comes from the user's
+ * `~/.ssh/config`, as it does for a crew typed in by hand. `name` is the crew's
+ * label. A link without `port` or `name` leaves that field as the form has it.
+ *
+ * @param {string} raw the URL as the OS delivered it
+ * @param {string[]} segments its path segments
+ * @param {URLSearchParams} query its query
+ */
+function resolveRemoteCrewAdd(raw, segments, query) {
+  if (raw.length > REMOTE_CREW_LINK_MAX_LENGTH) return refuse("link too long");
+  if (segments.length !== 1 || segments[0] !== "add") return refuse("unknown route");
+  const seen = new Set();
+  for (const key of query.keys()) {
+    if (!REMOTE_CREW_ADD_KEYS.includes(key)) return refuse("unknown query parameter");
+    if (seen.has(key)) return refuse("repeated query parameter");
+    seen.add(key);
+  }
+  if (!seen.has("host")) return refuse("missing host");
+  const user = query.get("user");
+  const sshHost = user === null ? query.get("host") : `${user}@${query.get("host")}`;
+  if (!isSshHost(sshHost)) return refuse("invalid host");
+  const port = query.get("port");
+  if (port !== null && !isGatewayPort(port)) return refuse("invalid port");
+  const name = query.get("name");
+  if (name !== null && !isCrewName(name)) return refuse("invalid name");
+  let route = `/settings/instances?host=${encodeURIComponent(sshHost)}`;
+  if (port !== null) route += `&port=${port}`;
+  if (name !== null) route += `&name=${encodeURIComponent(name)}`;
+  return { ok: true, route, slotKey: "" };
 }
 
 function refuse(reason) {
@@ -163,9 +217,50 @@ function isAppName(s) {
   return true;
 }
 
+// SSH hosts: what `validate_ssh_host` (src/kiro_crew/instances/validation.py)
+// accepts, the check the gateway runs before it puts a host in an ssh command
+// line. A host, an FQDN, an ssh-config alias or `user@host`: at most one `@`,
+// each part starting with a letter, digit or underscore and holding only those,
+// `.` and `-`, so no part can be read as an ssh option. The gateway strips
+// surrounding whitespace first; a link carrying any is refused instead.
+// test/fixtures/ssh-host-samples.json holds the hosts both sides are tested on,
+// and test/test_cli_open.py keeps SSH_HOST_MAX_LENGTH equal to the gateway's.
+const SSH_HOST_MAX_LENGTH = 255;
+const SSH_HOST_PART_RE = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
+
+function isSshHost(s) {
+  if (typeof s !== "string" || s.length === 0 || s.length > SSH_HOST_MAX_LENGTH) return false;
+  const parts = s.split("@");
+  return parts.length <= 2 && parts.every((part) => SSH_HOST_PART_RE.test(part));
+}
+
+// A TCP port, written without a sign or leading zero.
+function isGatewayPort(s) {
+  return /^[1-9][0-9]{0,4}$/.test(s) && Number(s) <= 65535;
+}
+
+// Crew labels: not blank, at most the registry's `INSTANCE_NAME_MAX` characters
+// (src/kiro_crew/instances/registry.py, counted in code points as Python does;
+// test/test_cli_open.py keeps the two equal), and no control or invisible
+// formatting character, so the label the user reads in the form is the text it
+// holds.
+const CREW_NAME_MAX_LENGTH = 200;
+const CONTROL_OR_FORMAT_RE = /[\p{Cc}\p{Cf}]/u;
+
+function isCrewName(s) {
+  return (
+    typeof s === "string" &&
+    s.trim().length > 0 &&
+    Array.from(s).length <= CREW_NAME_MAX_LENGTH &&
+    !CONTROL_OR_FORMAT_RE.test(s)
+  );
+}
+
 module.exports = {
   SCHEME,
   deepLinkFromArgv,
   isAppName,
+  isCrewName,
+  isSshHost,
   resolveDeepLink,
 };

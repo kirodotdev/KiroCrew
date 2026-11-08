@@ -36,7 +36,11 @@ from kiro_crew.dashboard.chat_utils import (
     is_system_injection_item,
     releases_past_subagent_hold,
 )
-from kiro_crew.dashboard.chat_utils_injected_rows import AUTOMATION_STEER_META
+from kiro_crew.dashboard.chat_utils_injected_rows import (
+    AUTOMATION_STEER_META,
+    WORKFLOW_FOLLOWUP_KIND,
+)
+from kiro_crew.dashboard.chat_utils_slots import dashboard_slot_key
 from kiro_crew.dashboard.queue_edit_hold import edit_hold_blocks_user_turn
 from kiro_crew.dashboard.recovery_replays import replays_of
 from kiro_crew.dashboard.session_directive_apply import (
@@ -52,6 +56,8 @@ from kiro_crew.dashboard.state import CRON_NOTIFY_RE, SUBAGENT_COMPLETION_PREFIX
 from kiro_crew.history import HUMAN_TURN_META_KEY
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from kiro_crew.dashboard.chat_runner import (
         _PARKED_FOR_MEMORY,
         COMMANDS_OFF_META_KEY,
@@ -237,6 +243,34 @@ def settle_drained_subagent_notices(state: Any, slot: Any, notices: list[str]) -
     if isinstance(bg, set):
         bg.add(writer)
         writer.add_done_callback(bg.discard)
+
+
+def read_tab_notices(
+    state: Any, session_key: str
+) -> tuple[list[str], Callable[[bool], None]] | None:
+    """The sub-agent notices queued on the tab that shows *session_key*, for its turn.
+
+    The builder's ``tab_notices_for_session``: a turn started in a channel
+    conversation's own thread builds its prompt in ``build_message``, never in
+    ``_turn_build_prompt``, so this is how it reads the queue a turn in the
+    conversation's tab drains. Returns a copy of the notices and the call the turn's
+    settle makes. They stay queued until that call says the turn landed, which takes
+    them off the front and writes their delivery debts, so a turn that never landed,
+    or never settled, leaves them for the next one. ``None`` when nothing is queued.
+    """
+    slot = state.get_slot(dashboard_slot_key(session_key))
+    pending = getattr(slot, "_pending_subagent_failures", None)
+    if not pending:
+        return None
+    notices = pending[:]
+
+    def _settle(landed: bool) -> None:
+        # Still at the front unless a turn in the tab drained them, which settles them.
+        if landed and pending[: len(notices)] == notices:
+            del pending[: len(notices)]
+            settle_drained_subagent_notices(state, slot, notices)
+
+    return notices, _settle
 
 
 #: Where a requeue stamps the actor of the turn it is retrying. Re-exported from
@@ -942,6 +976,10 @@ async def _start_next_queued_turn(
     # own bubble. Never merges (a system-injection kind), so ``consumed`` holds
     # it alone.
     is_automation_notice = any(item.get("kind") == AUTOMATION_NOTICE_KIND for item in consumed)
+    # The gateway's follow-up prompt after a workflow result: structural kind
+    # again, so it drains as the same `inject` row its idle twin writes
+    # (`_ChatSlot.enqueue_or_run_prompt`). Never merges (a system-injection kind).
+    is_workflow_followup = any(item.get("kind") == WORKFLOW_FOLLOWUP_KIND for item in consumed)
     # A requeued automation steer (a work-ledger wake the turn never took): its
     # entry names the `meta.nudge` its row carries, so it drains as the same
     # nudge row it was steered as, never as the person's `user` row. Never
@@ -962,6 +1000,7 @@ async def _start_next_queued_turn(
         or is_app_message
         or is_automation_notice
         or is_automation_steer
+        or is_workflow_followup
     ):
         # A user message after the last completion takes over from the armed
         # synthesis and ends its batch, so its count starts over. Only the
@@ -974,6 +1013,7 @@ async def _start_next_queued_turn(
         # synthesis; clearing a live batch's count loses its one.
         if end_batch:
             slot._synthesis_completion_turns = 0
+            slot._synthesis_final_turn_ran = False
         slot._pending_synthesis = False
         slot._synthesis_rechecks = 0
 
@@ -1009,6 +1049,7 @@ async def _start_next_queued_turn(
             or is_app_message
             or is_automation_notice
             or is_automation_steer
+            or is_workflow_followup
             or responsive_chat.reusable_row(slot, consumed, next_msg) is not None,
         }
         # The client rebuilds the drained entry as a user row from this frame
@@ -1066,7 +1107,7 @@ async def _start_next_queued_turn(
         row_role = "nudge"
     elif is_subagent:
         row_role = "subagent"
-    elif is_cron or is_recovery or is_app_message or is_automation_notice:
+    elif is_cron or is_recovery or is_app_message or is_automation_notice or is_workflow_followup:
         row_role = "inject"
     else:
         row_role = "user"
@@ -1082,7 +1123,7 @@ async def _start_next_queued_turn(
         # `_prepare_messages` replace the stored meta on HTTP rebuild,
         # dropping `injectKind` and the row's collapse/fold exemptions.
         row_cls = app_inject_row(app_label or "app")[1]
-    elif is_recovery or is_automation_notice:
+    elif is_recovery or is_automation_notice or is_workflow_followup:
         row_cls = "msg msg-inject"
     else:
         row_cls = "msg msg-u"
@@ -1257,6 +1298,8 @@ async def _start_next_queued_turn(
             _inject_kind = "mcp_app"
         elif is_automation_notice:
             _inject_kind = "automation_notice"
+        elif is_workflow_followup:
+            _inject_kind = "workflow"
         elif synthetic_payload:
             _inject_kind = "recovery"
         else:

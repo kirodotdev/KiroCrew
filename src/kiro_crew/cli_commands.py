@@ -758,6 +758,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _remove_deleted_agent_leftovers,
     )
     from kiro_crew.cli_commands_app import (  # noqa: F401
+        _MEMBER_THREADS_DESC,
         _SESSION_APPROVAL_CONSENT_REQUIRED,
         _SESSION_APPROVAL_DESC,
         _app_already_gone,
@@ -846,7 +847,6 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _handle_secrets_authorize,
         _publish_secret_request_policy,
         _spawn_precreates_policy_directory,
-        _windows_authorize_unavailable,
     )
     from kiro_crew.cli_commands_security import (  # noqa: F401
         _TIME_SELECTOR_RE,

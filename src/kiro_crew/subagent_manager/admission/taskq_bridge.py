@@ -764,21 +764,19 @@ class _TaskqBridgeMixin(ManagerComponent):
                     # write keeps retrying here behind them.
                     store.hold_until_settled(agent_id, hold_state)
                     released.set()
+                if tombstoned:
+                    holding = "its tombstone is the verdict"
+                elif hold_state == _taskq.FAILED:
+                    holding = "holding its refusal"
+                else:
+                    holding = "holding its stop"
                 _glue_logger.warning(
                     "taskq: %s %s is not settled after %d tries; %s and retrying until the "
                     "row reads terminal",
                     what,
                     agent_id,
                     attempt,
-                    (
-                        "its tombstone is the verdict"
-                        if tombstoned
-                        else (
-                            "holding its refusal"
-                            if hold_state == _taskq.FAILED
-                            else "holding its stop"
-                        )
-                    ),
+                    holding,
                 )
             await _asyncio.sleep(pause)
             pause = min(pause * 2, _SETTLE_RETRY_BACKOFF_CAP_SECS)

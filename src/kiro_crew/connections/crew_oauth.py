@@ -1,4 +1,4 @@
-"""Crew-owned OAuth for one Connection (MVP: GitHub on KAS, ``connections.crew_oauth``).
+"""Crew-owned OAuth for one Connection (MVP: GitHub on KAS, ``dashboard.feature_previews.crew_oauth``).
 
 The gateway runs the OAuth chain itself instead of handing it to the harness
 (``docs/request-for-change`` RFC "Crew-owned OAuth for Connections", phase 1):
@@ -15,8 +15,8 @@ The gateway runs the OAuth chain itself instead of handing it to the harness
   access token is used, and a failed refresh never deletes the stored pair.
 * :func:`disconnect` revokes upstream (best effort) and deletes the entry.
 
-Off by default. With the flag off (or on Windows, where the attested Unix-socket
-channel the proxy needs does not exist) :func:`manages` is False everywhere and
+Off by default (Settings > Feature previews). With the flag off :func:`manages` is
+False everywhere and
 nothing in this module runs. Standard library + aiohttp only; imported lazily.
 """
 
@@ -31,11 +31,11 @@ import urllib.parse
 from dataclasses import dataclass
 from typing import Any
 
-from kiro_crew import platform_compat
-
 logger = logging.getLogger(__name__)
 
-#: The ``config.json`` key under ``connections`` that turns this on.
+#: The switch: the feature preview ``dashboard.feature_previews.crew_oauth``
+#: (Settings > Feature previews), the only key read: a hand-edited
+#: ``connections.crew_oauth`` turns nothing on.
 FLAG_KEY = "crew_oauth"
 #: The MVP covers exactly these slugs.
 SUPPORTED_SLUGS = frozenset({"github"})
@@ -71,16 +71,18 @@ class CrewOAuthError(Exception):
 
 
 def enabled() -> bool:
-    """Whether ``connections.crew_oauth`` is ``true`` on a POSIX gateway. Blocking."""
-    if platform_compat.IS_WINDOWS:
-        return False
-    from kiro_crew.config.loader import read_config_for_update
+    """Whether the preview (:data:`FLAG_KEY`) is ``true``. Blocking.
+
+    Reads the loaded config (``config.local.json`` overlay included), the same
+    value the dashboard's switch shows.
+    """
+    from kiro_crew.config import KiroCrewConfig
 
     try:
-        connections = (read_config_for_update() or {}).get("connections")
+        previews = KiroCrewConfig.load().dashboard.feature_previews
     except Exception:  # noqa: BLE001 -- an unreadable config reads as off
         return False
-    return isinstance(connections, dict) and connections.get(FLAG_KEY) is True
+    return isinstance(previews, dict) and previews.get(FLAG_KEY) is True
 
 
 def _chat_backend_is_kas() -> bool:

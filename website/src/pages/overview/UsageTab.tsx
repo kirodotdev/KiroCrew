@@ -134,8 +134,10 @@ export default function UsageTab() {
       ) : harnessUnread ? (
         <Card>
           <ErrorNotice message={i18nT('pages.overview.usageTab.harness_unread')} report={reportForError(cfgQuery.error)} askAgent testId="usage-series-harness-unread" />
-          <Btn className="mt-3 min-h-11" disabled={cfgQuery.isFetching} onClick={() => void cfgQuery.refetch()}>
-            {i18nT('pages.overview.usageSeriesChart.retry')}
+          {/* aria-disabled, not disabled: a disabled button leaves the tab
+              order and drops the keyboard focus of the user who pressed it. */}
+          <Btn className="mt-3 min-h-11 aria-disabled:opacity-60 aria-disabled:cursor-default aria-disabled:hover:bg-transparent aria-disabled:hover:border-border aria-disabled:active:scale-100" aria-disabled={cfgQuery.isFetching || undefined} onClick={() => { if (!cfgQuery.isFetching) void cfgQuery.refetch() }}>
+            {cfgQuery.isFetching ? i18nT('pages.sessionsTab.retrying') : i18nT('pages.overview.usageSeriesChart.retry')}
           </Btn>
         </Card>
       ) : null}

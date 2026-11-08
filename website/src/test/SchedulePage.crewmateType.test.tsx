@@ -97,7 +97,7 @@ describe('Schedule list mate schedules', () => {
     const store = createTestStore()
     renderWithProviders(<SchedulePage />, { store })
     await screen.findByText('Radar triage')
-    fireEvent.click(await screen.findByLabelText('Filter by Bot'))
+    fireEvent.click(await screen.findByLabelText('Filter by bot'))
     fireEvent.click(await screen.findByRole('option', { name: /radar/ }))
     await waitFor(() => expect(screen.queryByText('Scout sweep')).toBeNull())
 
@@ -107,7 +107,7 @@ describe('Schedule list mate schedules', () => {
 
     expect(await screen.findByText('Scout sweep')).toBeInTheDocument()
     expect(screen.getByText('Template job')).toBeInTheDocument()
-    expect(screen.getByLabelText('Filter by Bot')).toHaveTextContent('All Bots')
+    expect(screen.getByLabelText('Filter by bot')).toHaveTextContent('All bots')
   })
 
   it('finds a mate job by the display name its row shows', async () => {
@@ -152,7 +152,7 @@ describe('Schedule list mate schedules', () => {
 
     const notice = await screen.findByTestId('schedule-crewmate-roster-error')
     expect(notice).toHaveAttribute('role', 'alert')
-    expect(notice).toHaveTextContent('Could not load your Bots.')
+    expect(notice).toHaveTextContent('Could not load your bots.')
     expect(notice).toHaveTextContent('Members request failed (HTTP 500)')
     for (const job of JOBS.filter(j => j.member_id)) {
       const cell = typeCell(job.name)
@@ -160,19 +160,19 @@ describe('Schedule list mate schedules', () => {
       expect(within(cell).getByText(job.member_id!)).toBeInTheDocument()
       expect(within(cell).queryByRole('link')).toBeNull()
     }
-    expect(screen.queryByLabelText('Filter by Bot')).toBeNull()
+    expect(screen.queryByLabelText('Filter by bot')).toBeNull()
 
     vi.mocked(api).members.mockResolvedValue({ members: ROSTER })
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
 
     expect(await within(typeCell('Radar triage')).findByRole('link', { name: /radar/ })).toHaveAttribute('href', '/members?member=radar')
-    expect(await screen.findByLabelText('Filter by Bot')).toBeInTheDocument()
+    expect(await screen.findByLabelText('Filter by bot')).toBeInTheDocument()
     await waitFor(() => expect(screen.queryByTestId('schedule-crewmate-roster-error')).toBeNull())
   })
 
   it('the mate filter narrows the list to one mate', async () => {
     await renderList()
-    fireEvent.click(await screen.findByLabelText('Filter by Bot'))
+    fireEvent.click(await screen.findByLabelText('Filter by bot'))
     fireEvent.click(await screen.findByRole('option', { name: /radar/ }))
     await waitFor(() => expect(screen.queryByText('Scout sweep')).toBeNull())
     expect(screen.getByText('Radar triage')).toBeInTheDocument()
@@ -185,6 +185,6 @@ describe('Schedule list mate schedules', () => {
     vi.mocked(api).crons.mockResolvedValue({ jobs: [JOBS[0]] })
     renderWithProviders(<SchedulePage />)
     await screen.findByText('Template job')
-    expect(screen.queryByLabelText('Filter by Bot')).toBeNull()
+    expect(screen.queryByLabelText('Filter by bot')).toBeNull()
   })
 })

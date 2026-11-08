@@ -708,6 +708,7 @@ class TestWorkflowRunIntegration:
             workflow_revision=saved["revision"],
             workflow_source=source,
         )
+        assert run.name == "Test project"
 
         await runner.update_task(run.task_id, 1, {"description": run.tasks[0].description})
         assert run.workflow_id == saved["id"]

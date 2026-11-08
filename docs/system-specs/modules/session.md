@@ -495,7 +495,7 @@ reach.
 | `session_lifecycle_parts/parked_queue.py` | queued messages a stop or reset keeps for the key's successor: `force_stop_keeping_others`, `hand_queue_to_successor`, the bounded parked store, `adopt_parked_queue`, `allocation_identity` |
 | `session_lifecycle_parts/parent_end.py` | ending a parent's sub-agent runs: the in-lock snapshot, the bounded shielded cancel, the teardown fence and the owes-child-work reads |
 | `session_lifecycle_parts/teardown.py` | the per-key teardown verbs: `reset`, `remove`, `remove_if_unclaimed`, `destroy` / `destroy_if`, `discard_conversation` |
-| `session_lifecycle_parts/identity_retirement.py` | account-identity retirement: `retire_kiro_identity_sessions`, `flag_identity_stamp_mismatches` and the two idle-runtime reapers |
+| `session_lifecycle_parts/identity_retirement.py` | account-identity retirement: `retire_kiro_identity_sessions`, `flag_identity_stamp_mismatches`, the read-only query for a holder whose stamp proves neither the live account nor another and the two idle-runtime reapers |
 | `session_lifecycle_parts/turn_stop.py` | a key's turn across a Stop or a reset: Stop records, replay gaps, orphaned permits, `cancel_current` / `cancel_owned_turn`, `stop_turn` and the successor respawns |
 | `session_lifecycle_parts/fleet.py` | every session at once: `refresh_defaults`, `reload_provider_factory`, `drain_active_turns`, `close_all`, `drain_all_providers` |
 
@@ -810,7 +810,8 @@ nothing writes a `steer` yet.
 
 A root session whose page is `goal-board` or `work-kanban` gets one more
 `[DASHBOARD]` line (`BOARD_IN_PANEL_LINE`): the page is the task board, so the
-reply carries no task board, table or `task-dashboard` artifact. The switch to the
+reply does not redraw the board or a per-task status list; other pictures (a
+comparison, a flow, a before/after) are still drawn as widgets. The switch to the
 conductor adopts `goal-board` on that page while nothing else is adopted, and each
 turn's `[DASHBOARD]` block then names it, so the conductor's task board lives there
 instead of in its replies.
@@ -1274,22 +1275,107 @@ retirement machinery detects and recycles them, in
 `session_lifecycle_parts/identity_retirement.py` (`retire_kiro_identity_sessions`,
 bound on `SessionLifecycleService`) driven by the per-turn gate in
 `chat_turn/account_identity.py` (`_retire_sessions_on_identity_change`), against baselines
-owned by `KiroPrerequisiteService`. The gate runs before each dashboard chat
-turn acquires its session (`_run_chat`) and before each agent cron run does
-(`_acquire_with_model_fallback` in `slack/gateway_runtime/cron_fire.py`, every `agent_sequence`
-step included). A `cron:` key never claims a warm-pool process
+owned by `KiroPrerequisiteService`. The dashboard chat turn runs the gate itself
+before it acquires its session (`_turn_admit`, in `chat_turn/turn_admission.py`),
+as the attended caller and before the slot switch lock decides whether the cold
+start keeps that lock, and tells its claim so (`identity_checked=True`). Every
+other acquire runs it inside the session manager: the dashboard installs it as
+`SessionManager.identity_check_before_acquire`
+(`chat_turn.account_identity.install_acquire_identity_check`, in both
+`start_dashboard` and `start_api_server`, after the baseline seed), and `get_or_create`,
+`open_task_session` and `try_acquire` await it first, before they allocate, claim
+or take an idle session's lease and before they hold a cold-start permit, which
+matters because the sweep collects every permit. The dashboard owns the check
+because it needs the `KiroPrerequisiteService` baselines, which only those two
+start paths seed, so the manager holds it as an optional callback. A
+`SessionManager` built without them (`kirocrew run`, `kirocrew consolidate`, the
+eval runner) has no account baseline to compare against and runs every acquire
+unchecked, as its spawns run unstamped. `try_acquire` checks before the
+lease because a sweep only flags a session someone holds, and it refuses a session
+the check flagged (`retire_on_identity_change`) instead of taking it, since a channel
+`/compact` or model switch takes its lease and then prompts or reconfigures that
+session. It does not evict one: the sweep also flags an idle parent it spared for its
+running sub-agents, and an eviction would shut the provider down under them. The next
+real turn's claim retires it. Until then the session stays registered, so `has_session`
+answers True for a session no reply holds. `is_retiring` (the same exact-key lookup as
+`try_acquire`, no alias folding) tells a refused caller which case it has: the ten
+channel `/compact` handlers answer a flagged session with
+`messaging.commands.COMPACT_ACCOUNT_CHANGED_TEXT` (`COMPACT_ACCOUNT_CHANGED_REPLY_ZH`
+on WeCom, Feishu and Weixin), which says the Kiro account changed and the next message
+restarts the conversation, not that a reply is still running, and the Discord,
+Telegram and Webex model pickers treat it as the retired session they already handle.
+So a task-runner step, a workflow agent, a channel turn or `/compact`, a heartbeat or
+Slack-thread auto-nudge cycle, a sub-agent completion and an agent cron run (`_acquire_with_model_fallback`
+in `slack/gateway_runtime/cron_fire.py`, every `agent_sequence` step included) each check, and an
+acquire path added later cannot leave the check out. A warm workflow worker
+(`workflows/agent_pool.py`) acquires once and keeps its lease until its last task, so
+it never acquires again: before each reused task it runs the check alone
+(`run_identity_check`, the same rules as before an acquire) and takes its hard reset
+when the check flagged its session (`is_retiring`), so its next task starts on the
+current account. A dashboard channel member (`channel.py` `run_channel_agent`) keeps
+its lease from spawn to death the same way: it runs the check before each inbox
+message and replaces a flagged session through `_reset_busy_session`. An acquire the same task makes
+inside an acquire (a won-race retry, a task session's fallback to a dedicated one)
+does not check again; a task started meanwhile checks its own, because the marker
+(`_ACQUIRING_TASK`) holds a weak reference to the task, not a flag. No check runs
+during the final drain (`final_drain_started`: a shutdown or re-exec, when no session outlives the
+process); during an update pause it still runs, because `try_acquire` stays open
+then and must not take a session the check would retire. A check that raises is
+logged and the acquire goes ahead. A sub-agent
+that shares its parent's process opens its session on that process
+(`runtime.create_session`) and a background one-liner uses `get_bg_session`;
+neither acquires through the manager, and the next checked acquire's sweep or
+stamp check retires or displaces the runtimes they use. Concurrent acquires share
+one check: an acquire that arrives while the installed check is in flight waits for
+it and takes its result, because a sweep drains every cold-start permit and the warm
+pool and a fan-out would otherwise pay that once per session. It runs its own check
+instead when the shared result is empty (a sign-out and an account the reader
+cannot identify both read empty), when the store reads another fingerprint,
+when a fresh store read since the shared one returned another account
+(`KiroPrerequisiteService.identity_read_other_than`, which numbers every fresh read
+and keeps the latest run of identical reads, enough to answer exactly however many
+reads land in between; the interim latch cannot answer this,
+because it ignores reads equal to the baseline, and those are the reads of the account
+a pending sweep switched away from), or when, after that read, a claimable Kiro
+process has a stamp that proves neither the live account nor another. An acquire that
+takes the result still runs the stamp check, since a session can register after the
+sweep's scan. Cancelling the acquire that started the shared check does not cancel
+it, since it runs in its own task. An acquire that arrives
+after the check finished retries an incomplete sweep, as each dashboard chat turn
+does: that retry is what retires a busy holdout once it goes idle. An unattended acquire normally retries it at most once a minute
+(`_PENDING_SWEEP_RETRY_SECS`), because each retry drains every cold-start permit and
+empties the warm pool again, and a holdout can keep the sweep pending for hours.
+Inside that minute, an acquire that finds no check in flight may take the result of
+the last unattended check, which is the only caller that records one. It does so only
+while the sweep remains pending under that non-empty reading, the store still reads
+it and has not read another account since, and no claimable Kiro process has a stamp
+that proves neither the live account nor another, such as an empty stamp, a store or
+vault source empty on one side, or an API key that differs on a child that receives the
+key. Such a process forces another sweep,
+which retires it once idle. A busy companion or background runtime forces that sweep
+only once it is idle, because the sweep cannot retire it before then. The holder guard
+covers both an in-flight result and a
+recorded result. It is checked after each store read, since a process can register
+during that read. The pending marker is also checked after the recorded result's
+store read. The stamp check
+still flags a session stamped for another account and displaces such a runtime, without
+a sweep. An acquire whose
+recorded result no longer holds after the store read waits for any check another acquire
+started meanwhile. One whose result still holds returns with it.
+`_shared_check_still_covers` refuses an empty reading, so under a sign-out every
+acquire still retries an incomplete sweep. The dashboard chat turn still retries on every turn. A `cron:` key never claims a warm-pool process
 (`bypass_stateless`), so the child that can still hold the previous account is
 the cron's own session: a fire whose sub-agents are still running skips the
 reset in its `finally`, and the next fire of a `persistent_session` job, or of
 the same `agent_sequence` step, reuses that live session. A host where only
-crons run has no dashboard turn to retire it. A cron run is an unattended
-caller (`unattended=True`). An empty live fingerprint is never reconciled and
-its sweep spares nothing. After a sign-out that is wanted, but a store the
-reader cannot identify reads empty on every call, so a cron sweeping on it
-would retire every idle kiro-backed session on every fire, cancelling idle
-parents' `spawn_run` children. The cron's own session survives from one fire to
-the next mostly while its sub-agents are still running, so retiring even that
-one would usually end them.
+crons run has no dashboard turn to retire it. Every caller but the dashboard chat
+turn is unattended (`unattended=True`). An empty live fingerprint is never
+reconciled and its sweep spares nothing. After a sign-out that is wanted, but a
+store the reader cannot identify reads empty on every call, so an unattended
+caller sweeping on it would retire every idle kiro-backed session on every acquire,
+cancelling idle parents' `spawn_run` children. A cron's own session survives from
+one fire to the next mostly while its sub-agents are still running, so retiring
+even that one would usually end them.
 So an unattended caller sweeps under an empty fingerprint only when
 `identity_absence_is_definitive` says the read proved nobody is signed in, and
 only until one sweep under that sign-out completes
@@ -1409,8 +1495,8 @@ pending-work term (`has_pending_work_for_async`: a finished child whose report i
 not registered yet, a live follow-up watcher) — is not retired on the per-turn
 sweep. It is deferred the way a busy session is (flagged
 `retire_on_identity_change`, kept in the map, old-account sid cleared, recorded
-`<key> (subagents)` so the sweep reports incomplete). The per-turn gate fires on
-every chat turn, so without the deferral an idle parent with running children was
+`<key> (subagents)` so the sweep reports incomplete). The gate fires on every chat
+turn and before every other acquire, so without the deferral an idle parent with running children was
 retired and its children cancelled as `AcpProcessDied ... (provider shutdown)` on
 every turn (#17360). The deferred parent is refused its next turn by session
 allocation (`retire_on_identity_change`) and evicted by `_evict_stale_session`,
@@ -1438,9 +1524,10 @@ delivery gate, clears follow-ups and cancels follow-up watchers).
 
 **Cost of an incomplete deferral.** A deferred parent keeps the sweep incomplete
 (it is recorded `<key> (subagents)` and the pending fingerprint is NOT cleared),
-so the per-turn gate re-runs `retire_kiro_identity_sessions` on the next chat turn
-from any session — the incomplete sweep is its own trigger — and re-checks that
-parent. That re-check runs inside the start-permit barrier
+so the gate re-runs `retire_kiro_identity_sessions` at the next dashboard chat turn,
+and at the next acquire the manager checks once a minute has passed since the last
+unattended check that left it pending, or sooner when a claimable Kiro process has a
+stamp that proves neither the live account nor another, and re-checks that parent. The incomplete sweep is its own trigger. That re-check runs inside the start-permit barrier
 (`owner._start_sem.drain()`): the barrier makes the registry scan authoritative
 over cold starts, and the off-loop `_parent_owes_child_work` read for each
 deferred candidate is awaited while it is held, so each cold start waits behind
@@ -1453,7 +1540,11 @@ terms because it is an accepted child the teardown would cancel: it holds the
 deferral until the sub-agent refill, the dispatcher for claimable `subagent`
 rows, starts it, and from then on it counts as a live child like any other. It is NOT bounded
 by a timeout — a parent with a long-running (hours-long) child stays deferred, and
-re-checked each turn, for the child's whole life, and the account change is not
+re-checked at each dashboard chat turn and normally at most once a minute by another
+acquire for the child's whole life. A claimable Kiro process whose stamp proves neither
+the live account nor another causes an earlier retry, because the stamp check cannot
+judge it. A busy companion or background runtime does so only once it is idle, because
+the sweep cannot retire it before then. The account change is not
 reconciled for that key until then. This is accepted because the alternative the
 deferral replaces is worse: without it the parent is retired and its children are
 cancelled as `provider shutdown` on EVERY turn, not deferred on every turn. The
@@ -1461,7 +1552,7 @@ per-check cost is kept small — the in-memory and fence checks are synchronous,
 store read runs on the writer thread and only its existence is tested (it lists the
 parent's pending rows, the same reading the teardown's own cancel uses, and the
 probe answers on the first row), and a childless or
-turn-taking parent drops out of the candidate set — but it is a real per-turn cost
+turn-taking parent drops out of the candidate set — but it is a real cost at every retry
 on a host that holds a long deferral, and the barrier is held across it. A caller
 that wants the account reconciled sooner retires the parent itself (its next turn,
 or an explicit close); the sweep does not force the issue while children run.
@@ -1644,7 +1735,13 @@ against sweep completeness, and are torn down at `close_all`.
   reply, and every later chunk is kept (codex echoes only at the terminal, so
   there the reply appears at the turn's end instead of streaming); a turn that
   ends without that echo requeues the steer as its own turn, which answers it,
-  so the held text stays dropped and counted.
+  so the held text stays dropped and counted. Tool calls are never held: the
+  text held so far goes out just before the next tool call renders
+  (`_release_held_text(before_tool=True)`), so the transcript keeps the model's
+  order. Text written before a tool call is the model's work, not the
+  placeholder, so it is kept even when the echo never comes; only text with no
+  tool call after it is dropped. That is a known trade-off: a turn whose steer
+  is requeued keeps the text it wrote before a tool call.
   **Who may end quietly.** The applier's one gate is who opened the turn: a
   monitor wake (`_directive_self_wake`) or a headless producer (cron, crew, app,
   task runner — `_directive_user_origin` False) may; a turn a person opened
@@ -2132,12 +2229,14 @@ against sweep completeness, and are torn down at `close_all`.
   no slot ever claimed, such as a cron job that runs without a tab, is reaped on
   neither axis, even after its job is deleted. The RSS recycle, when enabled, or
   a restart still ends it. So does the identity sweep
-  (`retire_kiro_identity_sessions`, which reads no list). Before each dashboard
-  chat turn and each agent cron run (`_retire_sessions_on_identity_change` in
-  `chat_turn/account_identity.py`) it retires a kiro-backed one once the live Kiro account is
-  no longer the one it was spawned under, so an account change made outside the
-  dashboard reaches such a session at the next dashboard chat turn or agent cron
-  run. An agent cron run is the exception when the live fingerprint is empty
+  (`retire_kiro_identity_sessions`, which reads no list). Before each session
+  acquire (`_retire_sessions_on_identity_change` in
+  `chat_turn/account_identity.py`, which the
+  dashboard chat turn runs itself and the session manager runs before every other
+  acquire) it retires a kiro-backed one once the live Kiro account is no longer
+  the one it was spawned under, so an account change made outside the dashboard
+  reaches such a session at the next acquire of any session. An acquire other than
+  a dashboard chat turn is the exception when the live fingerprint is empty
   without proving a sign-out (a social login the reader cannot identify, an
   unreadable or relocated store): it touches no session, so such a change
   reaches a listed session at the next dashboard chat turn.
@@ -2586,7 +2685,7 @@ against sweep completeness, and are torn down at `close_all`.
 | `release(key)` | Release per-session semaphore (must call in `finally`). |
 | `cancel_current(key, *, wait_ack_timeout=0.0, owner_task=None)` | Cancel in-flight operation without destroying session. Returns `CancelOutcome`. Default `wait_ack_timeout=0.0` preserves fire-and-forget behavior for internal callers (taskrunner, subagent, llm_helpers). With `owner_task`, the cancel is sent only while that task still holds the session's turn lease (`session.turn_owner is owner_task`); otherwise it returns `no_turn` and sends nothing. Arms no replay, unlike `cancel_owned_turn`. The sub-agent completion injector passes itself, so the cleanup cancel after its attempt never reaches a successor turn that claimed the key after a reset. |
 | `stop_turn(key, *, force=False, preserve_queue=False, on_soft=None, on_hard=None)` | Cooperative stop with kill fallback. Returns `StopOutcome` (`"soft"`, `"hard"`, `"idle"`, or `"compacting"`). A cooperative stop on a session whose own automatic `/compact` turn holds it answers `"compacting"` BEFORE recording the Stop or clearing anything: cancelling that turn would fail the compaction and recycle the session. Otherwise records the Stop, clears the queue unless `preserve_queue`, then sends `session/cancel` and waits up to `agent.soft_stop_budget_secs`; falls back to `reset()` + eager respawn on timeout or error. `force=True` is never declined: it skips cancel and goes straight to hard kill. `on_soft`/`on_hard` callbacks fire before return. Callers with side effects of their own (a queue clear, a pending-file unlink, a task pop) probe `session_lifecycle.compaction_in_flight` first and run them only after an outcome other than `"compacting"`. |
-| `reset(key, *, expect_session=None, skip_if_busy=False, skip_if_injecting=False, refuse_only_on_active_turn=False, clear_conversation=False, ends_conversation=False, stop_shared_children=False, scope=None)` | Kill session; returns `bool` (True iff a session was actually torn down). Does NOT delete session map entry (kiro-cli file persists for future resume). Optional guards evaluated atomically under the lock with the pop, used by the RSS-recycle watchdog: `expect_session` only resets if that exact session object still occupies the key (guards against recycling a reset+recreated session on a stale off-lock RSS reading); `skip_if_busy` skips when the current session's semaphore is held so a live stream is never cut mid-turn. `clear_conversation=True` additionally clears the native resume sid in the SAME event-loop tick as the pop (entry + channel bindings survive, as in `_recycle_held`) — used by the still-critical post-compaction escalation so the overflowed conversation is not reloaded, without a delayed clear ever erasing a racing successor's sid. Queued follow-ups survive a recycling reset: in the same lock hold as the pop, every entry not marked in the session's `cancelled` set is moved off the popped queue and parked (`session_lifecycle._park_queue`, bounded by `PARKED_QUEUE_MAX` / `PARKED_QUEUE_TOTAL_MAX`, files kept), and once the teardown ends the reset starts a successor under the popped session's own identity (`allocation_identity`, shared with `session_compaction._restart_held`: agent, approval policy, cwd, bound channel, selected model, crew member, per-spawn backend, and the caller's `extra_env` and `reasoning_effort_override`, each of the last three only when the allocation passed one; a level the dashboard effort route commits on the live session replaces the recorded `reasoning_effort_override` (`record_effort_override`; a level cleared to the default drops it), so the successor starts on the level the session runs, which on KAS and the adapter harnesses nothing else carries; the recorded `extra_env` is the caller's own map, so the successor's allocation applies the `aws.project_profiles` binding again), so it registers, adopts them at the queue head (`adopt_parked_queue`) and its release wakes their channels' drains. The respawn re-arms the successor's first-turn observation (`FRESH`, or `RESUMED` after a native resume) from the flags its start returned before releasing it, so the first queued turn, not the respawn, sees `is_new`; a failed native resume therefore still replays Kiro Crew history into that turn. A default-argument respawn would be wrong here: a later claim takes a live session as-is, so it would answer every later message as the default agent. Without this a failure-path reset (`AcpPromptBusy` in `slack/handler_runtime/turn.py`, the circuit breaker) silently dropped messages sent while the failing turn ran, because the failed turn's end-of-turn `dequeue` finds no live session. Cancelled entries stay on the popped queue and are unlinked as before. `ends_conversation=True` keeps dropping the queue: the caller is ending the conversation. `stop_shared_children=True` (the hard Stop, `stop_turn`) names the parent's live session-sharing sub-agent runs in the pop's lock hold and cancels them before the provider shutdown kills the process they run on, waiting only until each run's reap has started (`_reap_started`), which takes a few loop turns even when the parent process no longer responds, capped at `_SHARED_CHILD_STOP_WAIT_SECS` (2 s); the reap's session teardown and its "stopped" report continue in the background; each is recorded as a neutral `user_stop` with the origin "stopped by a hard Stop of the parent" instead of a runtime death. Runs on a dedicated process keep running and deliver into the resumed conversation. |
+| `reset(key, *, expect_session=None, skip_if_busy=False, skip_if_injecting=False, refuse_only_on_active_turn=False, clear_conversation=False, ends_conversation=False, stop_shared_children=False, scope=None)` | Kill session; returns `bool` (True iff a session was actually torn down). Does NOT delete session map entry (kiro-cli file persists for future resume). Optional guards evaluated atomically under the lock with the pop, used by the RSS-recycle watchdog: `expect_session` only resets if that exact session object still occupies the key (guards against recycling a reset+recreated session on a stale off-lock RSS reading); `skip_if_busy` skips when the current session's semaphore is held so a live stream is never cut mid-turn. `clear_conversation=True` additionally clears the native resume sid in the SAME event-loop tick as the pop (entry + channel bindings survive, as in `_recycle_held`) — used by the still-critical post-compaction escalation so the overflowed conversation is not reloaded, without a delayed clear ever erasing a racing successor's sid. Queued follow-ups survive a recycling reset: in the same lock hold as the pop, every entry not marked in the session's `cancelled` set is moved off the popped queue and parked (`session_lifecycle._park_queue`, bounded by `PARKED_QUEUE_MAX` / `PARKED_QUEUE_TOTAL_MAX`, files kept), and once the teardown ends the reset starts a successor under the popped session's own identity (`allocation_identity`, shared with `session_compaction._restart_held`: agent, approval policy, cwd, bound channel, selected model, crew member, per-spawn backend, and the caller's `extra_env` and `reasoning_effort_override`, each of the last three only when the allocation passed one, plus a sub-agent's `include_memory=False`; a level the dashboard effort route commits on the live session replaces the recorded `reasoning_effort_override` (`record_effort_override`; a level cleared to the default drops it), so the successor starts on the level the session runs, which on KAS and the adapter harnesses nothing else carries; the recorded `extra_env` is the caller's own map, so the successor's allocation applies the `aws.project_profiles` binding again), so it registers, adopts them at the queue head (`adopt_parked_queue`) and its release wakes their channels' drains. The respawn re-arms the successor's first-turn observation (`FRESH`, or `RESUMED` after a native resume) from the flags its start returned before releasing it, so the first queued turn, not the respawn, sees `is_new`; a failed native resume therefore still replays Kiro Crew history into that turn. A default-argument respawn would be wrong here: a later claim takes a live session as-is, so it would answer every later message as the default agent. Without this a failure-path reset (`AcpPromptBusy` in `slack/handler_runtime/turn.py`, the circuit breaker) silently dropped messages sent while the failing turn ran, because the failed turn's end-of-turn `dequeue` finds no live session. Cancelled entries stay on the popped queue and are unlinked as before. `ends_conversation=True` keeps dropping the queue: the caller is ending the conversation. `stop_shared_children=True` (the hard Stop, `stop_turn`) names the parent's live session-sharing sub-agent runs in the pop's lock hold and cancels them before the provider shutdown kills the process they run on, waiting only until each run's reap has started (`_reap_started`), which takes a few loop turns even when the parent process no longer responds, capped at `_SHARED_CHILD_STOP_WAIT_SECS` (2 s); the reap's session teardown and its "stopped" report continue in the background; each is recorded as a neutral `user_stop` with the origin "stopped by a hard Stop of the parent" instead of a runtime death. Runs on a dedicated process keep running and deliver into the resumed conversation. |
 | `discard_conversation(key, *, replay=True, skip_if_busy=False, refuse_only_on_active_turn=False)` | Kill session AND clear only the resume sid (`SessionMap.clear_sid`) — the map ENTRY survives, preserving Slack thread/channel linkage and the reverse thread→session index. The cleared sid is stashed as `discarded_sid` in the entry, so the discard is diagnosable and manually reversible (the native conversation persists on disk; only the pointer is dropped). Every path that empties `sid` in place records what it dropped, through one shared `_stash_and_clear_sid` — this discard, the provider switch, the startup prune and the per-read stale repair — because a history reader answers from that field and cannot tell which path wrote it, so a field written by only some of them holds a genuine id that is not the latest one. The next turn cold-starts a fresh native conversation instead of `session/load`-ing the old one. Used by the poisoned-conversation escalation in `chat_runner` (canary-verified backend rejection of a specific persisted conversation), by typed `IMAGE_FORMAT_UNSUPPORTED` recovery when a dashboard turn supplied no new attachment (the native history retains unsupported image bytes while the bounded Kiro Crew replay is text-only), by the preserved-thinking binding-mismatch recovery (`AcpConversationBindingMismatch`: the stored native conversation is rejected deterministically), and by the Slack / Discord / Telegram `/compact` failure recovery: the conversation is unusable but the session's channel identity must persist. This is the shape every HOUSEKEEPING teardown takes — `SessionMap.prune` refuses to delete an entry carrying a channel binding, and `_recycle_held` clears the sid for the same reason. Only an explicit user action (`destroy`) may remove a channel identity. Sits between `reset` (sid kept, resume expected) and `remove` (entry deleted, no resume). |
 | `remove(key)` | Shut down a session but PRESERVE the session map entry — the kiro-cli session files remain on disk, so a future `get_or_create` restores the conversation losslessly via `session/load`. For revivable teardown (tab close, agent switch, idle kill). Permanent deletion is `destroy(key)`. |
 | `forget_conversation_if_sid(key, expected_sid)` | Compare-and-delete of the conversation's session-map entry inside one `_MAP_LOCK` section: deletes only while the entry still names `expected_sid`. Returns `(removed, current_sid)`. |
@@ -3328,6 +3427,19 @@ ownership predicate evaluated inside `_locked(history_key)` on the write AND on 
 resume's read-then-clear — a durable-metadata contract change rather than a
 loop-side ordering one, so it is deliberately not what these two teardown paths do.
 
+**A slow close names its slow stage.** On the path of a close that commits, the
+shared close (`close_slot` and `_close_slot`) awaits each stage that has no bound
+of its own through `_timed_close_stage`: the nudge-loop retire and its late re-run,
+the app close hook, the merge-card hand-off and its late re-run, the archive save,
+the session teardown, the work item close and the hand-back. A stage that reaches
+`_SLOW_CLOSE_STAGE_SECS` (5 s) logs one WARNING,
+`Closing slot <name>: <stage> took <n>s`. The bounded waits (the guarded-write
+wait, the turn cancel, the file-change flush, the close record) are left as they
+are: each is either shorter than the threshold or warns at its own bound. The
+rollback arms are not timed. The gateway logs warnings and up, so this line is the
+only record of where a close that outlasts a proxy's timeout spent its time. It
+only measures: no ordering, bound or outcome of the close changes.
+
 Yielding to a replacement carries four obligations, and they exist because the
 state a close compensates is not all scoped the same way.
 
@@ -3806,7 +3918,17 @@ when a switch is detected (stored SID exists AND providers differ).
    replay-bearing turn lands. ACP providers promote a deliberately deferred fresh
    SID before consuming the lease; non-ACP providers already published their SID
    during allocation and consume the lease directly. Cancelled, failed, empty, or
-   synthetic terminals leave it armed for the next prompt.
+   synthetic terminals leave it armed for the next prompt. One of those that kept
+   its prompt on the live session (`_kiro_cli_kept_the_prompt`, the first-turn
+   history rule below) also notes the replay delivered to the provider's
+   current `context_incarnation` (`note_provider_switch_replay_delivered`):
+   later prompts on that native conversation do not rebuild it, and the next
+   landed non-slash `end_turn` commits the SID. A respawned process reloading
+   the same session id is a new incarnation: a turn admitted before the respawn
+   commits and notes nothing, and the next turn sends the replay again. Arming a
+   settled lease starts it undelivered. Committing on that later turn rests on
+   the premise the first-turn history settle already uses: a prompt kept by the
+   live session is in its transcript once a later answer lands.
 
 **Fresh first-turn history debt.** A fresh dashboard session has a second, separate
 lease, `_Session.first_turn_history_owed`, so the replay lease's SID-preservation

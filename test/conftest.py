@@ -610,6 +610,22 @@ def _relay_unless_a_test_opens_the_kas_route(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _kas_projection_relays_no_runner_auth_env(_floor_monkeypatch):
+    """Project KAS agents without the runner's own ssh-agent socket or Kerberos cache.
+
+    The projection hands every stdio server the gateway's ``SSH_AUTH_SOCK`` and
+    ``KRB5CCNAME`` through Crew's launcher (``kas_env_launch.inherited_auth_env``).
+    Read from the host, that would route a projected server through the launcher
+    on any runner with an ssh-agent or a ``/tmp/krb5cc_<uid>`` file, and leave it
+    bare everywhere else. The tests of the relay put the real one back with
+    ``monkeypatch``.
+    """
+    from kiro_crew.acp import kas_env_launch
+
+    _floor_monkeypatch.setattr(kas_env_launch, "inherited_auth_env", lambda _forward: {})
+
+
+@pytest.fixture(autouse=True)
 def _registry_governance_reachability_unknown(_floor_monkeypatch):
     """Answer "governance may reach this sign-in" unless a test says otherwise.
 
@@ -1101,6 +1117,7 @@ def _reset_main_spec_episode_globals():
         _agent._main_spec_unreadable = False
         _agent._main_spec_episode_revision = 0
         _agent._main_spec_skip_generation = None
+        _agent._main_spec_held_pass_at = None
         _agent._main_spec_warned.clear()
 
     _clear()
@@ -1596,4 +1613,5 @@ def held_flag(monkeypatch):
     monkeypatch.setattr(agent_mod, "_main_spec_unreadable", False)
     monkeypatch.setattr(agent_mod, "_main_spec_episode_revision", 0)
     monkeypatch.setattr(agent_mod, "_main_spec_skip_generation", None)
+    monkeypatch.setattr(agent_mod, "_main_spec_held_pass_at", None)
     return agent_mod

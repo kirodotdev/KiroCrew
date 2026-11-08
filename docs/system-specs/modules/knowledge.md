@@ -246,7 +246,7 @@ It includes markdown/plain-text (`.md`/`.txt`/`.org`, AsciiDoc `.adoc`/`.asciido
 
 **Dispatch (`_DISPATCH`, `readers.py`)** routes only `.pdf`/`.pptx`/`.docx`/`.html`/`.htm`/`.adoc`/`.asciidoc` to specialized readers. Anything else — including `.org`, `.txt`, `.md`, and every source-code extension — falls through to the generic `_read_text` path and into the generic chunker downstream. So `.org` is treated as plain text; there is no Org-mode-specific parser. Text decoding (shared by `_read_text` and `_read_html` via `_decode_text_bytes`) is a single-open buffer decode: BOM-sniffed UTF-16 LE/BE first, otherwise UTF-8 with a latin-1 fallback. The UTF-16 branch is extension-agnostic — any text format arriving as BOM'd UTF-16 decodes correctly, not only the PowerShell files (Windows tooling writes UTF-16LE) that motivated it.
 
-**`.pptx` is intentionally out of `SUPPORTED`** even though `_read_pptx` exists: python-pptx is not declared in `setup.cfg`, so the format is kept off the allowlist (the comment at `readers.py` documents this). Reachable only if `.pptx` were re-added to `SUPPORTED`.
+**`.pptx` is intentionally out of `SUPPORTED`** even though `_read_pptx` exists: python-pptx is not declared in `setup.cfg`, so the format is kept off the allowlist (the comment at `readers.py` documents this). The folder scan skips it, and the upload route (`POST /api/knowledge/ingest`) refuses an extension that has a `_DISPATCH` reader but is outside `SUPPORTED` (today only `.pptx`) with 400 `unsupported_file_type` before it streams the file. A drop or pick closes the Knowledge page's Add Source panel, and a failed upload row opens it again (`SourcesList.tsx`), so that refusal's `error` text is in view. An upload with any other unlisted extension still reads as text through `_read_text`.
 
 **Binary/optional-dep readers** degrade gracefully — a missing optional import returns an `{'format': 'error'}` meta with an install hint rather than raising:
 - `_read_pdf` — pdfplumber, run in a memory-bounded child (`kiro_crew.pdf_extract`,
@@ -542,6 +542,17 @@ the token to `ingest_file` with `count_toward_import_budget=False`. That flag is
 required, not decorative: a disabled budget admits with a token of `None`, so
 leaving the flag `True` would re-enter the budget on a second config read.
 `release_import_budget` reclaims a token the caller never handed over.
+
+*Deferral after acceptance says why.* A background ingest whose content is still
+on disk or re-fetchable (the dashboard single-file add and its Sync, a web-page
+Sync, auto-research add-to-knowledge) lands a refusal in `pending`, never `error`,
+and writes `PENDING_REASON_PROP` (`pending_reason`) = `import_budget` into the
+row's properties in the same take (`merge_source_properties`). The Sources list
+shows that reason only while the row reads `pending`, and the sync tasks' other
+`pending` write (the path-probe deferral) removes it. The key outlives a later
+`synced` or `error` stamp, so `import_bundle` drops it from every row it inserts
+(the row lands at its own initial status there). A later wait is never
+explained with an earlier deferral's reason.
 
 **Cost visibility.** `POST /api/knowledge/sources` walks a folder before ingesting
 anything and returns `file_count`, `capped_file_count`, `estimated_chunks`,
@@ -1160,6 +1171,26 @@ Scopes the page to a single source. Composes with the existing `type`, `status`,
   see §4); adopting it in this branch is the remaining follow-up. Unscoped
   searches keep the cheap `limit * 3` window.
 
+### `GET /api/knowledge/items?sort=&added_from=&added_to=`
+
+Orders and bounds the list by the day an item was added (`created_at`).
+
+- `sort=newest|oldest` orders by `created_at`, rowid breaking ties so a page edge
+  is stable. Absent, the list keeps its default order: by source in the list
+  branch, by relevance in the search branch, where a date order re-sorts the
+  matched window stably (items added at the same moment keep their rank). That
+  window's size never depends on the page asked for, so every page slices one
+  order; it is the search's own result set, not the exhausted ranking, which with
+  a vector leg would be the whole embedded library.
+- `added_from` / `added_to` are inclusive `YYYY-MM-DD` days compared with the first
+  ten characters of `created_at` (the gateway's local `datetime.now().isoformat()`):
+  a SQL predicate in the list branch, a post-ranking filter in the search branch,
+  where they widen the window like `type`/`status`/`namespace`.
+- Any other `sort` value, or a day not spelled `YYYY-MM-DD`, is a 400.
+- `/source-counts` does not take them: while a date order or range is set, the
+  dashboard lists items flat across sources (one top-level pager) and each card
+  shows its added day instead of its last update.
+
 ### `GET /api/knowledge/source-counts`
 
 Returns the item count per source **under the active filters**:
@@ -1253,7 +1284,7 @@ Research Lab (the `auto-research` builtin app) reaches this module twice: a camp
 |------|----------------|
 | `handlers.py` | HTTP/SSE route adapters, route registration, the watchdog task, the historic-name forwarding |
 | `campaign/untrusted.py` | The only binding of the canonical credential/exfil-URL redactor (`_HAS_SECURITY`, fail-closed masking) and the nonce fence around untrusted text in LLM prompts |
-| `campaign/storage.py` | Data-home paths (`research_dir`, `db_path`, resolved per call), the campaigns schema and migrations, `_get_db` behind `_ON_LOOP_DB_GUARD`, the campaign-directory file interface, cycle-file discovery, scrubbed row and finding reads |
+| `campaign/storage.py` | Data-home paths (`research_dir`, `db_path`, resolved per call), the one-time copy of the campaigns DB into `data/` (`migrate_legacy_db`), the campaigns schema and migrations, `_get_db` behind `_ON_LOOP_DB_GUARD`, the campaign-directory file interface, cycle-file discovery, scrubbed row and finding reads |
 | `campaign/lifecycle.py` | Validation, create/transition/delete, which transitions are legal, the per-campaign transition lock, the `started_at` run-generation fence of `_guarded_transition`, settle-before-cancel for worker-thread writes, SSE fan-out, the SEL audit trail |
 | `campaign/publication.py` | `brief.md` (published after the row it renders commits, in commit order), the report and its artifact export, the Knowledge Library export |
 | `campaign/exploration.py` | Emergent sub-questions, the reserve zone of trailing cycles, FINALIZE MODE |
@@ -1267,6 +1298,8 @@ Research Lab (the `auto-research` builtin app) reaches this module twice: a camp
 **Repository boundary.** Research Lab is to leave this repository whole, so no module under `src/kiro_crew` outside `apps/builtins/`, and no `scripts/` file, imports `kiro_crew.apps.builtins.auto_research`. The one core decision that depends on the app is the autonudge stop of a legacy loop: on a canonical `research-<campaign id>` worker slot carrying the persisted `auto-research` provenance it deactivates the loop with `AUTONUDGE_STOP_REASON` (the tombstone the watchdog reads as a deliberate finish) instead of removing it. `session_directive_apply_monitor._keeps_stopped_loop` asks the `stopped_loop_tombstone` seam in `kiro_crew/apps/seams.py` with the slot key and the slot's persisted `_app`. The app's `seams.py` holds that seam and answers with `session_keys.is_owned_research_slot`, so a slot keeps a tombstone exactly when it did under the old import, with the app enabled or not. With no provider, or a provider that raises, nothing is kept and the stop removes the row. `test_app_seams_stopped_loop_tombstone.py` pins that equivalence. `test_core_auto_research_decoupling.py` is the gate, on the shared `test/core_app_independence.py` scanner: the only core strings left naming the app are the `security_posture.py` rows classifying its backend modules, a pinned list that may only shrink. Its dashboard half is `website/src/apps/auto-research/researchLabBoundary.test.ts`: outside `src/apps/auto-research/`, only `apps/builtinRegistry.ts` imports the UI, and the page's tests live beside it. What still names the app in core, deliberately for this wave: the `kirocrew-research` service agent (`agent_materialization/service_agents._install_research_agent`, whose rewrite folds into the ceiling-hold of `agent_parts/spec_rebuild.py`), the dashboard API owner `website/src/api/client/autoResearch.ts`, the app-store row in `appManifest.ts`, the `apps.autoResearch.*` catalog keys, the packaged `docs/research-lab.md` and its tip, and the `research-<id>` slot fixtures core tests use.
 
 **The add-to-knowledge row in §2b is `publication._ingest_findings`.** It calls `ingest_file` with the default `count_toward_import_budget`, so the export counts against the explicit-import ceiling, and an `ImportChunkBudgetError` parks the source `pending` rather than `error`. What is ingested is the scrubbed copy `findings_for_knowledge.md`, never the raw `FINDINGS.md`, and its resolved path is the dedup key the status probe reads.
+
+**The campaigns DB lives in the app's `data/` directory,** `<data home>/apps/auto-research/data/campaigns.db` (`storage.data_db_path`), the part of an app's directory that an update, an adoption onto the app's own repository (app-kit-platform.md § Former built-in adoption) and a default uninstall keep; anything beside `app.json` is deleted with the old tree. A database kept beside `app.json` (`storage.legacy_db_path`) is copied in by `storage.migrate_legacy_db`: on every gateway start, from the route registration's startup hook on the maintenance pool, enabled or not and before any connection opens, or by the first `_get_db` of a process that ran no start. The adoption swap runs at a later start before any route registers, so the copy cannot wait for the app to be enabled. The copy goes through SQLite's online backup (rows still in the old `-wal` come along), is written owner-only under a private staging name, must pass `PRAGMA quick_check`, and is published with a hard link, so it never replaces a database already in `data/`, one that appears during the copy included; a link at the old name (an operator's redirection) and anything that is not a regular file are not copied. Once the copy is published the old file and its sidecars are removed, so a campaign deleted afterwards is not kept readable in a stale second copy; a removal that fails only logs, and the leftover is never read again. Until a copy is published, `db_path` answers the old file whenever one stands there, so no row is hidden; a caller that arrives while another thread copies waits for that attempt to finish rather than opening the old file; a copy that finds the old file locked by someone else gives up after `storage._COPY_LOCK_WAIT_SECS` rather than holding up the start that awaits it; a failed copy publishes nothing, keeps the old file in use, and is not retried in the same process (a connection opened since could still write there) but at the next start. Nothing at the adoption swap refuses an old file beside `app.json`, so the test also fails while `adoption-pins.json` carries an `auto-research` row: that row lands with a swap-side refusal or carry for the file, for users who never started a release carrying the copy. A default uninstall keeps the campaigns, with the rest of `data/`. `test_auto_research_db_location.py` pins all of this.
 
 **The campaigns-DB row in §4 is `storage._ON_LOOP_DB_GUARD`,** consulted at the top of `storage._get_db`. `test_auto_research_onloop_db.py::TestStaticRatchet` recomputes the DB-touching closure and scans every coroutine across all of the app's modules, bare or component-qualified calls alike, so a coroutine in any component that reaches the campaigns DB without `asyncio.to_thread` or `run_in_executor` fails there.
 

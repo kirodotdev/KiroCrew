@@ -22,6 +22,7 @@ import { i18nT } from '../../i18n/t'
 // that renders it is unmounted.
 export type { InstanceFormValues, InstanceDraft } from '../../types/instanceForm'
 import type { InstanceFormValues, InstanceDraft } from '../../types/instanceForm'
+import type { RemoteCrewAddLink } from '../../lib/remoteCrewAddLink'
 
 // Defaults for a brand-new crew. The port and TTL mirror the backend's own
 // defaults so an untouched form round-trips to the same record the API would
@@ -95,6 +96,20 @@ export function instanceFormFromView(inst: InstanceView): InstanceFormValues {
     remotePortAuto: false,
     ttl: inst.ttl || DEFAULT_TTL,
     remoteBin: inst.remote_bin || '',
+  }
+}
+
+/**
+ * Seed the add form from a `kirocrew://remote-crew/add` link: an SSH crew at the
+ * link's host, with its port and label when the link carries them. A port the
+ * link names stops following the transport default, as one typed by hand does.
+ */
+export function instanceFormFromLink(link: RemoteCrewAddLink): InstanceFormValues {
+  return {
+    ...EMPTY_INSTANCE_FORM,
+    name: link.name,
+    sshHost: link.host,
+    ...(link.port ? { remotePort: link.port, remotePortAuto: false } : {}),
   }
 }
 

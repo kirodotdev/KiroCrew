@@ -8,7 +8,10 @@ this user can supervise a pod at all.
 
 from __future__ import annotations
 
+import html
+import re
 import subprocess
+from pathlib import Path
 
 import pytest
 from test_pod_windows_liveness import supervisor as supervisor
@@ -429,39 +432,66 @@ def test_the_runtime_wrapper_does_not_translate_on_windows(cfg, monkeypatch):
 
 # schtasks argv — pinned, because the fakes are the only thing asserting it
 def test_start_creates_a_manual_run_only_task_then_runs_it(cfg, monkeypatch):
-    """`/SC ONCE /ST 00:00` is a trigger already in the past, so Task Scheduler
-    never fires it on its own — that keeps a pod transient, like `systemctl
-    start` (never `enable`) and launchd's refusal to install under LaunchAgents.
+    """The trigger is already in the past, so Task Scheduler never fires it on its
+    own — that keeps a pod transient, like `systemctl start` (never `enable`) and
+    launchd's refusal to install under LaunchAgents.
 
-    Neither `/RU` nor `/RP` is passed: that is the documented "current logged-on
-    user" form and the only one that never prompts for a password.
+    Neither `/RU` nor `/RP` is passed and the definition names no user: that is the
+    "current logged-on user" form and the only one that never prompts for a password.
     """
     calls: list[tuple[str, ...]] = []
+    definitions: list[bytes] = []
 
     def task(*args):
         if args[0] == "/Query":
             return _cp(returncode=1)
         calls.append(args)
+        if args[0] == "/Create":
+            definitions.append(Path(args[-1]).read_bytes())
         return _cp()
 
     monkeypatch.setattr(win, "schtasks", task)
     assert win.start(cfg, "smoke").returncode == 0
     script = win.task_script_path(cfg, "smoke")
+    definition = script.with_suffix(".xml")
     assert calls[0] == (
         "/Create",
         "/F",
-        "/SC",
-        "ONCE",
-        "/ST",
-        "00:00",
         "/TN",
         r"\KiroCrew\pods\kirocrew-pod\smoke",
-        "/TR",
-        f'"{script}"',
+        "/XML",
+        str(definition),
     )
     assert calls[1] == ("/Run", "/TN", r"\KiroCrew\pods\kirocrew-pod\smoke")
     assert "/RU" not in calls[0] and "/RP" not in calls[0]
     assert script.exists(), "the wrapper must exist before the task points at it"
+    assert not definition.exists(), "the definition file is spent once /Create returns"
+    xml = definitions[0].decode("utf-16")
+    assert _element(xml, "Command") == str(script)
+    assert "<UserId>" not in xml
+    assert _element(xml, "LogonType") == "InteractiveToken"
+    assert _element(xml, "StartBoundary") < "2001"
+
+
+def _element(xml: str, tag: str) -> str:
+    """Text of the one *tag* element in a rendered task definition."""
+    found = re.findall(rf"<{tag}>([^<]*)</{tag}>", xml)
+    assert len(found) == 1, f"expected one <{tag}> in {xml!r}"
+    return html.unescape(found[0])
+
+
+def test_a_pod_task_runs_at_normal_priority_not_the_task_default(cfg):
+    """Task Scheduler's default priority 7 is BELOW_NORMAL, and the whole pod tree
+    inherits it. Busy CPUs then starve the boot past the readiness budget."""
+    xml = win.render_task_xml(win.task_script_path(cfg, "smoke"))
+    assert _element(xml, "Priority") == "5"
+
+
+def test_the_task_definition_escapes_the_wrapper_path(tmp_path):
+    script = tmp_path / "a&b<c>" / "kirocrew-pod.smoke.cmd"
+    xml = win.render_task_xml(script)
+    assert "a&amp;b&lt;c&gt;" in xml
+    assert _element(xml, "Command") == str(script)
 
 
 def test_start_preserves_a_stale_result_until_its_run_is_retired(cfg, monkeypatch):

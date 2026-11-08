@@ -237,6 +237,13 @@ pages from closed chats are not reopened; cookies and logins are kept. The
 user's own Chrome or Edge is never touched. `browser.choice` (`auto|user_chrome|kiro_chromium|headless`)
 overrides the order by hand.
 
+A Kiro's Chromium that exits before the daemon answers fails the start at once
+with `Kiro's Chromium exited with code <n>`. On macOS and Linux its stderr goes
+to a pipe of the gateway's own, drained for the browser's whole life (only the
+newest 4 KiB kept, in memory), and its last stderr lines follow, redacted, so a
+missing shared library is named by the loader's own report rather than by a
+60 s `the Harness daemon did not start in time`. On Windows stderr is discarded.
+
 Chrome 144+ asks "Allow remote debugging?" once per connection. The supervisor's
 `waiting_allow` state never times out that prompt; the live card shows the one
 step ("click Allow in Chrome") until it is answered.
@@ -372,7 +379,13 @@ undo a page already read.
   not hang. The user's own tabs are never attached.
 - **Tab ledger.** Each target the agent creates is recorded at the create reply,
   whether or not the page then loads; `tabs` lists only those and session end
-  closes only those.
+  closes only those. A chat whose session ends -- its tab closed, archived as
+  idle, or its open conversation deleted -- closes the ledgered tabs it owned, in
+  the background and after any op still in flight (`browser_ops.close_chat_tabs`);
+  every other chat keeps its own. A chat reopened on the same key before that
+  close runs keeps the tabs. Closing the tab of a chat linked to a channel
+  session (`slack:<ts>`) closes none: that session keeps running and shares the
+  tab's hub key.
 - Late `screencastFrameAck` errors after a stop are swallowed; close is clean.
 
 ### The stream
@@ -497,9 +510,10 @@ address pill. One daemon serves every chat, so every op runs under one
 gateway-wide lock and is preceded by a tab bind: the session keeps the agent tab
 it was bound to while the browser still has it (`switch_tab` back to it if the
 daemon moved), adopts the daemon's current tab when no other session owns it,
-and otherwise opens a tab of its own. Chat B therefore never clicks on chat A's
-page, `tabs` lists and switches only the caller's own tabs, and a takeover in
-chat A fences A's tab while B keeps browsing. With `browser.live.enabled` off
+and otherwise opens a tab of its own; a daemon whose current tab was closed (an
+ended chat's, or one the person closed) counts as having none. Chat B therefore
+never clicks on chat A's page, `tabs` lists and switches only the caller's own
+tabs, and a takeover in chat A fences A's tab while B keeps browsing. With `browser.live.enabled` off
 the hub publishes no event at all, so no card is mounted; the ops still run. While the owner's Chrome shows its Allow sheet the op route tells
 the hub `waiting_allow`, bounded at 60 s per op (the Allow sheet itself outlasts
 the op). The session key the shim resolves (`dashboard:<slot>` or the bare slot)
@@ -1198,10 +1212,11 @@ One card and two controls; everything else is under a collapsed More group.
   Chrome" re-posts the attach, which brings Chrome's prompt back), `error` (red;
   the gateway's `detail`, or the last attach's, verbatim in an `ErrorNotice`;
   Retry re-posts the attach), `disconnected`
-  (Connect) and `connected` (Disconnect). A failed job while the engine IS
-  installed (a Redownload) does not take over the card; it is an `ErrorNotice`
-  on the Engine row. A button whose request is in flight is disabled and
-  `aria-busy`.
+  (Connect) and `connected` (Disconnect). "Not installed" is `needsInstall`:
+  the engine is missing, or `browser.kind` is `kiro_chromium` and
+  `chromium.downloaded` is false. A failed job or install request while no
+  install is needed (a Redownload) is an `ErrorNotice` on the Engine row, not
+  the card. A button whose request is in flight is disabled and `aria-busy`.
 - **Which browser** (`browser.choice`) offers `auto`, `user_chrome`,
   `kiro_chromium`. **Show the live view in chat** (`browser.live.enabled`).
 - **Use \<provider\> sign-in** (`browser.credentials.enabled`), under Show the

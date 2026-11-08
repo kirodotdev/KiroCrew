@@ -48,7 +48,7 @@ SHARED_BINDINGS_CHECKS = (
 #: Member -> (kind, coroutine, signature digest, owning module). Frozen at the split: the
 #: kind, coroutine flag and signature are BASE's; the owner is where the member lives now.
 _MEMBERS: dict[str, tuple[str, object, str, str]] = {
-    "__init__": ("function", False, "b3474a02a08c", "acp"),
+    "__init__": ("function", False, "f9df55c15d04", "acp"),
     "_abc_impl": ("data", False, "", ""),
     "_advertised_effort_levels": ("function", False, "93b23ca4342b", "acp_model_effort"),
     "_apply_effort_overlay": ("function", False, "66550c0d40fa", "acp_cli_overlay"),
@@ -174,7 +174,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "steer": ("function", True, "b0a837a37097", "acp_turns"),
     "steer_needs_loss_recovery": ("property", False, "a6632a57e602", "acp"),
     "steer_upgrade_notice": ("property", False, "bb418bb7ece8", "acp"),
-    "stream": ("function", "agen", "e4e5c768b805", "acp_turns"),
+    "stream": ("function", "agen", "fa113e1bf480", "acp_turns"),
     "stream_command": ("function", "agen", "c5944af5c808", "acp_turns"),
     "supports_effort": ("function", False, "a6632a57e602", "acp_model_effort"),
     "supports_refusal_steer": ("property", False, "a6632a57e602", "acp"),

@@ -9,8 +9,10 @@ its setting. On kiro-cli v3 the engine reads the agent file from disk, so the en
 never enters the session record there.
 
 This module gives the server its values without putting one on the wire. For one stdio server
-of one session it writes a LAUNCH SNAPSHOT -- the server's command, args and the
-env values the wire withheld, nothing else of the agent -- into
+of one session it writes a LAUNCH SNAPSHOT -- the server's command, args, the
+env values the wire withheld and the gateway's Kerberos and ssh-agent pointers a
+kiro-cli child would inherit (:func:`inherited_auth_env`), nothing else of the
+agent -- into
 :data:`SNAPSHOT_LEAF` under the crew data home, owner-only, and hands KAS a fixed
 launcher instead (:mod:`kiro_crew.kas_env_shim`) with a reference that carries no
 secret: the session key, the agent, the server name and the snapshot's version.
@@ -39,6 +41,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import secrets
 from pathlib import Path
 from typing import Any, Mapping
@@ -103,6 +106,42 @@ def withheld_env(original: Any, projected_env: Any) -> dict[str, str]:
     return out
 
 
+def inherited_auth_env(forward_ssh_auth_sock: bool) -> dict[str, str]:
+    """The gateway's own ``KRB5CCNAME`` and ``SSH_AUTH_SOCK``, for a server KAS starts.
+
+    kiro-cli's MCP children inherit its environment, so they see the two pointers
+    the gateway armed for it. KAS starts a stdio server with a fixed minimal
+    environment instead, so the launcher hands the server the same two, read from
+    the gateway's live environment under the rules the KAS spawn applies:
+
+    * ``KRB5CCNAME`` as :func:`kiro_crew.env.resolve_krb5_ccname` settles it. On
+      Linux an unset or keyring value becomes the user's own ``FILE:`` cache when
+      one exists, because the sandbox's user namespace reads the keyring default
+      as empty.
+    * ``SSH_AUTH_SOCK`` only when *forward_ssh_auth_sock*: the verdict the launch
+      tail applied to the running engine's own environment
+      (``acp.launch``, :func:`kiro_crew.sandbox._forward_ssh_auth_sock`), never
+      one re-derived now, after a config or governance change. A server never
+      gets a socket its engine was denied.
+
+    Both name where a credential lives; neither is one, and the cache file and
+    the socket stay behind the same sandbox. Blocking: it stats the cache.
+    """
+    # Call-time, like the config loader below: this leaf keeps the env resolver
+    # off its import graph.
+    from kiro_crew.env import resolve_krb5_ccname
+
+    out: dict[str, str] = {}
+    krb5 = {"KRB5CCNAME": os.environ["KRB5CCNAME"]} if "KRB5CCNAME" in os.environ else {}
+    resolve_krb5_ccname(krb5)
+    if krb5.get("KRB5CCNAME"):
+        out["KRB5CCNAME"] = krb5["KRB5CCNAME"]
+    sock = os.environ.get("SSH_AUTH_SOCK", "")
+    if sock and forward_ssh_auth_sock:
+        out["SSH_AUTH_SOCK"] = sock
+    return out
+
+
 def launch_through_shim(
     projected: dict[str, Any],
     *,
@@ -110,14 +149,16 @@ def launch_through_shim(
     agent_id: str,
     server: str,
     env: Mapping[str, str],
+    inherited: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """*projected* rewritten to start through the launcher, its snapshot written.
 
     *env* is what the wire withheld (:func:`withheld_env`); placeholders in it are
     expanded here, against the same filtered view the gateway's own sidecar uses,
-    because the launcher runs with the engine's reduced environment. Raises
-    ``OSError`` when the snapshot cannot be written; the caller then hands the
-    engine a launcher reference that refuses, never the bare command.
+    because the launcher runs with the engine's reduced environment. *inherited*
+    (:func:`inherited_auth_env`) is written under it as given: those are the
+    gateway's own values, not text to expand, and a key *env* names wins. Raises
+    ``OSError`` when the snapshot cannot be written.
     """
     from kiro_crew.mcp_gateway.rewriter_env import _expand_env_map
 
@@ -125,7 +166,7 @@ def launch_through_shim(
     launch: dict[str, Any] = {
         "command": projected["command"],
         "args": [a for a in args if isinstance(a, str)] if isinstance(args, list) else [],
-        "env": dict(_expand_env_map(dict(env), server=server)),
+        "env": {**(inherited or {}), **_expand_env_map(dict(env), server=server)},
     }
     version = _write_snapshot(launch, session_key=session_key, agent_id=agent_id, server=server)
     return _shim_entry(projected, session_key, agent_id, server, version)
@@ -194,25 +235,52 @@ def relay_withheld_env(
     session_key: str,
     agent_id: str,
     server: str,
+    forward_ssh_auth_sock: bool = False,
 ) -> tuple[dict[str, Any], bool, bool]:
     """``(entry, launched, complete)``: *projected* through the launcher when the wire
-    withheld env values it needs, else *projected* unchanged.
+    withheld env values it needs or the gateway holds auth pointers for it
+    (:func:`inherited_auth_env`, given *forward_ssh_auth_sock*), else *projected*
+    unchanged.
 
-    *complete* says every withheld value went into the snapshot, so the caller's
-    "not relaying env" log line has nothing left to name. When the snapshot cannot
-    be written the entry still points at the launcher, with a reference no snapshot
-    answers, so the server refuses to start rather than run without its env.
+    A pointer goes under the server's own env: a key the spec sets, or one the
+    wire kept (a relayed ``${NAME}``), wins. *complete* says every withheld value
+    went into the snapshot, so the caller's "not relaying env" log line has
+    nothing left to name. When the snapshot cannot be written the entry still
+    points at the launcher, with a reference no snapshot answers, so the server
+    refuses to start rather than run without its env. A server that only had
+    pointers pending is handed back as projected, so it starts as it would
+    without them.
     """
-    env = withheld_env(original_env, projected.get("env"))
-    if not env or not session_key or not launchable(projected):
+    if not session_key or not launchable(projected):
         return projected, False, False
+    env = withheld_env(original_env, projected.get("env"))
     kept = projected.get("env") or {}
-    every = {k for k in original_env if isinstance(k, str) and k and k not in kept}
+    inherited = {
+        k: v for k, v in inherited_auth_env(forward_ssh_auth_sock).items() if k not in kept
+    }
+    if not env and not inherited:
+        return projected, False, False
+    declared = original_env if isinstance(original_env, dict) else {}
+    every = {k for k in declared if isinstance(k, str) and k and k not in kept}
     try:
         entry = launch_through_shim(
-            projected, session_key=session_key, agent_id=agent_id, server=server, env=env
+            projected,
+            session_key=session_key,
+            agent_id=agent_id,
+            server=server,
+            env=env,
+            inherited=inherited,
         )
     except OSError:
+        if not env:
+            logger.warning(
+                "agent %r: could not write the local launch for MCP server %r; it "
+                "starts without the gateway's Kerberos and ssh-agent pointers",
+                agent_id,
+                server,
+                exc_info=True,
+            )
+            return projected, False, False
         logger.warning(
             "agent %r: could not write the local launch for MCP server %r; it will "
             "refuse to start rather than run without its env",
@@ -225,7 +293,9 @@ def relay_withheld_env(
             False,
             False,
         )
-    return entry, True, every <= set(env)
+    # A malformed (non-dict) env relays nothing, so a launch the pointers alone
+    # caused must not clear its "withheld" report.
+    return entry, True, isinstance(original_env, dict) and every <= set(env)
 
 
 def kas_accepts_url(url: Any) -> bool:

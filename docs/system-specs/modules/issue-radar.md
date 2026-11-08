@@ -33,12 +33,12 @@ removes what it names:
   `issue_radar_crew_record`): their descriptors, handlers and `TOOL_APPS` rows in
   `mcp_tools/apps.py`, their schemas in `validation_parts/`, the crew route constants in
   `mcp_core.py`, and the three internal-secret path rows in
-  `dashboard/server_internal_paths.py`. The data-only `apps.builtin_agent_tools` seam
-  cannot carry them: these handlers resolve the crew from a strictly-identified session,
-  take integer and list arguments, sanitize a public progress line and post to the
-  in-process `/api/apps/issue-radar` routes rather than the app's `/apps/<app>/api` proxy
-  namespace. Moving them needs a seam that lets a built-in ship handler code into the
-  credential-holding MCP server, which is a maintainer's trust-model decision.
+  `dashboard/server_internal_paths.py`. App code never runs in the credential-holding
+  MCP server (ruling 2 in #26967, comment 6713005850); the seam these tools move onto is
+  the manifest `agentTools` block (`app-kit-platform.md`, section 30.1), where the app
+  serves each call from its own routes. They stay core until the app serves that route,
+  together with the strictly-identified crew session the crew tools resolve and the
+  `radar` crew-log fold below.
 - **The `radar/recorded` crew-log entry type's note**, which names the tool that writes
   it.
 - **The four tool-less model-call key shapes** in `session_work_dir._DERIVED_SESSION_SHAPES`:
@@ -54,8 +54,14 @@ fold of the crew log (`crew_log/projection_radar.py`, the `RADAR_*` vocabulary i
 crew ledger's storage and has no app-keyed fold seam yet; the link-screen gate's held
 control site (`crew_store_unit_order._write_unit_order`); the app-store row in
 `appManifest.ts`, the `apps.issueRadar.*` catalog keys and the `kc:issue-radar:ui-state`
-preference key. The auto-approve grant a crew holds is the app's own call into the
-core's `SafetyOverride` scoped grants; no core grant code is specific to the app.
+preference key. The auto-approve grant an unattended crew holds goes through the
+generic worker auto-approve seam (`app-kit-platform.md` section 36): the manifest
+declares `permissions.workerAutoApprove`, `crew_runtime_session._GRANTS` holds each
+crew's grant under the seam's scope `app:issue-radar:grant:crew-<id>:autoapprove`, audited
+under source `app:issue-radar`, and no backend module imports `kiro_crew.safety_override`
+(`tests/test_auto_approve_seam.py`). No core grant code is specific to the app, so an
+adopted copy that declares the same permission gets the same grant through
+`ctx.auto_approve`.
 
 The app's pins of core parity run in its own `tests/` (`test_core_parity.py`,
 `test_config_lock_owner_only.py`), and the cases that need the core's test harness sit in
@@ -1347,7 +1353,8 @@ The same loop drives the crew sweep, `crew_runtime.sweep_repo`. `crew_runtime.py
 keeps the sweep and its unblock signals, and is a mirror façade
 (`kiro_crew._facade_mirror`) for the rest of the crew runtime:
 `crew_runtime_prompt` (the brief, the nudge and the turn prompt),
-`crew_runtime_session` (a crew's slot, minting its scoped auto-approve grant, launch
+`crew_runtime_session` (a crew's slot, holding its auto-approve grant through the
+worker auto-approve seam, launch
 and turn dispatch) and `crew_runtime_supervision` (trust reconciliation, the wake,
 the watchdog, the slot-close and app-disable hooks, and the revocation of a crew's
 execution and grants). New crew-runtime code goes to the owner of its

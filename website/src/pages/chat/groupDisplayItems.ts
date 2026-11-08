@@ -92,7 +92,7 @@ export const opensDisplayTurn = (msg: ChatMessage): boolean =>
 /**
  * The synthesis injection that closes a sub-agent fan-out.
  *
- * `_run_pending_synthesis` (chat_runner.py) appends this row before dispatching
+ * `_run_pending_synthesis` (chat_turn/queue_cycle.py) appends this row before dispatching
  * the one turn that folds every sub-agent's result into a single answer, and
  * stamps `meta.injectKind = 'synthesis'` on it. Its presence is therefore proof
  * that everything the agent emitted since the user's prompt was INTERIM: the
@@ -109,7 +109,7 @@ export const isSynthesisInjection = (msg: ChatMessage): boolean =>
  * The row a turn that ENDED carries its per-turn stats on: its last
  * assistant-role row for a completed turn (`_attach_turn_stats`), the newest
  * reply the runner recorded for any other end (`_persist_partial_reply`,
- * chat_runner.py).
+ * chat_turn/turn_reply_seams.py).
  *
  * This is how the region walk finds where a synthesis turn ENDED. A synthesis
  * row opens a turn whose answer is real, user-facing content no later synthesis
@@ -201,12 +201,13 @@ function answerEndIndex(items: readonly TurnItem[]): number {
  * the fan-out toggle would hide content on the promise that something below
  * repeats it, which nothing does. An `mcp_app` row (an embedded MCP App's
  * ui/message delivery) is here for the same reason: the user's own click
- * landed it, and nothing in the fold repeats it.
+ * landed it, and nothing in the fold repeats it. A `workflow` follow-up is the
+ * same again: its answer is about a workflow run, not the fan-out.
  *
  * `recovery` is deliberately NOT here: a tool-stall recovery inside a fan-out is
  * a continuation of the very work being folded.
  */
-const FOREIGN_INJECT_KINDS = new Set(['cron', 'user_replay', 'mcp_app'])
+const FOREIGN_INJECT_KINDS = new Set(['cron', 'user_replay', 'mcp_app', 'workflow'])
 const isForeignInjection = (msg: ChatMessage): boolean => {
   if (msg.role !== 'inject') return false
   if (isNoteRow(msg)) return true

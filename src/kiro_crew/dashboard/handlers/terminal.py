@@ -1557,6 +1557,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _orphan_timeout_s,
         _record_orphan_reap,
         _shell_failure_note,
+        _shell_to_evict,
         _sweep_terminals,
         reap_orphaned_terminals,
     )

@@ -838,6 +838,11 @@ rather than a corner. The parent probe and the bundle probes are independent: an
 parent is not evidence of an unwritable bundle. A bundle installed by any user-space
 installer — every drag-install, every Homebrew cask — is owned by the installing user, so
 `Foo.app/Contents/MacOS/Foo` can be replaced without the parent ever being writable.
+`_writable_component` returns the first path that would let this user change what runs,
+and the refusal names it: a writable parent reads "is installed in a directory
+(`<parent>`) this user can write"; the bundle or anything in it reads "has a component
+(`<path>`) this user can write or that could not be verified", naming a replaceable
+executable as the file rather than its directory.
 
 **A stock `/Applications` is judged by the bundle, not the parent.** macOS ships it
 `drwxrwxr-x root admin`, so every admin user (the default for a Mac's primary account) can

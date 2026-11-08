@@ -66,19 +66,16 @@ _CLI_STDERR_REASON = next(
 #: the tool, the route, the file or the doc it names.
 KNOWN_NAME_REFERENCES: frozenset[tuple[str, str]] = frozenset(
     {
-        # The app's three agent tools run in the ``kirocrew-core`` MCP server, which
-        # holds the gateway's internal secret, and the gateway admits exactly their
-        # three routes to internal-secret callers. ``apps.builtin_agent_tools`` is the
-        # seam a built-in declares such a tool through, but it is data only by design
-        # (the handler is the core's, every argument a bounded string, the route under
-        # the app's ``/apps/<app>/api`` proxy namespace), and these handlers resolve a
-        # crew from a strictly-identified session, take integer and list arguments,
-        # sanitize a public progress line and post to the in-process
-        # ``/api/apps/issue-radar`` routes. Moving them out needs a seam that lets a
-        # built-in ship handler CODE into the credential-holding server and admit
-        # in-process routes, which is a trust-model decision for a maintainer, not a
-        # refactor. Until then the descriptors, handlers, ``TOOL_APPS`` rows,
-        # validation schemas and internal-secret path rows stay, unchanged.
+        # The app's three agent tools still run in the ``kirocrew-core`` MCP server,
+        # which holds the gateway's internal secret, and the gateway admits exactly
+        # their three routes to internal-secret callers. The seam they move onto is
+        # the manifest ``agentTools`` block (``apps.app_agent_tools``): the app serves
+        # each call from its own routes and the core only lists and forwards it. Moving
+        # them is app-side work this table cannot do for the app: a route that serves
+        # the three tools over its own handlers, the strictly-identified crew session
+        # the crew tools resolve, and the ``radar`` crew-log fold below. Until then the
+        # descriptors, handlers, ``TOOL_APPS`` rows, validation schemas and
+        # internal-secret path rows stay, unchanged.
         *(("mcp_tools/apps.py", tool) for tool in _TOOLS),
         ("mcp_tools/apps.py", "issue-radar"),
         ("mcp_tools/apps.py", _INVESTIGATION_ROUTE),

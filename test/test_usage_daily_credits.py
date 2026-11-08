@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
@@ -181,6 +182,11 @@ class TestDailyCredits:
             assert daily_credits() == {_day(yesterday): 3.0}
 
 
+def _files_validate_as(answer):
+    """A ``validate_file_path`` stand-in that passes directories and answers *answer* for files."""
+    return lambda p: p if os.path.isdir(p) else answer
+
+
 def _write_session(path: Path, lines: list[dict[str, object]]) -> None:
     path.write_text("\n".join(json.dumps(item) for item in lines) + "\n", encoding="utf-8")
 
@@ -198,7 +204,7 @@ class TestParseSessionsCarriesCredits:
         _write_shard(shard_dir, _day(today), [_row(today, 1.234), _row(today, 2.0)])
         with (
             patch.object(usage_mod, "_SESSIONS_DIR", d),
-            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
+            patch.object(usage_mod, "validate_file_path", side_effect=_files_validate_as(str(f))),
         ):
             r = _parse_sessions()
         assert r["daily_history"] == [
@@ -219,7 +225,7 @@ class TestParseSessionsCarriesCredits:
         _write_session(f, [{"kind": "Prompt", "timestamp": today.isoformat()}])
         with (
             patch.object(usage_mod, "_SESSIONS_DIR", d),
-            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
+            patch.object(usage_mod, "validate_file_path", side_effect=_files_validate_as(str(f))),
         ):
             r = _parse_sessions()
         assert [(h["date"], h["credits"]) for h in r["daily_history"]] == [(_day(today), 0.0)]
@@ -235,7 +241,7 @@ class TestParseSessionsCarriesCredits:
         _write_shard(shard_dir, _day(yesterday), [_row(yesterday, 2.5, slot="cron:nightly")])
         with (
             patch.object(usage_mod, "_SESSIONS_DIR", d),
-            patch.object(usage_mod, "validate_file_path", return_value=str(f)),
+            patch.object(usage_mod, "validate_file_path", side_effect=_files_validate_as(str(f))),
         ):
             r = _parse_sessions()
         assert r["daily_history"] == [

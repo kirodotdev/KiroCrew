@@ -752,6 +752,8 @@ async def test_live_worktree_path_none_without_systemd(monkeypatch):
     monkeypatch.setattr(live.sys, "platform", "win32")
     monkeypatch.setattr(live.shutil, "which", lambda name: None)
     monkeypatch.setattr(runtime, "_run_cmd", AsyncMock(side_effect=RuntimeError))
+    # A packaged install: no checkout to fall back on either.
+    monkeypatch.setattr(live, "_running_checkout", lambda: None)
 
     assert await live._live_worktree_path(fresh=True) is None
 

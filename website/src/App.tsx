@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef, createContext, lazy, Suspense, type ReactNode } from 'react'
+import { useEffect, useState, useCallback, useRef, useSyncExternalStore, createContext, lazy, Suspense, type ReactNode } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAppSelector, useAppDispatch } from './store'
 import { setUpdateProgress } from './store/dashboardSlice'
@@ -75,6 +75,7 @@ import { TerminalHostContext } from './hooks/useTerminalCommand'
 import './utils/terminalExitClose'
 import { focusPopout as focusTerminalPopout } from './utils/terminalPopout'
 import { mainStackingClass } from './utils/terminalFullscreen'
+import { REGISTERED_OVERLAYS_PACK, readExperience, subscribeExperience } from './utils/themeConsent'
 import MigrationCheck from './components/MigrationCheck'
 import CrashReportNotice from './components/CrashReportNotice'
 import RemoteUpdateOffer from './components/RemoteUpdateOffer'
@@ -337,6 +338,11 @@ export default function App() {
   // no stacking context, so a page-level inline modal (fixed inset-0 z-[100])
   // still paints over the dock as it does elsewhere.
   const terminalFullscreen = useTerminalFullscreen()
+  // Read during render, so turning the part off never mounts an overlay for one frame.
+  const overlaysOn = useSyncExternalStore(
+    useCallback((onChange: () => void) => subscribeExperience(colorTheme, onChange), [colorTheme]),
+    () => readExperience(colorTheme, REGISTERED_OVERLAYS_PACK).overlays,
+  )
 
   /**
    * Phone chat page: the main navigation as a 72px icon rail.
@@ -989,12 +995,13 @@ export default function App() {
       onClose={commandPalette.close}
       openShortcuts={toggleShortcutsModal}
     />
-    {/* Theme decoration: always-mounted decorative overlays (widgets,
-        transitions) contributed by the active theme's branding. Absent unless
-        a registered theme declares them. Each overlay is isolated in its own
+    {/* Theme decoration: decorative overlays (widgets, transitions)
+        contributed by the active theme's branding. Absent unless a registered
+        theme declares them, and while the user has turned that theme's
+        Overlays part off. Each overlay is isolated in its own
         ErrorBoundary (fallback=null) so a throwing overlay disables only itself,
         not the shell or its siblings. */}
-    {branding?.overlays?.map((Overlay, i) => (
+    {overlaysOn && branding?.overlays?.map((Overlay, i) => (
       <ErrorBoundary key={`${colorTheme}:${i}`} scope={`theme-overlay:${i}`} fallback={null}>
         <Overlay />
       </ErrorBoundary>

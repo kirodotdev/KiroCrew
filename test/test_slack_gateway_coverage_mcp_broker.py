@@ -1,7 +1,7 @@
 """Coverage for ``kiro_crew.slack.gateway``: the MCP-gateway control plane.
 
 ``_init_mcp_gateway``'s broker startup, its early returns and the rewriter-failure
-fallback; ``_stop_mcp_broker``, ``_apply_mcp_stub`` and
+fallback; the retry after a failed start; ``_stop_mcp_broker``, ``_apply_mcp_stub`` and
 ``_wire_mcp_gateway_dashboard``; and the broker's refresh, prefetch and
 approval-persist arms. No real broker socket.
 """
@@ -9,6 +9,7 @@ approval-persist arms. No real broker socket.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -254,6 +255,7 @@ class TestInitMcpGateway:
         orch._cfg.mcp_gateway.stub_servers = ["alpha-mcp"]
         manager = MagicMock()
         manager.start = AsyncMock(return_value=False)  # transient failure
+        manager.shutdown = AsyncMock()
         with (
             patch("kiro_crew.slack.gateway.is_gateway_supported", return_value=True),
             patch(
@@ -270,6 +272,7 @@ class TestInitMcpGateway:
             "the failed start dropped the set, so a later restart would skip the "
             "broker instead of retrying it"
         )
+        await finished(orch._stop_mcp_broker(), "the broker stop ending the start retry")
 
     @pytest.mark.asyncio
     async def test_failed_start_leaves_no_manager(self, tmp_path):
@@ -277,6 +280,7 @@ class TestInitMcpGateway:
         orch._cfg.mcp_gateway.enabled = True
         manager = MagicMock()
         manager.start = AsyncMock(return_value=False)
+        manager.shutdown = AsyncMock()
         with (
             patch("kiro_crew.slack.gateway.is_gateway_supported", return_value=True),
             patch(
@@ -288,6 +292,194 @@ class TestInitMcpGateway:
         ):
             await orch._init_mcp_gateway()
         assert orch._mcp_gateway_manager is None
+        await finished(orch._stop_mcp_broker(), "the broker stop ending the start retry")
+
+
+class TestFailedMcpBrokerStartIsRetried:
+    """A failed broker start is retried for the gateway's life, and stops with it.
+
+    ``GatewayManager`` arms its watchdog only on a start that spawned or adopted a
+    daemon, so nothing inside it ever calls ``start`` again after a start that
+    returned False. Without a retry here every stubbed server stays on per-session
+    exec until the gateway itself restarts.
+    """
+
+    @staticmethod
+    def _orchestrator():
+        orch = _make_orchestrator()
+        orch._cfg.mcp_gateway.enabled = True
+        orch._cfg.mcp_gateway.stub_servers = ["alpha-mcp"]
+        orch.sessions = None
+        return orch
+
+    @staticmethod
+    def _broker_seams(stack: contextlib.ExitStack, tmp_path, manager_cls) -> MagicMock:
+        """Patch the rewrite and the manager class; return the overlay-refresher setter.
+
+        The setter is patched so a test never leaves its orchestrator installed in
+        the process-wide refresher slot.
+        """
+        stack.enter_context(
+            patch("kiro_crew.slack.gateway.is_gateway_supported", return_value=True)
+        )
+        stack.enter_context(
+            patch(
+                "kiro_crew.slack.gateway.rewrite_kwargs",
+                side_effect=_gateway_rewrite_inputs(tmp_path),
+            )
+        )
+        stack.enter_context(
+            patch("kiro_crew.slack.gateway.rewrite_agents", return_value=(None, {}))
+        )
+        stack.enter_context(patch("kiro_crew.slack.gateway.GatewayManager", manager_cls))
+        return stack.enter_context(
+            patch("kiro_crew.mcp_gateway.overlay_refresh.set_overlay_refresher")
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_failed_start_is_retried_until_the_broker_comes_up(self, tmp_path, caplog):
+        """Two failed starts, then one that comes up: the third publishes the broker
+        exactly as a boot start does, on the SAME manager, so its lifetime
+        stand-down budget and election gates carry across the attempts."""
+        orch = self._orchestrator()
+        ds = _mock_dashboard_state()
+        ds._mcp_gateway_manager = None
+        orch.dashboard_state = ds
+        manager = MagicMock()
+        manager.start = AsyncMock(side_effect=[False, False, True])
+        manager.shutdown = AsyncMock()
+        manager_cls = MagicMock(return_value=manager)
+        with contextlib.ExitStack() as stack:
+            set_refresher = self._broker_seams(stack, tmp_path, manager_cls)
+            stack.enter_context(
+                patch.object(orch, "_mcp_gateway_start_retry_delay", return_value=0.0)
+            )
+            stack.enter_context(caplog.at_level(logging.INFO, logger="kiro_crew.slack.gateway"))
+
+            await orch._init_mcp_gateway()
+            assert orch._mcp_gateway_manager is None, "a failed start published a broker"
+            retry = orch._mcp_gateway_start_retry
+            assert retry is not None, "a failed start scheduled no retry"
+            await await_until(retry, what="the start retry bringing the broker up")
+
+            assert orch._mcp_gateway_manager is manager
+            assert orch._mcp_gateway_pending is None
+            assert manager.start.await_count == 3
+            manager_cls.assert_called_once()
+            assert ds._mcp_gateway_manager is manager, (
+                "the dashboard was wired at boot with no broker and never saw the "
+                "one the retry brought up"
+            )
+            set_refresher.assert_called_once_with(orch._refresh_mcp_overlays)
+            messages = [r.getMessage() for r in caplog.records]
+            assert sum("retrying on the L4 schedule" in m for m in messages) == 1
+            assert any("broker ready" in m for m in messages)
+
+            await finished(orch._stop_mcp_broker(), "the broker stop")
+        manager.shutdown.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_stop_cancels_a_pending_start_retry_and_shuts_its_manager_down(self, tmp_path):
+        """A retry left running would start a daemon after the gateway stopped, and
+        a daemon a cancelled attempt spawned is held by the pending manager."""
+        orch = self._orchestrator()
+        manager = MagicMock()
+        manager.start = AsyncMock(return_value=False)
+        manager.shutdown = AsyncMock()
+        with contextlib.ExitStack() as stack:
+            self._broker_seams(stack, tmp_path, MagicMock(return_value=manager))
+            await orch._init_mcp_gateway()
+            retry = getattr(orch, "_mcp_gateway_start_retry", None)
+            await finished(orch._stop_mcp_broker(), "the broker stop")
+
+        assert retry is None or retry.done(), "the stop left the start retry running"
+        manager.shutdown.assert_awaited_once()
+        assert manager.start.await_count == 1
+        assert orch._mcp_gateway_manager is None
+        assert getattr(orch, "_mcp_gateway_pending", None) is None
+        assert getattr(orch, "_mcp_gateway_start_retry", None) is None
+
+    @pytest.mark.asyncio
+    async def test_stop_lets_an_in_flight_retry_start_finish_before_shutdown(self, tmp_path):
+        """A start terminating its daemon has already cleared its process handle;
+        cancelled there, it would skip the SIGKILL and reap and the shutdown after
+        it would find nothing to stop. The fake shares one lock between start and
+        shutdown, as ``GatewayManager``'s lifecycle lock does."""
+        orch = self._orchestrator()
+        events: list[str] = []
+        lock = asyncio.Lock()
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        calls = 0
+
+        async def _start() -> bool:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                return False
+            async with lock:
+                entered.set()
+                try:
+                    await release.wait()
+                except asyncio.CancelledError:
+                    events.append("start cancelled")
+                    raise
+                events.append("start finished")
+                return False
+
+        async def _shutdown() -> None:
+            async with lock:
+                events.append("shutdown")
+
+        manager = MagicMock()
+        manager.start = _start
+        manager.shutdown = _shutdown
+        with contextlib.ExitStack() as stack:
+            self._broker_seams(stack, tmp_path, MagicMock(return_value=manager))
+            stack.enter_context(
+                patch.object(orch, "_mcp_gateway_start_retry_delay", return_value=0.0)
+            )
+            await orch._init_mcp_gateway()
+            retry = orch._mcp_gateway_start_retry
+            await await_until(entered, what="the retry's second start taking the lock")
+            stop = asyncio.ensure_future(orch._stop_mcp_broker())
+            await finished(asyncio.wait([retry]), "the stop cancelling the retry")
+            release.set()
+            await finished(stop, "the broker stop")
+
+        assert events == ["start finished", "shutdown"]
+
+    @pytest.mark.asyncio
+    async def test_sharing_toggle_stops_a_pending_retry_before_restarting(self, tmp_path):
+        """The toggle builds a fresh manager; a retry still driving the old one would
+        leave two managers contending for one socket."""
+        orch = self._orchestrator()
+        events: list[str] = []
+        old = MagicMock()
+        old.start = AsyncMock(return_value=False)
+        old.shutdown = AsyncMock(side_effect=lambda: events.append("old shutdown"))
+        new = MagicMock()
+        new.start = AsyncMock(return_value=True)
+        new.shutdown = AsyncMock()
+        new.is_running = False
+        built = iter([old, new])
+
+        def _build(_spec):
+            events.append("construct")
+            return next(built)
+
+        with contextlib.ExitStack() as stack:
+            self._broker_seams(stack, tmp_path, MagicMock(side_effect=_build))
+            stack.enter_context(
+                patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=orch._cfg)
+            )
+            await orch._init_mcp_gateway()
+            await finished(orch._apply_mcp_gateway_enabled(False), "the sharing toggle")
+
+            assert events == ["construct", "old shutdown", "construct"]
+            assert orch._mcp_gateway_manager is new
+            await finished(orch._stop_mcp_broker(), "the broker stop")
+        old.start.assert_awaited_once()
 
 
 class TestStopAndApplyMcpBroker:

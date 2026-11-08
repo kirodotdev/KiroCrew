@@ -191,6 +191,67 @@ class TestLandingAfterAChannelTurn:
         assert slot._deferred_model_switch_key == key
 
     @pytest.mark.asyncio
+    async def test_a_lock_taken_during_the_acquire_hands_the_lease_back(self, tmp_path):
+        # MUTATION-SENSITIVE: try_acquire awaits the Kiro account check before it
+        # takes the lease, so the session lock can be taken after the first check
+        # passed. Without the re-check the landing waits for that lock while it
+        # holds the lease; the timeout bounds that wait.
+        state = _make_state(tmp_path)
+        provider = _live_provider()
+        slot = _slot_with_deferred_pick(state, provider)
+        key = slot._deferred_model_switch_key
+        checking = asyncio.Event()
+        lock_taken = asyncio.Event()
+
+        async def _try_acquire(_key: str) -> bool:
+            checking.set()
+            await lock_taken.wait()
+            return True
+
+        state.sessions.try_acquire = AsyncMock(side_effect=_try_acquire)
+
+        landing = asyncio.ensure_future(sc.land_model_pick_after_channel_turn(state, slot))
+        await asyncio.wait_for(checking.wait(), timeout=30)
+        async with slot_switch_session_lock(key):
+            lock_taken.set()
+            await asyncio.wait_for(landing, timeout=30)
+
+        provider.client.set_model.assert_not_awaited()
+        state.sessions.try_acquire.assert_awaited_once_with(key)
+        # wake_queue: a channel message queued behind the landing is drained.
+        state.sessions.release.assert_called_once_with(key, wake_queue=True)
+        assert not sc.landing_holds_lease(key)
+        assert slot._deferred_model_switch_key == key
+
+    @pytest.mark.asyncio
+    async def test_a_slot_rebound_during_the_acquire_returns_the_original_lease(self, tmp_path):
+        state = _make_state(tmp_path)
+        original_provider = _live_provider()
+        rebound_provider = _live_provider()
+        slot = _slot_with_deferred_pick(state, original_provider)
+        original_key = slot._deferred_model_switch_key
+        rebound_key = "cron:rebound"
+        state.sessions.get_provider = MagicMock(
+            side_effect=lambda key: rebound_provider if key == rebound_key else original_provider
+        )
+
+        async def _try_acquire(_key: str) -> bool:
+            slot.linked_session_key = rebound_key
+            await asyncio.sleep(0)
+            return True
+
+        state.sessions.try_acquire = AsyncMock(side_effect=_try_acquire)
+
+        await sc.land_model_pick_after_channel_turn(state, slot)
+
+        original_provider.client.set_model.assert_not_awaited()
+        rebound_provider.client.set_model.assert_not_awaited()
+        state.sessions.try_acquire.assert_awaited_once_with(original_key)
+        state.sessions.release.assert_called_once_with(original_key, wake_queue=True)
+        assert not sc.landing_holds_lease(original_key)
+        assert not sc.landing_holds_lease(rebound_key)
+
+    @pytest.mark.asyncio
     async def test_a_failed_live_switch_keeps_the_pick_and_arms_no_reset(self, tmp_path):
         # MUTATION-SENSITIVE: without live_only the helper arms the reset, and the
         # channel's next cold start would run the default ladder instead of the pick.

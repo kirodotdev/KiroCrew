@@ -19,6 +19,7 @@ import pytest
 
 from kiro_crew.testing.clock import ManualClock
 from kiro_crew.tips import (
+    TipsCache,
     TipsState,
     _is_eligible,
     _load_state,
@@ -1158,3 +1159,63 @@ class TestRetiredCuratedStateCleanup:
         bundled = json.loads(_BUNDLED_CATALOG_FILE.read_text(encoding="utf-8"))
         assert doc not in {e["doc"] for e in bundled["entries"]}
         assert doc not in {e.doc for e in _scan_docs_catalog()}
+
+
+class TestBrowseAllTips:
+    """``GET /api/tips/all`` lists the whole curated pool for Settings."""
+
+    @staticmethod
+    async def _get_all(tmp_path: Path, cache: object, tips_enabled: bool) -> dict:
+        import types
+        from unittest.mock import MagicMock
+        from unittest.mock import patch as mpatch
+
+        from aiohttp.test_utils import make_mocked_request
+
+        from kiro_crew.tips import api_tips_all
+
+        cfg = MagicMock()
+        cfg.dashboard.tips_enabled = tips_enabled
+        with (
+            patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}),
+            mpatch("kiro_crew.tips.KiroCrewConfig") as mock_cfg_cls,
+        ):
+            mock_cfg_cls.load.return_value = cfg
+            req = make_mocked_request("GET", "/api/tips/all")
+            req.app["state"] = types.SimpleNamespace(_tips_cache=cache)
+            resp = await api_tips_all(req)
+        assert resp.status == 200
+        return json.loads(resp.body)
+
+    @staticmethod
+    def _cache() -> TipsCache:
+        action = {"kind": "route", "label": "Open Secrets settings", "route": "/settings/secrets"}
+        cache = TipsCache()
+        cache.curated = [
+            {
+                "id": "secrets-vault",
+                "title": "Keep keys in the vault",
+                "body": "B",
+                "action": action,
+            },
+            {"id": "focus-mode", "title": "Hide the chrome", "body": "B"},
+        ]
+        cache.state = TipsState(dismissed=["focus-mode"], opted_out=True)
+        return cache
+
+    @pytest.mark.asyncio
+    async def test_lists_dismissed_tips_and_records_nothing(self, tmp_path: Path) -> None:
+        import dataclasses
+
+        cache = self._cache()
+        before = dataclasses.asdict(cache.state)
+        body = await self._get_all(tmp_path, cache, tips_enabled=True)
+        assert [t["id"] for t in body["tips"]] == ["secrets-vault", "focus-mode"]
+        assert body["tips"][0]["action"]["route"] == "/settings/secrets"
+        assert dataclasses.asdict(cache.state) == before
+        assert not (tmp_path / "tips_state.json").exists()
+
+    @pytest.mark.asyncio
+    async def test_instance_kill_switch_lists_nothing(self, tmp_path: Path) -> None:
+        body = await self._get_all(tmp_path, self._cache(), tips_enabled=False)
+        assert body == {"tips": []}

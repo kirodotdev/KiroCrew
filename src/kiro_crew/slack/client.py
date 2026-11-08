@@ -20,6 +20,7 @@ from slack_sdk.http_retry.response import HttpResponse
 from slack_sdk.http_retry.state import RetryState
 from slack_sdk.web.async_client import AsyncWebClient
 
+from kiro_crew.http_proxy import resolve_proxy
 from kiro_crew.slack.agent_sessions.fence import note_message, turn_muted
 from kiro_crew.slack.channel_policy import require_channel
 from kiro_crew.slack.team_ids import use_channel_team_store
@@ -1291,7 +1292,9 @@ class RealSlackClient(SlackClientOps):
         headers = {"Authorization": f"Bearer {self._web.token}"}
         timeout = aiohttp.ClientTimeout(total=_FILE_DOWNLOAD_TIMEOUT_SECS)
         async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.get(url, headers=headers, allow_redirects=False) as resp:
+            async with session.get(
+                url, headers=headers, allow_redirects=False, proxy=resolve_proxy(url)
+            ) as resp:
                 if 300 <= resp.status < 400:
                     raise ValueError("refusing redirected Slack file URL")
                 resp.raise_for_status()

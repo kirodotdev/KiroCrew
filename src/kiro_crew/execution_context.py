@@ -565,6 +565,54 @@ def execution_for_store(
     )
 
 
+def recordless_parent_execution(
+    inherited: object, *, agent: str, memory_store: str, memory_mode: str, app: str
+) -> ExecutionContext:
+    """The execution a spawn inherits from a parent session with no execution record.
+
+    A parent with no record yet (a channel conversation whose first turn is not
+    saved) hands its child its live selection
+    (``SessionManager.get_agent_selection``) instead: *inherited* is
+    that ``(kind, name)`` pair, ``("template", "")`` when there is no parent or an
+    explicit *agent* is named. The spawn gate (``resolve_spawn_execution``) and
+    ``POST /api/spawn`` both build the child from it, so they agree on what such a
+    parent hands down. Reads config, so an event-loop caller runs it off the loop.
+    """
+    from kiro_crew.config.loader import KiroCrewConfig, member_template_id
+
+    if (
+        not isinstance(inherited, tuple)
+        or len(inherited) != 2
+        or inherited[0] not in ("template", "member")
+        or not isinstance(inherited[1], str)
+    ):
+        raise ValueError("effective agent template is invalid")
+    execution = execution_for_store(
+        memory_store, memory_mode=memory_mode, app=app, template_id=agent or inherited[1]
+    )
+    if inherited[0] == "member":
+        from kiro_crew.crewmate_prune_migration import removed_crewmate_names
+
+        selected = KiroCrewConfig.load().agents.get(inherited[1])
+        if selected is not None:
+            execution = replace(
+                execution,
+                selection_kind="member",
+                selection_name=inherited[1],
+                template_id=member_template_id(selected),
+            )
+        elif (
+            execution.store.store_id != "default"
+            or execution.member_id is not None
+            or inherited[1] not in removed_crewmate_names()
+        ):
+            raise ValueError("selected member is unavailable")
+        # Otherwise the member is a synced crewmate the startup prune removed:
+        # same rule ``adopt_removed_synced_crewmate`` applies to records, so the
+        # run keeps its template on the shared store.
+    return execution
+
+
 def validate_execution(
     execution: ExecutionContext, *, validate_memory_files: bool = True
 ) -> ExecutionContext:

@@ -60,12 +60,15 @@ intra-package imports per module, so the direction cannot drift:
 __init__, validate, dsl, schema, events, registry, store,
 agent_exec, agent_pool, preview   (leaves: no sibling imports, or __init__ only)
 library                         (definition persistence; may import store)
+update_from_run                 (run-to-revision update; may import library, validate, registry;
+                                 handed the service, never imports it)
     ↑
 context      (may import: __init__, validate)
     ↑
 runner       (may import: __init__, validate, dsl, events, context, schema, registry)
     ↑
-service      (may import: validate, registry, runner, agent_exec, agent_pool, store, library, events)
+service      (may import: validate, registry, runner, agent_exec, agent_pool, store, library, events,
+              update_from_run)
 ```
 
 The scan counts only relative sibling imports (`from .sib import …`, level 1).
@@ -1166,6 +1169,18 @@ with `exact_slug` refuses a used slug rather than suffixing it. This makes two g
 the library reject the second update to the same revision rather than silently
 accepting both and losing one writer's source.
 
+A finished ad-hoc run can be appended to a definition the owner picks, as its next
+revision (`workflows/update_from_run.py`, reached through
+`WorkflowService.update_run_definition`). The run passes promotion's checks, must
+have the definition's format, and a source identical to the pinned revision is
+refused rather than written as an empty revision. The preview suggests the target
+from the run's `derived_from`, the script's `META["adapted_from"]`, then the slugs
+of the script's `META` name and of the run's name, and returns the run source's
+SHA-256. The update must send that digest back and is refused when the run's source
+no longer matches it, because a paused TaskRunner plan can be replanned while the
+owner reads the diff. The diff is `workflow_source_diff`, the change card's diff
+without `WORKFLOW_DIFF_MAX`, because it is never stored in a card.
+
 Only explicitly saved definitions participate in local authoring matches.
 `search(intent)` uses deterministic local lexical ranking: a query word matches a
 saved word when they are equal, or when one is a prefix of the other and both are
@@ -1252,9 +1267,11 @@ errors if invalid) and the replay cache is **not** reused (`replay_before=0`,
 `replay_results={}`), because editing the script can change what its calls mean, and
 a cached result could then replay into a call it no longer answers. An unedited
 rerun of a saved definition retains its definition id, slug, and revision so it
-remains an exact saved invocation and cannot be promoted into a duplicate. An
+remains an exact saved invocation and cannot be promoted into a duplicate or
+appended as a revision. An
 edited rerun clears that saved-definition identity because its submitted source
-is no longer the exact saved revision.
+is no longer the exact saved revision, and keeps the former id and revision only
+as `derived_from` ancestry; any later rerun carries that ancestry forward.
 
 TaskRunner applies the same rule to saved task plans. A user edit or automatic
 replan clears the run's exact definition id, slug, and revision before publishing
@@ -1427,7 +1444,12 @@ never spawns `kiro-cli` in tests. Two production adapters:
   (`ACP_BACKENDS_CLIENT_NEW_CONVERSATION`, see claude-code-provider "A fresh
   conversation on the live adapter"); any other backend on its own `AcpClient`
   raises `NotImplementedError` naming the backend, and its reuse is the hard reset,
-  logged at INFO as a cold start. Dead workers are retired and replaced.
+  logged at INFO as a cold start. Before that reuse the worker runs the Kiro account
+  check (`SessionManager.run_identity_check`): it holds its session's lease from its
+  first task to its last, so it never acquires again and a sweep only flags that
+  session. A session the check flagged (`is_retiring`) takes the hard reset, whose
+  re-acquire starts a session on the current account. Dead workers are retired and
+  replaced.
   A `session=<key>` call bypasses the pool entirely, since it needs a stable named
   session rather than a reset-between-uses worker. So does a `backend=` call: every
   warm worker runs the default harness, so it runs on a one-shot unpooled session.
@@ -1517,7 +1539,8 @@ caller class:
   loopback caller (the chat `workflow_*` MCP tools) and a manifest-scoped app token
   keep the controls that already govern them. `POST /api/spawn` and
   `POST /api/crons` gate the dashboard-user class the same way.
-- **Definition create, update and run promotion** are owner-only for every caller.
+- **Definition create and update, run promotion, and update from a run** (its
+  preview included) are owner-only for every caller.
 - **Run list, detail, cancel and rerun** go through `workflow_memory.authorize_run`
   (the list keeps only the runs it admits); rerun does so after the owner check above.
 
@@ -1541,6 +1564,8 @@ launch a script under a trusted chat's identity.
 | `GET /api/workflows/runs` | | `{runs: [...]}` compact, newest first |
 | `GET /api/workflows/runs/{run_id}` | | full snapshot incl. `events`; adds `plan` under `?plan=1` when one is readable (404 if the run is absent) |
 | `POST /api/workflows/runs/{run_id}/promote` | `{name?, description?, slug?}` | save exact source from a finished run or paused TaskRunner plan; 404 when unknown, 409 when not promotable or only a restored redacted source remains |
+| `GET /api/workflows/runs/{run_id}/update-definition` | `?workflow=` id or slug, optional | `{target, diff, unchanged, format_mismatch, run_source_sha256}`: the definition an update would revise (`id`, `slug`, `name`, `revision`, `format` only), the uncapped diff from its current source to the run's (empty when they are equal or their formats differ), and the digest the POST sends back; without `workflow` the target is suggested and may be `null`; refused as the POST is |
+| `POST /api/workflows/runs/{run_id}/update-definition` | `{workflow, expected_revision, expected_source_sha256}` | append the run's exact source as the definition's next revision; 404 `workflow_run_not_found` / `workflow_definition_not_found`, 409 for a saved invocation, an unfinished run, a restored redacted source, a run source that changed since the preview or a stale revision, 400 on an unchanged source, a format mismatch or an invalid script |
 | `POST /api/workflows/runs/{run_id}/cancel` | | `{run_id, cancelled}` |
 | `POST /api/workflows/runs/{run_id}/rerun` | `{from_index?, source?}` | `{run_id, from, replayed_before, edited}`; 400 on an invalid edited script, 404 on an unknown run |
 | `GET /api/workflows/definitions?q=` | optional local match query | `{definitions: [...]}` |
@@ -1616,7 +1641,9 @@ the redacted event plus the run's `session_key`, and the frontend
 (`website/src/apps/workflows/runModel.ts`) folds the stream into a phase tree and a
 budget snapshot. On a terminal state, `dashboard/workflow_inject.py` posts the
 result into the originating chat slot and starts (or queues) an agent turn so the
-user gets a synthesized answer rather than a raw blob.
+user gets a synthesized answer rather than a raw blob. That turn's prompt is the
+gateway's own words: it lands as an `inject` row (`injectKind: workflow`) on both the
+idle and the queued path, never as the user's bubble, and runs as a synthetic payload.
 
 A finished run's message carries its result as a `json` block when the serialized
 result is at most `_MAX_RESULT_CHARS` (4,000) characters. A longer result is cut to

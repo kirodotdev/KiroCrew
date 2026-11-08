@@ -99,6 +99,34 @@ class TestInstalledApp:
         meta = InstalledApp.from_dict({"name": "bad", "resources": "self"})
         assert meta.resources == "gateway"
 
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "two",
+            [1],
+            {},
+            None,
+            True,
+            float("inf"),  # json.loads("1e400") / "Infinity" parse to this
+            float("nan"),
+        ],
+    )
+    def test_non_integer_schema_version_falls_back(self, bad):
+        # A corrupted or hand-edited installed.json whose schemaVersion is not a
+        # plain integer must degrade like every other malformed field, not crash
+        # from_dict: the str/bool fields never raise, so schemaVersion (the one
+        # int() coercion) must not either. A non-finite float (1e400 -> inf)
+        # makes int() raise OverflowError, which the helper also swallows. It
+        # reads as 1, forcing the legacy-migration pass that bumps a pre-origin
+        # record up to 2.
+        meta = InstalledApp.from_dict({"name": "bad", "schemaVersion": bad})
+        assert meta.schemaVersion == 2  # 1 -> migration pass -> 2
+
+    def test_numeric_string_schema_version_is_read(self):
+        # A JSON integer is the norm; a numeric string still coerces cleanly.
+        meta = InstalledApp.from_dict({"name": "ok", "origin": "registry", "schemaVersion": "2"})
+        assert meta.schemaVersion == 2
+
     def test_validate_fields_valid(self):
         meta = InstalledApp(origin="builtin", resources="app", lifecycle="locked")
         assert meta.validate_fields() == []

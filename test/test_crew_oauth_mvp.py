@@ -1,4 +1,4 @@
-"""Crew-owned OAuth MVP: GitHub on KAS behind ``connections.crew_oauth`` (default off).
+"""Crew-owned OAuth MVP: GitHub on KAS behind the ``crew_oauth`` feature preview (off).
 
 What must hold (RFC "Crew-owned OAuth for Connections", phase 1):
 
@@ -107,31 +107,58 @@ def test_set_if_revision_writes_only_over_the_revision_it_read(tmp_path):
 # --- flag and platform ------------------------------------------------------
 
 
-def test_the_flag_is_off_unless_config_says_true(monkeypatch):
-    import kiro_crew.config.loader as loader
+_PREVIEW_ON = {"dashboard": {"feature_previews": {"crew_oauth": True}}}
+_PREVIEW_OFF = {"dashboard": {"feature_previews": {"crew_oauth": False}}}
 
+
+def _write_config(home, doc, *, local=None) -> None:
+    from kiro_crew.config.loader_locations import config_dir, config_local_path
+
+    config_dir().mkdir(parents=True, exist_ok=True)
+    (config_dir() / "config.json").write_text(json.dumps(doc))
+    if local is not None:
+        config_local_path().write_text(json.dumps(local))
+
+
+def test_the_flag_is_off_unless_config_says_true(home, monkeypatch):
     monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
-    monkeypatch.setattr(loader, "read_config_for_update", lambda: {})
+    _write_config(home, {})
     assert crew_oauth.enabled() is False
-    monkeypatch.setattr(
-        loader, "read_config_for_update", lambda: {"connections": {"crew_oauth": "yes"}}
-    )
-    assert crew_oauth.enabled() is False
-    monkeypatch.setattr(
-        loader, "read_config_for_update", lambda: {"connections": {"crew_oauth": True}}
-    )
+    _write_config(home, _PREVIEW_ON)
     assert crew_oauth.enabled() is True
     assert crew_oauth.manages("asana") is False
 
 
-def test_windows_reads_the_flag_as_off(monkeypatch):
-    import kiro_crew.config.loader as loader
+@pytest.mark.parametrize(
+    "doc, on",
+    [
+        (_PREVIEW_ON, True),
+        (_PREVIEW_OFF, False),
+        ({"dashboard": {"feature_previews": {"crew_oauth": "yes"}}}, False),
+        ({"dashboard": {"feature_previews": ["not", "an", "object"]}}, False),
+        # A hand-edited ``connections.crew_oauth`` turns nothing on.
+        ({"connections": {"crew_oauth": True}}, False),
+    ],
+)
+def test_only_the_feature_preview_turns_it_on(home, monkeypatch, doc, on):
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+    _write_config(home, doc)
+    assert crew_oauth.enabled() is on
 
-    monkeypatch.setattr(
-        loader, "read_config_for_update", lambda: {"connections": {"crew_oauth": True}}
-    )
+
+@pytest.mark.parametrize(
+    "base, local, on", [(_PREVIEW_ON, _PREVIEW_OFF, False), ({}, _PREVIEW_ON, True)]
+)
+def test_the_config_local_overlay_decides_like_the_dashboard(home, monkeypatch, base, local, on):
+    monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+    _write_config(home, base, local=local)
+    assert crew_oauth.enabled() is on
+
+
+def test_windows_reads_the_flag_like_posix(home, monkeypatch):
+    _write_config(home, _PREVIEW_ON)
     monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
-    assert crew_oauth.enabled() is False
+    assert crew_oauth.enabled() is True
 
 
 # --- KAS projection ---------------------------------------------------------
@@ -637,14 +664,19 @@ def test_the_launcher_runs_the_gateway_bridge_on_posix(home, monkeypatch):
     assert done.value.code == 0 and ran[0]["connection"] == "github"
 
 
-def test_the_launcher_refuses_a_connection_on_windows(home, monkeypatch, capsys):
+def test_the_launcher_runs_the_gateway_bridge_on_windows(home, monkeypatch):
     argv = _connection_snapshot(home, monkeypatch)
+    ran: list[dict] = []
+    import kiro_crew.kas_connection_bridge as bridge_mod
+
+    monkeypatch.setattr(
+        bridge_mod, "run_connection_bridge", lambda doc, server: ran.append(doc) or 0
+    )
     monkeypatch.setenv("KIROCREW_HOME", str(home))
     monkeypatch.setattr(kas_env_shim.os, "name", "nt")
     with pytest.raises(SystemExit) as done:
         kas_env_shim.main(argv)
-    assert done.value.code == 78
-    assert "Unix socket" in capsys.readouterr().err
+    assert done.value.code == 0 and ran[0]["connection"] == "github"
 
 
 # --- custody, warm process, gate edges --------------------------------------

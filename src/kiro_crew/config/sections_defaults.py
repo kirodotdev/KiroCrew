@@ -115,8 +115,11 @@ DEFAULT_AUTOCOMPACT_PCT = 70.0
 # a quarter of the range so it cannot widen back into noise.
 CONTEXT_WARN_MARGIN_PCT = 10.0
 # session.pool_size — warm pool OFF by default. Each pooled slot is a full
-# kiro-cli process plus the MCP stdio servers its agent spec spawns (~109 MB per
-# backend), and a non-zero value is also reserved out of the memory term that
+# kiro-cli process plus every MCP stdio server and stub its agent spec spawns,
+# which is hundreds of MB rather than one backend's ~109 MB (a slot carrying a
+# typical operator's MCP set measured ~700 MB of macOS footprint, and the System
+# page's memory breakdown shows the pool's live figure), and a non-zero value is
+# also reserved out of the memory term that
 # sizes the TaskRunner's auto parallel cap
 # (subagent.compute_memory_sized_parallel_cap), so the cost is paid on every host
 # whether or not the pool is ever claimed. Cold start is instead

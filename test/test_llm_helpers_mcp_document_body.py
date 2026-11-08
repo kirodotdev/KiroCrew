@@ -126,6 +126,7 @@ class TestTheListIsExplicit:
             (_CORE, "monitor_start"): frozenset({"message"}),
             (_CORE, "monitor_update"): frozenset({"message"}),
             (_CORE, "learn_add"): frozenset({"rule", "negative"}),
+            (_CORE, "learn_update"): frozenset({"rule"}),
             (_CORE, "artifact_post_comment"): frozenset({"text"}),
             (_CORE, "artifact_reply_comment"): frozenset({"text"}),
         }

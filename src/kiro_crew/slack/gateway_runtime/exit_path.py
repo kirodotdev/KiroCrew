@@ -778,6 +778,13 @@ async def _shutdown_and_exit(
     await flush_audit_queue_before_hard_exit()
     await self._park_if_force_exit_claimed()
     await drain_log_queue_before_hard_exit()
+    # Marked once every teardown step above has returned: a teardown that wedges
+    # and is then killed never gets here, so its header-only dump is kept as the
+    # trace of that death. Bounded, so a stalled data home cannot hold the exit,
+    # and before the last park, so a force exit claimed meanwhile still owns it.
+    from kiro_crew.dashboard import crash_dump_store
+
+    await crash_dump_store.mark_clean_exit()
     await self._park_if_force_exit_claimed()
     os._exit(exit_code)
 

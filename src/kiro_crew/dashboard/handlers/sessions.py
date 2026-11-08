@@ -306,6 +306,8 @@ async def api_sessions_memory(request: web.Request) -> web.Response:
         getattr(state, "subagents", None),
         get_slot=state.get_slot,
         spend_slot_by_session=aliases,
+        mcp_gateway=getattr(state, "_mcp_gateway_manager", None),
+        breakdown=True,
     )
     return web.json_response(payload)
 

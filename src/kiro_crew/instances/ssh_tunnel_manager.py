@@ -374,9 +374,9 @@ class SshTunnelManager:
         # its own port but spawns the backend without passing it through — the
         # two disagree, the claim names a port the parent is not served on, and
         # the remote's ``frame-ancestors`` then blocks the iframe ("Pane failed
-        # to load"). The gateway already knows its real port (``app["port"]``,
-        # passed to ``_register_instances_hooks``), so it is threaded in here
-        # rather than re-derived.
+        # to load"). The gateway already knows its real port (the reserved
+        # socket's name, passed to ``_register_instances_hooks``), so it is
+        # threaded in here rather than re-derived.
         self._parent_port = parent_port if parent_port else _LOCAL_DASHBOARD_PORT
         self._allocator = PortAllocator(base_port=base_port)
         self._connect_timeout = connect_timeout_secs

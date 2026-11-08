@@ -219,7 +219,8 @@ _BASE_SLOT_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "(self, prompt: 'str', run_chat_coro: 'Callable[[DashboardState, "
         "_ChatSlot, str], Coroutine[Any, Any, None]]', state: "
         "'DashboardState', *, extra_meta: 'dict[str, Any] | None' = None, "
-        "relay_meta: 'dict[str, Any] | None' = None) -> 'bool'",
+        "relay_meta: 'dict[str, Any] | None' = None, workflow_followup: 'bool' = "
+        "False) -> 'bool'",
     ),
     "flush_deferred_notes": (
         "function",
@@ -482,6 +483,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_folder_suggested": ("value", "False"),
     "_foreign_reported": ("value", "frozenset()"),
     "_fork_lock": ("type", "asyncio.locks.Lock"),
+    "_fork_title_spent": ("value", "False"),
     "_frozen_prefix_cache": ("value", "None"),
     "_git_repo_touch_overflow": ("value", "False"),
     "_git_repo_touch_pending": ("value", "{}"),
@@ -618,6 +620,7 @@ _BASE_SLOT_DEFAULTS: dict[str, tuple[str, str | None]] = {
     "_swap_in_flight": ("value", "False"),
     "_synthesis_armers": ("value", "set()"),
     "_synthesis_completion_turns": ("value", "0"),
+    "_synthesis_final_turn_ran": ("value", "False"),
     "_synthesis_inflight": ("value", "False"),
     "_synthesis_recheck": ("value", "None"),
     "_synthesis_rechecks": ("value", "0"),

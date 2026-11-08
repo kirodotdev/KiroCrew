@@ -164,6 +164,53 @@ class TestNotice:
         monkeypatch.setattr(kas_agents, "may_skip_gate_now", lambda ref: True)
         assert spec_keys_without_carrier(spec, translates_tools_settings=True) == []
 
+    @pytest.mark.parametrize(
+        ("settings", "named"),
+        [
+            (
+                {"subagent": {"trustedAgents": ["r"], "x": 1}},
+                ["subagent.trustedAgents", "subagent.x"],
+            ),
+            (
+                {"use_subagent": {"trustedAgents": ["r"], "x": 1}},
+                ["use_subagent.trustedAgents", "use_subagent.x"],
+            ),
+            ({"agentCrew": {"trustedAgents": ["r"]}}, ["agentCrew.trustedAgents"]),
+            # kiro-cli keeps `subagent` whole, so only its keys are read.
+            (
+                {"subagent": {"trustedAgents": ["r"]}, "use_subagent": {"trustedAgents": ["r"]}},
+                ["subagent.trustedAgents", "use_subagent"],
+            ),
+            (
+                {"subagent": {"trustedAgents": ["r"]}, "use_subagent": {"x": 1}},
+                ["subagent.trustedAgents", "use_subagent"],
+            ),
+            # `\D` is outside the regex syntax Crew reads, so the entry is unusable.
+            ({"executeBash": {"allowedCommands": [r"ls \D"]}}, ["executeBash.allowedCommands"]),
+        ],
+    )
+    def test_a_kept_alias_is_named_as_the_spec_wrote_it(self, monkeypatch, settings, named):
+        monkeypatch.setattr(kas_agents, "may_skip_gate_now", lambda ref: False)
+        spec = _spec(toolsSettings=settings)
+        got = spec_keys_without_carrier(spec, translates_tools_settings=True)
+        assert got == [f"toolsSettings.{path}" for path in named]
+        # The worker policy's tool view names the same spellings.
+        unenforced = [p for p in named if not p.endswith(".trustedAgents")]
+        assert tools_settings_unenforced(settings) == unenforced
+
+    def test_an_ascii_class_entry_is_named_for_the_crewmate_as_the_spec_wrote_it(self):
+        # `\d` is carried for the session, but read over ASCII, so a crewmate's
+        # policy names it under the alias the spec used.
+        settings = {"executeBash": {"allowedCommands": [r"ls \d"]}}
+        assert tools_settings_unenforced(settings) == ["executeBash.allowedCommands"]
+
+    def test_withheld_write_paths_are_named_as_the_spec_wrote_them(self, monkeypatch):
+        # The ceiling withholds the write grant, so `allowedPaths` go unanswered.
+        monkeypatch.setattr(kas_agents, "may_grant_builtin_at_gate_now", lambda tool: False)
+        spec = _spec(toolsSettings={"fsWrite": {"allowedPaths": ["/tmp/x"]}})
+        got = spec_keys_without_carrier(spec, translates_tools_settings=True)
+        assert got == ["toolsSettings.fsWrite.allowedPaths"]
+
     def test_an_untranslatable_trusted_agents_entry_is_not_named_twice(self):
         # `?` has no shared reading, so the translation already names it.
         assert (

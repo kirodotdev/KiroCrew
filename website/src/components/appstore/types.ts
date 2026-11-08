@@ -112,7 +112,7 @@ export type RegistryApp = {
     // global shortcuts, tray). A UX gate only — the marker is client-side.
     requiresDesktopApp?: boolean }
   manifest?: {
-    permissions?: { sessionApproval?: boolean }
+    permissions?: { sessionApproval?: boolean; memberThreads?: boolean; workerAutoApprove?: boolean }
     platform?: { requiresDesktopApp?: boolean }
   }
 }
@@ -124,6 +124,7 @@ export type RegistryApp = {
 export type AdoptionReasonCode =
   // Transient: retried with backoff.
   | 'network_unreachable' | 'network_timeout' | 'http_status' | 'disk_full' | 'config_unreadable'
+  | 'stage_io_failed'
   // Deterministic, re-checked each boot without a network call.
   | 'admission_denied' | 'trust_conflict' | 'trust_overlay_owned' | 'permission_widening'
   | 'platform_mismatch' | 'host_too_old' | 'host_sdk_too_old'
@@ -165,6 +166,8 @@ export type InstalledApp = {
   composerActionGrant?: ComposerActionGrantRow
   /** Approved selection-action items, and the changed ones an update holds back. */
   selectionActionGrant?: SelectionActionGrantRow
+  /** Whether the owner approved `permissions.workerAutoApprove`; absent when undeclared. */
+  workerAutoApproveGrant?: { approved: boolean; staged: boolean }
   installedAt: string
   source?: string
   origin?: string     // "builtin" | "registry" | "local" | "external"
@@ -242,6 +245,8 @@ export type InstalledApp = {
       cron?: boolean
       network?: boolean
       sessionApproval?: boolean
+      memberThreads?: boolean
+      workerAutoApprove?: boolean
     }
     setup?: { onInstall?: string; onUpdate?: string; onUninstall?: string; onEnable?: string; onDisable?: string }
     minKiroCrewVersion?: string

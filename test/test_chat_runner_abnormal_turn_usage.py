@@ -83,8 +83,10 @@ def _stub_accessors(monkeypatch, *, usage):
 @pytest.mark.asyncio
 async def test_records_credits_for_a_turn_cut_before_event_complete(_isolated_shards, monkeypatch):
     _stub_accessors(monkeypatch, usage=TurnUsage(credits=78.9))
+    slot = _FakeSlot()
+    slot.linked_session_key = "taskrunner:task-1:chat:abc"
     wrote = await chat_runner._persist_abnormal_turn_usage(
-        _FakeSlot(),
+        slot,
         object(),
         "chat-1-abc",
         elapsed_ms=21_600_300,
@@ -100,6 +102,7 @@ async def test_records_credits_for_a_turn_cut_before_event_complete(_isolated_sh
     assert row["provider"] == "acp"
     assert row["agent"] == "kirocrew"
     assert row["stop_reason"] == chat_runner.STOP_REASON_CANCELLED
+    assert row.get("transcript") == "taskrunner:task-1:chat:abc"
 
 
 @pytest.mark.asyncio

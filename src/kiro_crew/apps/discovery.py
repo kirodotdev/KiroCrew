@@ -69,6 +69,12 @@ def _manifest_to_builtin_dict(manifest: AppManifest) -> dict[str, Any]:
     l10n_d = manifest.l10n.to_dict()
     if l10n_d:
         d["l10n"] = l10n_d
+    desktop_d = manifest.desktop.to_dict()
+    if desktop_d:
+        d["desktop"] = desktop_d
+    agent_tools_d = manifest.agentTools.to_dict()
+    if agent_tools_d:
+        d["agentTools"] = agent_tools_d
 
     if manifest.mcpServers:
         d["mcpServers"] = manifest.mcpServers
@@ -101,6 +107,8 @@ def _manifest_to_builtin_dict(manifest: AppManifest) -> dict[str, Any]:
         d["sops"] = list(manifest.sops)
     if manifest.jobFamilies:
         d["jobFamilies"] = list(manifest.jobFamilies)
+    if manifest.credentialMasks:
+        d["credentialMasks"] = list(manifest.credentialMasks)
     notif_d = manifest.notifications.to_dict()
     if notif_d:
         d["notifications"] = notif_d

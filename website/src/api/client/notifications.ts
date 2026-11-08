@@ -15,7 +15,7 @@ export function createNotificationsEndpoints({ post, put, del, j, jfetch: fetch 
     unackNotification: (ts: string) => post('/api/notifications/unack', { ts }).then(j),
     ackAllNotifications: () => post('/api/notifications/ack-all').then(j),
     notificationChannels: () => fetch('/api/notifications/channels').then(j),
-    updateNotificationChannelSettings: (channel: string, settings: { muted?: boolean; priority?: string | null }) =>
+    updateNotificationChannelSettings: (channel: string, settings: { muted?: boolean; priority?: string | null; deliver_to?: string[]; deliver_min_priority?: string }) =>
       put('/api/notifications/channels/settings', { channel, ...settings }).then(j),
     // Web Push (browser subscription lifecycle)
     vapidPublicKey: () => fetch('/api/notifications/push/vapid-public-key').then(j) as Promise<{ publicKey: string }>,

@@ -50,7 +50,7 @@ from aiohttp import web
 
 import kiro_crew
 from kiro_crew import session_ledger
-from kiro_crew.apps.version import versions_compatible
+from kiro_crew.apps.version import known_version, versions_compatible
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.handlers_instances_gate import _registry
 from kiro_crew.dashboard.handlers_instances_peer import (
@@ -212,16 +212,19 @@ async def authorize_remote_dispatch(request: web.Request, verb: str) -> str:
     3. The slot was not opened on another caller's behalf (``_created_by`` or
        ``_lineage_minted``): a worker cannot reach a crew, so dispatch stays one
        level deep, and is not a crew member's own thread (``owner_only``).
-    4. The session is not bound to a private member memory store
+    4. The session is persistent (``ephemeral_caller``) and is an Ultra Mode chat
+       (``crew_mode.slot_is_crew_mode_root``, the Ultra Mode agent lock's own
+       predicate; ``ultra_mode_only``).
+    5. The session is not bound to a private member memory store
        (``private_memory``).
-    5. A ``user`` claim, when present, is the owner.
-    6. The session is not the bound worker of any work-ledger item
+    6. A ``user`` claim, when present, is the owner.
+    7. The session is not the bound worker of any work-ledger item
        (:func:`caller_is_bound_worker`, ``crew_caller_is_worker``); an unreadable
        binding refuses too.
-    7. The running turn is one the owner sent (:func:`owner_unverifiable_reason`,
+    8. The running turn is one the owner sent (:func:`owner_unverifiable_reason`,
        ``crew_owner_unverifiable``).
 
-    Arms 1-6 refuse first, with their own codes, so a refusal still says which
+    Arms 1-7 refuse first, with their own codes, so a refusal still says which
     rule a caller fails.
     """
     from kiro_crew import members as members_mod
@@ -264,6 +267,14 @@ async def authorize_remote_dispatch(request: web.Request, verb: str) -> str:
         raise CrewCallError(
             403, "ephemeral_caller", "incognito and temporary sessions cannot use crew="
         )
+    from kiro_crew import crew_mode
+
+    if not crew_mode.slot_is_crew_mode_root(slot):
+        # The predicate the Ultra Mode agent lock uses (``crew_mode_locked``).
+        _audit(caller_key, verb, "denied", error=ULTRA_MODE_ONLY)
+        raise CrewCallError(
+            403, ULTRA_MODE_ONLY, "remote dispatch runs only from an Ultra Mode chat"
+        )
     try:
         fenced = await asyncio.to_thread(private_memory_store_for_session, caller_key)
     except (OSError, ValueError):
@@ -299,6 +310,9 @@ async def authorize_remote_dispatch(request: web.Request, verb: str) -> str:
         )
     return slot_key
 
+
+#: The refusal for a caller tab that is not an Ultra Mode chat.
+ULTRA_MODE_ONLY = "ultra_mode_only"
 
 #: The refusal while a non-owner dashboard user is possible on this gateway.
 OWNER_UNVERIFIABLE = "crew_owner_unverifiable"
@@ -396,7 +410,7 @@ async def check_version(mgr: Any, instance_id: str) -> None:
             raise CrewCallError(503, "proxy_peer_not_connected", "that crew is not connected")
         raise CrewCallError(502, "crew_version_unknown", "could not read that crew's version")
     peer = payload.get("version") if isinstance(payload, dict) else ""
-    peer = redact_peer_text(peer)[:64] if isinstance(peer, str) else ""
+    peer = known_version(redact_peer_text(peer)[:64]) if isinstance(peer, str) else ""
     if not versions_compatible(kiro_crew.__version__, peer):
         raise CrewCallError(
             409,

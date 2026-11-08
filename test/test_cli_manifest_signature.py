@@ -1117,8 +1117,9 @@ print(datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc).strftime(sys
         date.chmod(0o755)
 
 
+@pytest.mark.parametrize("channel", ["stable", "insider"])
 def test_publish_workflow_signing_step_runs_verbatim_against_the_helper(
-    tmp_path: Path, test_key: SigningKey
+    tmp_path: Path, test_key: SigningKey, channel: str
 ) -> None:
     """Run the workflow's OWN signing script, unedited, against the real helper.
 
@@ -1203,7 +1204,7 @@ def test_publish_workflow_signing_step_runs_verbatim_against_the_helper(
         **hermetic,
         "PATH": f"{tools}{os.pathsep}{os.environ.get('PATH', '')}",
         "FAKE_AWS_SCRATCH": str(runner_temp),
-        "CHANNEL": CHANNEL,
+        "CHANNEL": channel,
         "CDN_BASE": CDN_BASE,
         "KEY_ARN": "arn:aws:kms:us-west-2:000000000000:key/test",
         "WHEEL_PATH": "cli-dist/" + WHEEL_NAME,
@@ -1226,7 +1227,7 @@ def test_publish_workflow_signing_step_runs_verbatim_against_the_helper(
     assert manifest_path == dist / "cli-manifest.json"
     assert written["key_id"] == test_key.key_id
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert manifest["channel"] == CHANNEL
+    assert manifest["channel"] == channel
     assert manifest["version"] == VERSION
     assert manifest["python_requires"] == ">=3.12"
     assert "min_version" not in manifest
@@ -1240,11 +1241,21 @@ def test_publish_workflow_signing_step_runs_verbatim_against_the_helper(
         "--public-key",
         str(test_key.public),
         "--expected-channel",
-        CHANNEL,
+        channel,
         "--artifact-base",
         CDN_BASE,
         cwd=tmp_path,
     )
+    # Only a stable release also signs the wheel for insider, so the insider
+    # feed can catch up to stable: that manifest must pass the insider
+    # installer's own channel and wheel-URL binding.
+    if channel == "stable":
+        insider = _verify_manifest(
+            Path(written["insider_path"]), test_key, expected_channel="insider"
+        )
+        assert insider.returncode == 0, insider.stderr
+    else:
+        assert "insider_path" not in written
     # And the step left nothing behind in the checkout but what it declared.
     stray = sorted(
         p.relative_to(checkout).as_posix()

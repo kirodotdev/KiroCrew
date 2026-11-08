@@ -2,7 +2,9 @@
 
 These two servers' schemas live in several owners, so their registries live here;
 a server whose schemas share one owner keeps its registry beside them. A tool absent
-from its server's registry has its arguments passed through raw.
+from its server's registry has its arguments passed through raw, except a tool an
+installed app declares, which ``mcp_core._validate_args`` checks against its declared
+schema (``mcp_tools.app_tools.tool_schema``).
 
 Callers import these names from :mod:`kiro_crew.validation`, which serves them; this
 module never imports that facade.
@@ -10,7 +12,6 @@ module never imports that facade.
 
 from __future__ import annotations
 
-from kiro_crew.apps import builtin_agent_tools as _builtin_agent_tools
 from kiro_crew.validation_parts.app_schemas import (
     ISSUE_RADAR_CREW_READ_SCHEMA,
     ISSUE_RADAR_CREW_RECORD_SCHEMA,
@@ -66,6 +67,7 @@ from kiro_crew.validation_parts.core_agent_schemas import (
     LEARN_ADD_SCHEMA,
     LEARN_LIST_SCHEMA,
     LEARN_REMOVE_SCHEMA,
+    LEARN_UPDATE_SCHEMA,
     MONITOR_INSPECT_SCHEMA,
     MONITOR_START_SCHEMA,
     MONITOR_STOP_SCHEMA,
@@ -152,6 +154,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "learn_add": LEARN_ADD_SCHEMA,
     "learn_list": LEARN_LIST_SCHEMA,
     "learn_remove": LEARN_REMOVE_SCHEMA,
+    "learn_update": LEARN_UPDATE_SCHEMA,
     "session_ledger_read": SESSION_LEDGER_READ_SCHEMA,
     "session_ledger_record": SESSION_LEDGER_RECORD_SCHEMA,
     "skill_search": SKILL_SEARCH_SCHEMA,
@@ -233,8 +236,6 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     # crash that takes the whole kirocrew-core server down for the session.
     "issue_radar_crew_read": ISSUE_RADAR_CREW_READ_SCHEMA,
     "issue_radar_crew_record": ISSUE_RADAR_CREW_RECORD_SCHEMA,
-    # The tools a built-in app declares as data, each checked by its declared fields.
-    **_builtin_agent_tools.tool_schemas(),
 }
 
 

@@ -28,7 +28,7 @@ import { flushSync } from 'react-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
 import chatReducer, { createSlot, switchSlot, endLocalTurn, setQuestionCard, setQuestionDraft, setFolderSuggestion, pendingQuestionFor, resolveQuestionCard } from '../store/chatSlice'
-import dashboardReducer, { updateSlot } from '../store/dashboardSlice'
+import dashboardReducer, { sseConnected, sseDisconnected, sseSlots, updateSlot } from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 import { DRAFTS_KEY, saveDrafts, setDraft, __resetForTests as resetDrafts } from '../utils/chatDrafts'
@@ -748,6 +748,102 @@ describe('App SDK chat launch intent', () => {
     expect(sendChat).not.toHaveBeenCalled()
     expect(createChatSlot).not.toHaveBeenCalled()
     expect((window as Window & { __mc_chat_launch?: unknown }).__mc_chat_launch).toBeUndefined()
+  })
+
+  describe('into a session the list does not show yet', () => {
+    const FRESH = 'chat-fresh'
+    const listed = [
+      { key: 'chat-other', messages: 2, running: false, mode: '', pending_approval: false, waiting_for_input: false },
+      { key: 'chat-old', messages: 3, running: false, mode: '', pending_approval: false, waiting_for_input: false },
+    ]
+    const withFresh = [...listed, { key: FRESH, messages: 0, running: false, mode: '', pending_approval: false, waiting_for_input: false }]
+
+    it('waits for the create broadcast instead of losing the target to its first 404', async () => {
+      const store = await renderAt('/chat?sid=chat-old')
+      await waitFor(() => expect(store.getState().chat.slotLoading).toBe(false))
+      chatSlotDetail.mockClear()
+      // The fresh slot's detail is not served until the gateway has listed it.
+      chatSlotDetail.mockRejectedValueOnce(Object.assign(new Error('not found'), { status: 404 }))
+      launch({ message: PROMPT, slotKey: FRESH, autoSend: false })
+      await act(async () => { navigateInTest(`/chat?sid=${FRESH}`) })
+      expect(chatSlotDetail).not.toHaveBeenCalled()
+      expect(store.getState().chat.activeSlot).toBe('chat-old')
+      expect(new URLSearchParams(locationInTest.search).get('sid')).toBe(FRESH)
+      chatSlotDetail.mockReset()
+      chatSlotDetail.mockResolvedValue({ messages: [], running: false, has_more: false, total: 0 })
+      await act(async () => { store.dispatch(sseSlots(withFresh as never)) })
+      await waitFor(() => expect(store.getState().chat.activeSlot).toBe(FRESH))
+      expect(chatSlotDetail.mock.calls.map(call => call[0])).toEqual([FRESH])
+      await waitFor(() => expect(composer().value).toBe(PROMPT))
+      expect(new URLSearchParams(locationInTest.search).get('sid')).toBe(FRESH)
+      expect(screen.queryByTestId('sid-error')).toBeNull()
+      expect(sendChat).not.toHaveBeenCalled()
+    })
+
+    it('switches anyway once the wait runs out, and reports a target that never appears', async () => {
+      const store = await renderAt('/chat?sid=chat-old')
+      await waitFor(() => expect(store.getState().chat.slotLoading).toBe(false))
+      chatSlotDetail.mockClear()
+      chatSlotDetail.mockRejectedValueOnce(Object.assign(new Error('not found'), { status: 404 }))
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+      try {
+        launch({ message: PROMPT, slotKey: FRESH, autoSend: false })
+        await act(async () => { navigateInTest(`/chat?sid=${FRESH}`) })
+        expect(chatSlotDetail).not.toHaveBeenCalled()
+        await act(async () => { vi.advanceTimersByTime(5_000) })
+      } finally {
+        vi.useRealTimers()
+      }
+      await waitFor(() => expect(screen.getByTestId('sid-error').textContent).toContain('Could not open the target session.'))
+      // The target is tried once; the unwind then reloads the outgoing chat.
+      expect(chatSlotDetail.mock.calls.map(call => call[0])).toEqual([FRESH, 'chat-old'])
+      expect(store.getState().chat.activeSlot).toBe('chat-old')
+      expect(sendChat).not.toHaveBeenCalled()
+    })
+
+    it('gives way to a session the user picks while it waits', async () => {
+      const store = await renderAt('/chat?sid=chat-old')
+      await waitFor(() => expect(store.getState().chat.slotLoading).toBe(false))
+      launch({ message: PROMPT, slotKey: FRESH })
+      await act(async () => { navigateInTest(`/chat?sid=${FRESH}`) })
+      await act(async () => { await store.dispatch(switchSlot('chat-other')) })
+      await waitFor(() => expect(new URLSearchParams(locationInTest.search).get('sid')).toBe('chat-other'))
+      chatSlotDetail.mockClear()
+      await act(async () => { store.dispatch(sseSlots(withFresh as never)) })
+      expect(store.getState().chat.activeSlot).toBe('chat-other')
+      expect(chatSlotDetail).not.toHaveBeenCalled()
+      expect(sendChat).not.toHaveBeenCalled()
+      expect((window as Window & { __mc_chat_launch?: unknown }).__mc_chat_launch).toBeUndefined()
+      // The app's message is not dropped silently: the user gets it back to copy.
+      await waitFor(() => expect(screen.getByTestId('action-error').textContent).toContain('Send cancelled because you switched sessions.'))
+      expect(screen.getByTestId('action-error').textContent).toContain(PROMPT)
+    })
+
+    it('resumes a wait that a disconnect outlasts, and leaves URL sync working', async () => {
+      const store = await renderAt('/chat?sid=chat-old')
+      await waitFor(() => expect(store.getState().chat.slotLoading).toBe(false))
+      chatSlotDetail.mockClear()
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] })
+      try {
+        launch({ message: PROMPT, slotKey: FRESH, autoSend: false })
+        await act(async () => { navigateInTest(`/chat?sid=${FRESH}`) })
+        await act(async () => { store.dispatch(sseDisconnected()) })
+        // Past the 10s a staged launch stays claimable, before the socket is back.
+        await act(async () => { vi.advanceTimersByTime(11_000) })
+        expect(chatSlotDetail).not.toHaveBeenCalled()
+        // The socket comes back with a slots frame that lists the target.
+        await act(async () => {
+          store.dispatch(sseConnected())
+          store.dispatch(sseSlots(withFresh as never))
+        })
+      } finally {
+        vi.useRealTimers()
+      }
+      await waitFor(() => expect(store.getState().chat.activeSlot).toBe(FRESH))
+      await waitFor(() => expect(composer().value).toBe(PROMPT))
+      await act(async () => { await store.dispatch(switchSlot('chat-other')) })
+      await waitFor(() => expect(new URLSearchParams(locationInTest.search).get('sid')).toBe('chat-other'))
+    })
   })
 
   it('does not send an intent whose target was not activated', async () => {

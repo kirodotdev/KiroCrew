@@ -324,14 +324,21 @@ function readToolEntry(s: RootState, slot: string | undefined, message: ChatMess
   const rejected = wasRejectedByPerm()
   // Backend persists `input` (when the call was issued) and `output` (when
   // the result arrived) directly on the tool message's meta — see
-  // _tool_meta() and the EVENT_TOOL_RESULT handler in chat_runner.py.
+  // _tool_meta() in chat_turn/tool_rows.py and _on_tool_result() in
+  // chat_turn/tool_results.py.
   // Pre-persistence messages won't have these fields and fall through to
   // the empty-state hint inside ToolDetails.
   const metaInput = (message.meta?.input as string | undefined) || ''
   const metaOutput = (message.meta?.output as string | undefined) || ''
+  // A transcript read mid-call (a reload, a URL opened) has no log entry for
+  // the call still running. Its row reads running while the turn runs, the
+  // server has not marked it done (`meta.done`, set by a terminal result), and
+  // nothing but its tool run follows it.
+  const stillRunning = slotRunning && !!toolCallId && message.meta?.done !== true
+    && !rejected && !autoDenied && index.trailingToolRows.has(message)
   return {
     effectiveId: toolCallId || null,
-    isDone: true, isRejected: rejected,
+    isDone: !stillRunning, isRejected: rejected,
     isAutoDenied: !rejected && autoDenied,
     autoDenyReason,
     autoDenyNotice,
@@ -347,19 +354,20 @@ function readToolEntry(s: RootState, slot: string | undefined, message: ChatMess
     // Treat the message as having an entry when persisted I/O is available,
     // so the empty-state copy only shows for truly bare historical messages.
     hasEntry: !!(metaInput || metaOutput),
-    isShell: false,
-    // Persisted ACP tool kind (see _tool_meta in chat_runner.py). Rows
+    // The persisted ACP kind; `is_shell` is never persisted.
+    isShell: message.meta?.kind === 'execute',
+    // Persisted ACP tool kind (see _tool_meta in chat_turn/tool_rows.py). Rows
     // written before the field existed read '' and never promote a card.
     toolKind: (message.meta?.kind as string | undefined) || '',
     // Historical rows have no log entry; the message content is the only
     // carrier. Harmless either way — a replayed wait is never in flight.
     toolName: message.content.replace(/^🔧\s*/, ''),
-    // Persisted by _tool_meta (chat_runner.py) since the title-derivation
+    // Persisted by _tool_meta (chat_turn/tool_rows.py) since the title-derivation
     // change; rows written before it read '' and derive from the title.
     trustedToolName: (message.meta?.tool_name as string | undefined) || '',
     mcpServer: (message.meta?.mcp_server as string | undefined) || '',
-    // No live tool-log entry backs this row. `isDone` above is a REPLAY
-    // default, not an observation, so anything that needs real liveness must
+    // No live tool-log entry backs this row. `isDone` above is inferred from
+    // the transcript, not observed, so anything that needs real liveness must
     // consult server state instead of trusting it (see the wait countdown).
     fromLog: false,
   }
@@ -525,7 +533,7 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   const isFirstRowForCall = message.meta?.mcp_app_lead === true
 
   // Did this call produce an MCP App? Persisted by the backend on the tool row
-  // (`_meta["mcp_app"]`, chat_runner.py) when the app's single-use render was
+  // (`_meta["mcp_app"]`, chat_turn/tool_results.py) when the app's single-use render was
   // claimed, because the payload is the only carrier of the app and it is
   // live-only: owner-scoped WS, a callback capability, and a spool record that
   // expires. A reload, a bounded-cache eviction, a guest WebSocket and an
@@ -588,7 +596,7 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
   // final one (and again at turn end as a backstop), so its presence means a wait
   // is genuinely sleeping right now. The row's own `isDone` cannot stand in for
   // that: after a mid-wait reload the runtime tool log is empty, the historical
-  // branch defaults `isDone` to true, and gating on it would blank the countdown
+  // branch can only infer `isDone`, and gating on it would blank the countdown
   // in exactly the case the server-side deadline exists to serve. `isDone` is
   // still honoured while a real log entry backs the row, so a wait that finishes
   // in a live session stops ticking on the tool_result rather than waiting for

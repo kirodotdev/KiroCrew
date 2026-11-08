@@ -516,14 +516,21 @@ class TestManagedToolsInProcessNamesOnly:
 
         Every app is held enabled for the comparison: the full build omits a
         disabled app's tools (``mcp_tools.apps.advertised``), while the names-only
-        build takes the declaration and names them all without reading enablement
-        -- the one state in which the two legitimately differ.
+        build takes the declaration and names them all without reading enablement.
+        Every shipped app is held installed too: the full build lists the tools of
+        the installed apps' manifests (``mcp_tools.app_tools.advertised``), while the
+        names-only build names every tool a shipped manifest declares, the deny
+        universe. Those are the states in which the two legitimately differ.
         """
         import kiro_crew.mcp_core as core
+        import kiro_crew.mcp_tools.app_tools as app_tools
         import kiro_crew.mcp_tools.apps as apps_tools
+        from kiro_crew.apps import app_agent_tools
         from kiro_crew.mcp_discovery import _managed_tools_in_process
 
         monkeypatch.setattr(apps_tools, "app_enabled_state", lambda _name: True)
+        monkeypatch.setattr(app_tools, "app_enabled_state", lambda _name: True)
+        monkeypatch.setattr(app_agent_tools, "declared_tools", app_agent_tools.shipped_tools)
         full = [t["name"] for t in core._list_tools()]
         got = _managed_tools_in_process("kirocrew-core")
         assert got == full
@@ -537,8 +544,18 @@ class TestManagedToolsInProcessNamesOnly:
         """
         import kiro_crew.mcp_tools.control as control
         import kiro_crew.mcp_tools.spawn as spawn
+        from kiro_crew.apps import app_agent_tools
         from kiro_crew.mcp_discovery import _managed_tools_in_process
+        from kiro_crew.platform import current_context
 
+        # The gateway reads these names with its platform context installed. A test
+        # process has none, and the first read of the shipped app tree would compose
+        # the default one, which loads config once; install it first, so the count
+        # below measures the description builders whatever ran earlier in the worker.
+        current_context()
+        # The app tools' deny universe is read once per process; drop that read so it
+        # is measured here too, whatever ran earlier in the worker.
+        app_agent_tools.shipped_tools.cache_clear()
         scan = MagicMock(return_value=[])
         cfg_load = MagicMock(side_effect=AssertionError("config read ran on names-only path"))
         with (

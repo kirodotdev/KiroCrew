@@ -542,7 +542,7 @@ async def api_connections_mint(request: web.Request) -> web.Response:
     from kiro_crew.connections import crew_oauth
 
     if await asyncio.to_thread(crew_oauth.owns, slug):
-        # ``connections.crew_oauth``: the gateway runs the sign-in itself and keeps
+        # ``dashboard.feature_previews.crew_oauth``: the gateway runs the sign-in itself and keeps
         # the tokens in the vault; the card polls the same mint row as before. An
         # entry routing keeps native (its own credential header) mints natively.
         token = await crew_oauth.start_mint_row(slug)

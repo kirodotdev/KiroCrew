@@ -145,6 +145,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
     )
     from kiro_crew.apps.manager_records import (  # noqa: F401
         _ALWAYS_STORED_FAMILIES,
+        _GRANT_AND_SCOPE_WIDENING,
+        _GRANT_WIDENING,
+        _SCOPE_WIDENING,
         _TREE_SWAP_LAST_CAP,
         _VALID_LIFECYCLE,
         _VALID_ORIGIN,
@@ -152,10 +155,12 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         APP_MANIFEST_FILENAME,
         APPROVED_GRANTS_FILENAME,
         INSTALLED_META_FILENAME,
+        MEMBER_THREADS_CONSENT_KEY,
         SESSION_APPROVAL_PENDING_KEY,
         STAGED_GRANT_FAMILIES,
         AppResult,
         InstalledApp,
+        SessionControlWidening,
         _approved_grants_after_manifest_change,
         _approved_grants_path,
         _approved_grants_row,
@@ -171,11 +176,13 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _read_approved_grants,
         _read_enabled,
         _read_installed,
+        _read_schema_version,
         _record_lock_path,
         _record_lock_state,
         _scan_installed_app_config_keys,
         _session_approval_consent_unrecorded,
         _session_approval_save_rule,
+        _session_control_widening,
         _SwapState,
         _tree_swap,
         _tree_swap_guard,
@@ -268,6 +275,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         Any,
         Callable,
         Iterator,
+        NamedTuple,
         Sequence,
     )
     from urllib.parse import (  # noqa: F401
@@ -276,6 +284,9 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
 
     from kiro_crew import (  # noqa: F401
         platform_compat,
+    )
+    from kiro_crew.apps import (  # noqa: F401
+        credential_masks,
     )
     from kiro_crew.apps.admission import (  # noqa: F401
         app_admission_denied,
@@ -306,6 +317,7 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.apps.manifest import (  # noqa: F401
         RESERVED_APP_NAME_CODE,
         AppManifest,
+        Permissions,
         app_name_error,
         contain_command_agents,
         cron_permission_error,
@@ -320,6 +332,15 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     )
     from kiro_crew.apps.selection_action_grants import (  # noqa: F401
         selection_action_grant_row,
+    )
+    from kiro_crew.apps.worker_auto_approve import (  # noqa: F401
+        WORKER_AUTO_APPROVE_GRANT_FAMILIES,
+    )
+    from kiro_crew.apps.worker_auto_approve import (  # noqa: F401
+        revoke_app as revoke_worker_auto_approve,
+    )
+    from kiro_crew.apps.worker_auto_approve import (  # noqa: F401
+        worker_auto_approve_grant_row,
     )
     from kiro_crew.atomic_write import atomic_write  # noqa: F401
     from kiro_crew.config.loader import (  # noqa: F401

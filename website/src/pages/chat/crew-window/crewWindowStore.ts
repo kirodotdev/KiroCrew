@@ -8,6 +8,8 @@
 import { useSyncExternalStore } from 'react'
 import { safeGetSessionItem, safeSetSessionItem } from '../../../utils/safeStorage'
 import { createSlotDraftStore } from '../../../utils/slotDraftStore'
+import { i18nT } from '../../../i18n/t'
+import type { RemoteCrewCapabilities } from '../../../types'
 
 export interface CrewWindowTarget {
   instanceId: string
@@ -151,4 +153,16 @@ const TRANSIENT_CAPS = new Set(['capability_unreachable', 'capability_peer_reval
 export function capsRetryInterval(caps: { version_match?: boolean; unavailable?: Record<string, string> } | undefined, retryMs: number): number | false {
   if (caps?.version_match !== true) return retryMs
   return Object.values(caps.unavailable ?? {}).some(c => TRANSIENT_CAPS.has(c)) ? retryMs : false
+}
+
+/** The notice for a crew whose version does not match this machine's: why the
+ *  version is unknown when it could not be read, and which side is newer when
+ *  the gateway could order the two. */
+export function crewVersionMismatchText(caps: Pick<RemoteCrewCapabilities, 'version' | 'local_version' | 'behind' | 'ahead' | 'unavailable'>): string {
+  const local = caps.local_version
+  if (!caps.version) return i18nT('pages.chat.crewWindow.version_unknown', { local, code: caps.unavailable?.version ?? '' })
+  const vars = { peer: caps.version, local }
+  if (caps.behind) return i18nT('pages.chat.crewWindow.version_mismatch_older', vars)
+  if (caps.ahead) return i18nT('pages.chat.crewWindow.version_mismatch_newer', vars)
+  return i18nT('pages.chat.crewWindow.version_mismatch', vars)
 }

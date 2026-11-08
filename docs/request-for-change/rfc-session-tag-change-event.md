@@ -7,7 +7,7 @@ last-audited: 2026-10-06
 audited-at: 9348a25a34
 doc-pr: 10930
 implementation-prs: [7669]
-implementation-scope: partial — 7669 (not merged) carries the delta-only payload and the dispatcher, and defers every emit site and re-entrancy
+implementation-scope: partial — 7669 (not merged) carries the delta-only payload, the dispatcher and the two `chat_tags.py` emit sites; it defers folder inheritance (written, held back for review size), channel first-filing, the choke point and re-entrancy
 tracking-issues: [13865]
 supersedes: []
 superseded-by: []
@@ -322,14 +322,26 @@ the shape that let review miss call sites twice during #7366 (as the
 mcp-lifecycle RFC records) and would re-open that finding here.
 
 **Amendment — what the implementation PR carries, and how it differs from the above.** The
-recommendation stands as the target shape, but the implementation PR (#7669) does
-**not** implement it. #7669 carries the dispatcher, `dispatch_session_lane_changed_bulk`, with
-no emit site: it touches neither `chat_tags.py` nor `chat_handlers.py`, so no writer calls
-the dispatcher and the event cannot fire. Per-writer emits — the two `chat_tags.py`
-writers, and closing-order step 1, the folder inheritance in `_read_folder_tags` reached
-from `api_chat_slot_create` (`chat_api/slot_create.py`) — are deferred to a follow-up PR. The two
+single choke point stands as the target shape; the implementation PR (#7669) carries the
+per-writer step toward it. It has `dispatch_session_lane_changed_bulk` AND two emit
+sites: the two `chat_tags.py` writers. Both run under a dashboard request, so
+`_lane_dispatch_is_permitted` applies to them unchanged and neither needed a new
+authorization rule.
+
+An earlier revision of #7669 carried the dispatcher with no emit site, and this paragraph
+described that revision; the two superseded sentences are not preserved, because an
+amendment recording a shape no reviewable head ever had is worse than none.
+
+Closing-order step 1, the folder inheritance in `_read_folder_tags` reached from
+`api_chat_slot_create` (`chat_api/slot_create.py`), is written but NOT in #7669: it was
+held back to bring that PR under the review size cap, needs no new authorization rule,
+and follows once the dispatcher reaches `main`. Until then an inherited folder status
+tag is a real gap rather than a designed silence.
+
+Still deferred, and for the stated reason rather than for convenience: the two
 `slot.tags.append` sites in `surface_channel_session` (`channel_slots.py`) stay silent
-after that follow-up too, until closing-order step 2.
+until closing-order step 2 settles what authorizes a fire on a surface with no dashboard
+caller, and the choke point is step 3 because it inherits that answer.
 
 The blocker is authorization, not scheduling. The dispatch helper itself needs no
 request — `_lane_dispatch_queue()` takes its loop from `asyncio.get_running_loop()`

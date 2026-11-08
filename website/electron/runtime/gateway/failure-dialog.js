@@ -153,8 +153,13 @@ function createFailureDialog({
         minHeight: showLog ? 320 : 200,
         resizable: true,
         useContentSize: true,
+        // Parented so it stays above the window it is about. Not modal on
+        // Windows and Linux, where a modal child disables that window and the
+        // splash under this dialog offers Close window for exactly this wait.
+        // macOS keeps the sheet a modal child becomes there, which still
+        // blocks that window until the dialog is answered.
         parent: hasParent ? parentWindow : undefined,
-        modal: !!hasParent,
+        modal: !!hasParent && IS_MAC,
         backgroundColor: dark ? "#1e293b" : "#f8fafc",
         webPreferences: { nodeIntegration: false, contextIsolation: true },
       });

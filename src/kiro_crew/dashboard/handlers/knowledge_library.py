@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import date
 from functools import partial
 
 from aiohttp import web
@@ -181,8 +182,31 @@ def _load_items_by_id(store, item_ids: list[str]) -> dict[str, dict]:
     return out
 
 
+# The list's orders. The default groups by source; a date order sorts by the day
+# the item was added (``created_at``), with the rowid making page edges stable.
+_SOURCE_ORDER = "s.updated_at DESC, i.chunk_index ASC"
+_DATE_ORDER = {
+    "newest": "i.created_at DESC, i.rowid DESC",
+    "oldest": "i.created_at ASC, i.rowid ASC",
+}
+
+
+def _is_day(value: str) -> bool:
+    """True for a calendar day spelled ``YYYY-MM-DD``, the prefix ``created_at`` carries."""
+    try:
+        return date.fromisoformat(value).isoformat() == value
+    except ValueError:
+        return False
+
+
+def _added_within(item: dict, added_from: str, added_to: str) -> bool:
+    """True when the item's added day is inside the inclusive range (an empty bound is open)."""
+    day = (item.get("created_at") or "")[:10]
+    return (not added_from or day >= added_from) and (not added_to or day <= added_to)
+
+
 def _items_page(
-    store, where_clause: str, params: list, limit: int, offset: int
+    store, where_clause: str, params: list, limit: int, offset: int, order_by: str
 ) -> tuple[int, list[dict]]:
     """One page of the item listing, with its total, in one off-loop take.
 
@@ -198,7 +222,7 @@ def _items_page(
         f"SELECT COUNT(*) FROM items i WHERE {where_clause}", params  # noqa: S608
     ).fetchone()[0]
     rows = store.db.execute(
-        f"SELECT i.* FROM items i LEFT JOIN sources s ON i.source_id = s.id WHERE {where_clause} ORDER BY s.updated_at DESC, i.chunk_index ASC LIMIT ? OFFSET ?",  # noqa: S608, E501
+        f"SELECT i.* FROM items i LEFT JOIN sources s ON i.source_id = s.id WHERE {where_clause} ORDER BY {order_by} LIMIT ? OFFSET ?",  # noqa: S608, E501
         [*params, limit, offset],
     ).fetchall()
     items = [store._serialize_item(r) for r in rows]
@@ -220,11 +244,21 @@ async def list_items(request: web.Request) -> web.Response:
     # group, so its pager math must see that source's total, not the global one.
     # The sentinel "__none__" selects items with no source at all.
     source_id = request.query.get("source_id")
+    sort = request.query.get("sort") or ""
+    added_from = request.query.get("added_from") or ""
+    added_to = request.query.get("added_to") or ""
     try:
         page = max(1, int(request.query.get("page", 1)))
         limit = min(100, max(1, int(request.query.get("limit", 20))))
     except ValueError:
         return web.json_response({"error": "invalid page/limit"}, status=400)
+    if (sort and sort not in _DATE_ORDER) or not all(
+        _is_day(d) for d in (added_from, added_to) if d
+    ):
+        return web.json_response(
+            {"error": "invalid sort/added_from/added_to", "code": "invalid_query_params"},
+            status=400,
+        )
 
     if q:
         # Use hybrid search: FTS5 keyword + graph traversal + optional vector + RRF fusion.
@@ -265,6 +299,8 @@ async def list_items(request: web.Request) -> web.Response:
                     continue
                 if source_id and not _matches_source(item, source_id):
                     continue
+                if not _added_within(item, added_from, added_to):
+                    continue
                 item["_score"] = r["score"]
                 item["_match_type"] = r["match_type"]
                 matches.append(item)
@@ -281,8 +317,10 @@ async def list_items(request: web.Request) -> web.Response:
             # rows: a narrow filter finds its matches, and a filter most hits
             # pass costs one retriever call, as an unfiltered search does.
             want = limit * 3
-            need = max(want, offset + limit)
-            narrowed = bool(item_type or status or namespace)
+            # A date order re-sorts the whole window, so its size must not
+            # depend on the page asked for, or pages would slice different orders.
+            need = want if sort else max(want, offset + limit)
+            narrowed = bool(item_type or status or namespace or added_from or added_to)
             while True:
                 results = await run_in_embed_pool(retriever.search, q, limit=want)
                 filtered = await _ranked_matches(results)
@@ -294,6 +332,9 @@ async def list_items(request: web.Request) -> web.Response:
                 ):
                     break
                 want = min(max(want * 2, _SCOPED_SEARCH_START), _SCOPED_SEARCH_MAX)
+        if sort:
+            # Stable, so items added at the same moment keep their relevance order.
+            filtered.sort(key=lambda i: i.get("created_at") or "", reverse=sort == "newest")
         total = len(filtered)
         items = filtered[offset : offset + limit]
         await asyncio.to_thread(_attach_file_paths, store, items)
@@ -314,13 +355,25 @@ async def list_items(request: web.Request) -> web.Response:
         elif source_id:
             where.append("i.source_id = ?")
             params.append(source_id)
+        if added_from:
+            where.append("substr(i.created_at, 1, 10) >= ?")
+            params.append(added_from)
+        if added_to:
+            where.append("substr(i.created_at, 1, 10) <= ?")
+            params.append(added_to)
         where_clause = " AND ".join(where)
         # The derived offset is bound as a SQLite parameter below, so it takes
         # the same ceiling every offset-binding route applies; the search branch
         # above slices a Python list and needs none.
         offset = clamp_query_offset((page - 1) * limit)
         total, items = await asyncio.to_thread(
-            _items_page, store, where_clause, params, limit, offset
+            _items_page,
+            store,
+            where_clause,
+            params,
+            limit,
+            offset,
+            _DATE_ORDER.get(sort, _SOURCE_ORDER),
         )
         return web.json_response({"items": items, "total": total, "page": page, "limit": limit})
 

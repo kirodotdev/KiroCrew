@@ -476,27 +476,24 @@ def _record_orphan_reap(
         logger.warning("terminal %s: could not publish the reap notification", sid, exc_info=True)
 
 
-def _take_shell_to_evict(
+def _shell_to_evict(
     registry: dict[str, _TerminalSession | None],
     max_sessions: int,
     now: float,
 ) -> tuple[str, _TerminalSession, float] | None:
-    """At the session cap, remove from ``registry`` the live shell that has had no
-    browser attached the longest, and return it with its idle span for
-    ``_end_evicted_shell``.
+    """At the session cap, name the live shell that has had no browser attached
+    the longest, with its idle span, without removing it.
 
     A detached shell may belong to a browser that will never come back for it
     (another device, a closed private window); with a timeout measured in hours,
     such shells would otherwise hold every slot and refuse each new terminal
-    until they expire. Synchronous, so an opener can take the slot and reserve
-    its own in one step with no other opener in between. Never taken: a
-    reservation, a connected shell, an exited one, one detached for less than
-    ``_ORPHAN_TIMEOUT_MIN_S`` (a tab mid-reload), or one whose reconnect is
-    mid-takeover (``replace_lock`` held). None unless the registry is exactly at
-    the cap, or when nothing qualifies; the caller's own cap check still decides.
-    Above the cap (``max_sessions`` lowered while more shells run) one eviction
-    would not free a slot, the caller would refuse anyway, and the shell taken
-    here would never be torn down.
+    until they expire. Never named: a reservation, a connected shell, an exited
+    one, one detached for less than ``_ORPHAN_TIMEOUT_MIN_S`` (a tab mid-reload),
+    or one whose reconnect is mid-takeover (``replace_lock`` held). None unless
+    the registry is exactly at the cap, or when nothing qualifies; the caller's
+    own cap check still decides. Above the cap (``max_sessions`` lowered while
+    more shells run) one eviction would not free a slot, the caller would refuse
+    anyway, and a shell ``_take_shell_to_evict`` popped would never be torn down.
     """
     if len(registry) != max_sessions:
         return None
@@ -511,8 +508,22 @@ def _take_shell_to_evict(
     if oldest is None:
         return None
     detached_at, sid, sess = oldest
-    registry.pop(sid)
     return sid, sess, now - detached_at
+
+
+def _take_shell_to_evict(
+    registry: dict[str, _TerminalSession | None],
+    max_sessions: int,
+    now: float,
+) -> tuple[str, _TerminalSession, float] | None:
+    """Remove from ``registry`` the shell ``_shell_to_evict`` names, and return it
+    for ``_end_evicted_shell``. Synchronous, so an opener can take the slot and
+    reserve its own in one step with no other opener in between.
+    """
+    evicted = _shell_to_evict(registry, max_sessions, now)
+    if evicted is not None:
+        registry.pop(evicted[0])
+    return evicted
 
 
 def _restore_evicted_shell(

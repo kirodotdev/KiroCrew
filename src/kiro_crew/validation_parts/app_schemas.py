@@ -1,8 +1,8 @@
 """Tool schemas for the builtin apps' agent tools.
 
 Issue Radar investigations and crew records, the Ops Mission Control API allowlist
-and the pod tools. A tool a built-in declares as data (``apps.builtin_agent_tools``)
-carries its own fields, and ``server_registries`` builds its schema from them.
+and the pod tools. A tool an installed app declares in its manifest carries its own
+schema (``apps.app_agent_tools.build_tool_schema``).
 
 Callers import these names from :mod:`kiro_crew.validation`, which serves them; this
 module never imports that facade.

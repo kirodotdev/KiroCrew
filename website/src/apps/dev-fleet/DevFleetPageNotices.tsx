@@ -112,7 +112,8 @@ export function DevFleetPageNotices({
             </span>
           </div>
           <div className="flex items-center gap-2 self-end sm:self-auto">
-            <Btn onClick={() => makeLive(undoTarget, { undo: true })} disabled={gatewayMutating}>
+            {/* The stock Btn is transparent, so on the ok tint it has no edge until hovered. */}
+            <Btn onClick={() => makeLive(undoTarget, { undo: true })} disabled={gatewayMutating} className="border-border-strong bg-bg-elevated">
               {iconLabel(<Undo2 className="lucide-inline h-3.5 w-3.5" aria-hidden />, i18nT('pages.devFleetPage.undo_to_name', { name: undoTarget.name }))}
             </Btn>
             <Clickable

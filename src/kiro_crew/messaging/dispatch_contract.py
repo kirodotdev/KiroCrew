@@ -234,11 +234,14 @@ class ChannelTurn:
 
     still_admitted: Optional[Callable[[], bool]] = None
     """``() -> bool``, asked in the yield-free pre-stream gate after the claim and
-    every pre-stream await. ``False`` ends the turn ``DENIED``: the claim released,
-    the provider never prompted, and the channel's renderer left unclosed, so no
-    reply is sent. A channel whose renderer starts something in ``on_turn_start``
-    that only ``close`` ends (a typing loop, a placeholder) must not pass it.
-    Synchronous because that gate must not await. ``None`` skips the check."""
+    every pre-stream await, and again by the provider after its own pre-prompt
+    awaits (a pending MCP change, the prompt build, the wait for the stdin write
+    lock), under that lock right before the prompt is written. ``False`` ends the
+    turn ``DENIED``: the claim released, the provider never prompted, and the
+    channel's renderer left unclosed, so no reply is sent. A channel whose
+    renderer starts something in ``on_turn_start`` that only ``close`` ends (a
+    typing loop, a placeholder) must not pass it. Synchronous because both gates
+    must not await. ``None`` skips the check."""
 
 
 class Drift(Enum):
@@ -480,7 +483,7 @@ class _MonitorGenerationChanged(Exception):
 
 
 class _SenderNoLongerAdmitted(Exception):
-    """``ChannelTurn.still_admitted`` answered False at the pre-stream gate."""
+    """``ChannelTurn.still_admitted`` answered False at the pre-stream or prompt gate."""
 
 
 def _monitor_result(verdict: Verdict, *, accepted: bool, acquired: bool) -> MonitorDispatchResult:

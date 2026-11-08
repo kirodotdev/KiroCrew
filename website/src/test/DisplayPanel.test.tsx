@@ -5,6 +5,7 @@ import { DisplayPanel } from '../pages/settings/DisplayPanel'
 import { renderWithProviders } from './helpers'
 import { api } from '../api/client'
 import { experiencePack, readExperience, saveExperienceChoice } from '../utils/themeConsent'
+import { registerThemeBranding } from '../themeBranding'
 
 // The rail mounts one item at a time; each describe sets the item it exercises
 // in its beforeEach and renders through this helper.
@@ -887,6 +888,23 @@ describe('DisplayPanel – Experience parts of the active Level-2 pack', () => {
     fireEvent.click(part('Overlays') as HTMLElement)
     expect(record()).toEqual({ sounds: true, overlays: true, persona: false })
     expect(screen.queryByText(SAVE_FAILED)).not.toBeInTheDocument()
+  })
+
+  registerThemeBranding({ 'registered-overlay-panel': { overlays: [() => null] } })
+  it("lists a registered theme's branding overlays as Overlays alone, on until it is turned off", () => {
+    mockUseTheme.mockImplementation(() => ({ ...DEFAULT_THEME, colorTheme: 'registered-overlay-panel' }))
+    renderPanel()
+    expect(screen.getByRole('group', { name: 'Experience' })).toBeInTheDocument()
+    expect(part('Sounds')).not.toBeInTheDocument()
+    expect(part('Persona')).not.toBeInTheDocument()
+    expect(part('Overlays')).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(part('Overlays') as HTMLElement)
+    expect(JSON.parse(localStorage.getItem('mc-theme-experience-registered-overlay-panel') ?? 'null')).toEqual({
+      sounds: false,
+      overlays: false,
+      persona: false,
+    })
+    expect(part('Overlays')).toHaveAttribute('aria-checked', 'false')
   })
 })
 

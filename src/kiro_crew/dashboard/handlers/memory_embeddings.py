@@ -65,10 +65,12 @@ from kiro_crew.embeddings import (
     make_sync_embed_fn,
     model_download_manager,
     model_file_present,
+    ollama_backend_selected,
     reconcile_store_embedding_space,
     reembed_progress,
     reset_shared_embedder,
     resolve_custom_model,
+    resolve_ollama_settings,
     validate_custom_model_path,
 )
 from kiro_crew.executors import embed_executor
@@ -435,6 +437,26 @@ def _probe_model_path(raw: str) -> tuple[str, str, int]:
         return "", "", 0
 
 
+async def _ollama_provider_refusal() -> web.Response | None:
+    """409 when ``memory.embedding_provider`` selects the Ollama server backend.
+
+    The in-process model setup routes (model apply, enable) would write
+    llama.cpp settings the Ollama provider overrides, so they refuse instead.
+    """
+    if not await asyncio.to_thread(ollama_backend_selected):
+        return None
+    return web.json_response(
+        {
+            "ok": False,
+            "error": 'memory.embedding_provider is "ollama_http", so the Ollama '
+            'server makes the vectors — set it back to "llama_cpp" to change the '
+            "model from here",
+            "code": "ollama_provider_active",
+        },
+        status=409,
+    )
+
+
 async def api_memory_embedding_model(request: web.Request) -> web.Response:
     """POST /api/memory/embedding-model — validate and apply a custom model.
 
@@ -508,6 +530,12 @@ async def api_memory_embedding_model(request: web.Request) -> web.Response:
             },
             status=409,
         )
+    # The Ollama provider wins over memory.embed_model_path, so a model applied
+    # here would never serve, and its reconcile would compare it against the
+    # server's space and fail. Refuse it like the env override above.
+    ollama_refusal = await _ollama_provider_refusal()
+    if ollama_refusal is not None:
+        return ollama_refusal
 
     prog = reembed_progress()
 
@@ -624,8 +652,13 @@ async def api_memory_embedding_status(request: web.Request) -> web.Response:
     embedder = get_shared_embedder()
     mgr = model_download_manager()
     step = str(mgr.status["step"])
-    model_present = model_file_present()
-    custom = resolve_custom_model()
+    memory_config = await asyncio.to_thread(_read_memory_config)
+    # An Ollama server makes the vectors: the vendored runtime, the GGUF file
+    # and the bundled download below are not in use, so their faults are not
+    # this backend's. Its health is the server probe ``is_ready`` reads.
+    ollama = ollama_backend_selected(memory_config)
+    model_present = embedder.is_ready() if ollama else model_file_present()
+    custom = None if ollama else resolve_custom_model()
 
     # The vendored llama.cpp runtime load result, read the way ``kirocrew
     # doctor`` reads it: the import failed AND vendored libs ship for this
@@ -642,12 +675,18 @@ async def api_memory_embedding_status(request: web.Request) -> web.Response:
     def _runtime_load_failed() -> bool:
         return _load_llama_class() is None and _platform_libs_dirname() is not None
 
-    runtime_failed = await asyncio.to_thread(_runtime_load_failed)
+    runtime_failed = not ollama and await asyncio.to_thread(_runtime_load_failed)
 
     setup_step = _SETUP_STEP_LEGACY.get(step, step)
     setup_error = str(mgr.status["error"])
     can_retry = step == "failed" and bool(setup_error)
-    if custom is not None:
+    if ollama:
+        # Nothing to download: no bundled-model step or error applies. An
+        # unusable Ollama config is this backend's own fault, so report it.
+        can_retry = False
+        setup_error = resolve_ollama_settings(memory_config).error
+        setup_step = "error" if setup_error else "done"
+    elif custom is not None:
         # No download is pending or possible in custom mode, so the download
         # manager's step ("idle" — it never ran) would leave the frontend
         # polling forever. Report a TERMINAL state derived from whether the
@@ -661,7 +700,6 @@ async def api_memory_embedding_status(request: web.Request) -> web.Response:
             setup_step = "done"
             setup_error = ""
 
-    memory_config = await asyncio.to_thread(_read_memory_config)
     generation = embedding_rebuild_generation(memory_config)
     repair = await asyncio.to_thread(
         _embedding_repair_status, getattr(request, "app", {}).get("state"), generation
@@ -669,7 +707,9 @@ async def api_memory_embedding_status(request: web.Request) -> web.Response:
     inherited = bool(
         custom is not None and legacy_embedding_ids(memory_config.get("embed_model_legacy_ids"))
     )
-    if custom is not None and setup_error:
+    if ollama and setup_error:
+        error_code = "ollama_config_invalid"
+    elif custom is not None and setup_error:
         error_code = custom.error_code or "model_path_unreadable"
     elif setup_error:
         error_code = "model_download_failed"
@@ -846,6 +886,11 @@ async def api_memory_enable_embeddings(request: web.Request) -> web.Response:
     owner_denied = await require_owner_dashboard_request(request, "memory.enable_embeddings")
     if owner_denied is not None:
         return owner_denied
+    # Setup below writes embedding_provider = "llama_cpp" and the bundled width,
+    # which would quietly undo the Ollama provider at the next restart.
+    ollama_refusal = await _ollama_provider_refusal()
+    if ollama_refusal is not None:
+        return ollama_refusal
 
     # Allow retry — reset any previous error state
     if _embedding_setup_status["step"] == "error":

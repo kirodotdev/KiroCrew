@@ -166,6 +166,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _install_root_targets_with _install_root_targets_cached _resolved_install_root_targets
         _bundled_kas_targets_cached _bundled_kiro_cli_targets_cached _bundled_root_spellings
         _gateway_package_dir _APP_BACKEND_OWNED_LEAVES app_backend_visible_targets
+        app_declared_mask_targets _liftable_declared_file
         crew_home_visible_spellings carveout_chain_has_planted_link
         enterprise_policy_cache_view _caller_mask_contains _POLICY_CACHE_META_LEAF
         _policy_cache_meta_names_its_source
@@ -203,6 +204,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _InodeAliases _inode_aliases_under _refuse_multilinked_credential_leaves _referent_identity
         _refuse_aliased_masked_leaves _masked_leaf_pathonly_alias_detail
         _masked_leaf_multilink_detail _masked_leaf_alias_search_hint masked_credential_leaf_aliases
+        _app_declared_leaves _hidden_leaves _hardlink_refused_leaves
         """.split()),
     "kiro_crew.sandbox_staging": tuple("""
         _materialize_maskable_dirs _materialize_live_target_mask_target

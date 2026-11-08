@@ -150,6 +150,8 @@ STATUS_OWNERS = tuple(
         "_review_fences.py",
         "_review_pushes.py",
         "_review_rounds.py",
+        # The argv guard both entry scripts' runners use.
+        "_tool_argv.py",
     )
 )
 

@@ -199,6 +199,7 @@ _PASSED_THROUGH_REASONS = (
     loop_model.CONSECUTIVE_FAILURE_REASON,
     loop_model.STRUCTURAL_TERMINAL_REASON,
     loop_model.MODEL_REFUSED_REASON,
+    loop_model.CLAIM_UNSAVED_REASON,
     loop_model.SENTINEL_DROPPED_REASON,
     loop_model.MANUAL_STOP_REASON,
     # The structured monitor stop reasons (``monitoring/models.py``). Each budget
@@ -293,6 +294,7 @@ ENDED_BY: dict[str, str] = {
     "consecutive_failures": "error",
     "structural_terminal": "error",
     "model_refused": "error",
+    "claim_unsaved": "error",
     "sentinel_dropped": "error",
     "invalid_monitor_record": "error",
     "unsupported_monitor_version": "error",

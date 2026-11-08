@@ -378,7 +378,7 @@ def test_prove_git_env_drops_location_and_pins_hooks_off(_floor_monkeypatch) -> 
     assert "GIT_CONFIG_PARAMETERS" not in env  # a parent's `git -c key=value` is not inherited
     # the pins are argv options, the one source nothing inherited can outrank
     assert prove._git_argv(["status"]) == [
-        "git",
+        prove._tool_argv.which("git"),
         "-c",
         "core.hooksPath=" + os.devnull,
         "-c",
@@ -399,7 +399,7 @@ def test_prove_git_env_keeps_the_callers_other_config(_floor_monkeypatch) -> Non
 def test_every_git_subprocess_in_prove_goes_through_the_pinned_argv() -> None:
     """Class sweep: no `["git", ...]` literal or bare `subprocess` git call bypasses the pins."""
     source = PROVE.read_text(encoding="utf-8")
-    assert '["git"' not in source.replace('return ["git", *GIT_PINS, *args]', "")
+    assert '["git"' not in source.replace('resolve(["git", *GIT_PINS, *args])', "")
     assert source.count("_git_argv(") >= 3  # _git plus the two `git apply` calls
     assert "GIT_CONFIG_PARAMETERS" in source
 

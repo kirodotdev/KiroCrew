@@ -3,6 +3,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { FeishuPanel } from '../pages/settings/FeishuPanel'
 import { WeComPanel } from '../pages/settings/WeComPanel'
+import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry.gen'
+import { scoreSettingEntry } from '../components/commandPalette/settingsSearchCore'
+import { i18nT } from '../i18n/t'
 
 const mocks = vi.hoisted(() => ({
   getConfig: vi.fn(),
@@ -80,6 +83,24 @@ describe('FeishuPanel', () => {
     // Both are already set: their masked previews render, never a raw value.
     expect(screen.getByText(/cli…6g7h/)).toBeInTheDocument()
     expect(screen.getByText(/AbC…89cd/)).toBeInTheDocument()
+  })
+
+  it('is found by settings search, on rows this panel draws', async () => {
+    renderPanel()
+    await screen.findByText('Feishu app ID')
+    const cases: [id: string, query: string][] = [
+      ['channels.feishu-app-secret', 'app secret'],
+      ['channels.feishu-app-id', 'app id'],
+      ['channels.allowed-user-ids-feishu', 'allowed user ids feishu'],
+      ['channels.soft-context-threshold-feishu', 'soft context threshold feishu'],
+      ['channels.file-sessions-in-a-folder-feishu', 'file sessions feishu'],
+    ]
+    for (const [id, query] of cases) {
+      const entry = SETTINGS_REGISTRY.find(e => e.id === id)
+      expect(entry, `${id} missing from the registry`).toMatchObject({ tab: 'channels', params: { channel: 'feishu' } })
+      expect(scoreSettingEntry(query, entry!)).not.toBeNull()
+      expect(document.querySelectorAll(`[data-setting-label="${CSS.escape(i18nT(entry!.labelKey!))}"]`)).toHaveLength(1)
+    }
   })
 
   it('accepts an ou_ open_id in the allow-list and saves both credentials', async () => {

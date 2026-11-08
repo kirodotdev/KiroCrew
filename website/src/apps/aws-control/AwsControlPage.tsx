@@ -611,7 +611,12 @@ function AddAccounts({ onDraftChange, autoOpen = false }: {
             </p>
           )}
 
-          {availableQ.isError ? null : unregistered.length === 0 ? (
+          {/* No answer yet, or no profile at all, is not "all registered". */}
+          {availableQ.isError || !data ? null : data.profiles.length === 0 ? (
+            <p className="text-[13px] text-muted" data-testid="add-accounts-no-profiles">
+              {i18nT('apps.awsControl.page.add_accounts_no_profiles')}
+            </p>
+          ) : unregistered.length === 0 ? (
             <p className="text-[13px] text-muted" data-testid="add-accounts-none">
               {i18nT('apps.awsControl.page.add_accounts_none')}
             </p>

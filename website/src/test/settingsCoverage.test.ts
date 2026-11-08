@@ -72,13 +72,13 @@ const UNMAPPED_PANELS: Record<string, string> = {
   'ChannelDisabledPanel.tsx': 'informational placeholder (locked/loading/error states), zero controls',
   'ChannelFolderBackfill.tsx': 'one action button shared by the channel panels; files existing conversations into the folder the OWNING panel configures, and holds no setting of its own',
   'CustomSoundsSection.tsx': 'the Notifications tab\'s add-a-sound form (name + tones) and the list of saved sounds; it creates entries rather than holding settings, and the sounds it saves are chosen through the per-category pickers NotificationsPanel already indexes',
+  'FeatureTipsList.tsx': "the Chat tab's Discovery list of every curated tip, each with its own action button that navigates to the tip's setting; it reads the tip pool and holds no setting",
   'FollowDefaultModelAction.tsx': 'one action button under the Chat tab\'s Default Model that counts, then clears, the model older chats keep; it holds no setting of its own',
   'ChannelsPanel.tsx': 'list-detail shell routing to per-channel panels; carries no controls of its own',
   'CrewVersionStatus.tsx': "a connected Remote Crew row's version badge and its Update action; it reports and acts on one crew, and holds no setting",
   'DecisionsProviderPicker.tsx': 'the Decisions card\'s provider choice writes a preset id, or a SageMaker endpoint\'s name, region and profile, through the owner-only PUT /api/decisions/provider, not a config path, so there is no configKey to index; it is reached through the card the developer.decisions-jev entry deep-links to',
   'DiscordPanel.tsx': 'thin BotChannelSpec wrapper; BotChannelPanel fans its entries out to channel=discord',
   'TelegramPanel.tsx': 'thin BotChannelSpec wrapper; BotChannelPanel fans its entries out to channel=telegram',
-  'FeishuPanel.tsx': 'thin BotChannelSpec wrapper; BotChannelPanel fans its entries out to channel=feishu',
   'WeComPanel.tsx': 'thin BotChannelSpec wrapper; BotChannelPanel fans its entries out to channel=wecom',
   'ImportPanel.tsx': 'single action button launching the import wizard; no persistent settings',
   'InstanceFormFields.tsx': 'per-instance CRUD form fields (add/edit crew), not global settings',
@@ -266,6 +266,13 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
   'MobileLoginCard.tsx': {
     counts: { Input: 1 },
     reason: 'read-only display of the freshly minted sign-in link (select-on-focus for manual copy) — transient, not a persistent setting',
+  },
+  'NotificationsBridgeRoute.tsx': {
+    counts: { Select: 1, input: 1 },
+    reason:
+      'the per-channel "Deliver to" chat-app checkboxes and the priority-floor Select ' +
+      'render on runtime-fetched channel rows, offering only the chat apps connected ' +
+      'right now (manual: notifications.sources)',
   },
   'NotificationsPanel.tsx': {
     counts: { Toggle: 1, Select: 1, input: 1 },

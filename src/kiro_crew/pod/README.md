@@ -377,7 +377,7 @@ worktree build, and pinning a colliding pod's own `PORT=` remains the manual way
 | `KIROCREW_POD_LIVE_PORT` | `5476` | the port a pod must never bind; a value that is not a port in 1–65535 logs a warning and uses the default |
 | `KIROCREW_POD_UNIT_PREFIX` | `kirocrew-pod` | service-manager unit/task prefix |
 | `KIROCREW_POD_PATH` | `~/.local/bin`, the user tool-manager bins the host gateway also searches (`env._EXTRA_PATH_DIRS`: mise shims, `~/.volta/bin`, `/opt/homebrew/bin`, ...), then `/usr/local/bin:/usr/bin:/bin` | `PATH` handed to the booted gateway; pinned into the template at `pod install`, so re-run it after an upgrade to pick up a new default |
-| `KIROCREW_POD_HEALTH_SECS` | `90` | `pod up` readiness budget: the pod must be serving AND have published a fresh internal-API credential within it. A pod still serving with no credential when it runs out fails with the same advice to raise the budget as a slow boot. `--wait-secs` wins and the result is clamped to 5–3600 seconds |
+| `KIROCREW_POD_HEALTH_SECS` | `90` | `pod up` readiness budget: the pod must be serving AND have published a fresh internal-API credential within it. Once ready, a pod `up` or `restart` started also waits, in the same budget, for the mint's ownership proof, which reads the gateway's pid record (under `--no-token` too: the agent pod surface runs both and mints right after); when the budget is spent first, the pod still comes up and the mint says why ownership is unproven. A pod still serving with no credential when it runs out fails with the same advice to raise the budget as a slow boot. `--wait-secs` wins and the result is clamped to 5–3600 seconds |
 | `KIROCREW_POD_BIN` | (auto) | binary baked into the Linux template unit; `pod up` replaces it with the worktree binary through a per-instance drop-in |
 | `KIROCREW_POD_KIRO_BIN` | (unset) | agent backend pinned into the service definition as `KIROCREW_KIRO_BIN` |
 
@@ -458,6 +458,11 @@ Task Scheduler, and `kiro_crew.pod.windows` states the five consequences:
   two backends serialise, then re-enters `kirocrew pod _run <name>`. Boot logic
   stays in Python; the wrapper is data. A pod-plane path containing a double
   quote or a newline is refused at `pod up`, because cmd.exe cannot express it.
+  The task is registered from a definition (`schtasks /Create /XML`), because
+  only a definition can set its priority: 5, normal. Task Scheduler's default,
+  7, is below normal with low I/O and memory priority, and every pod process
+  inherits it, so while other programs keep the CPUs busy the boot barely runs
+  and `pod up` runs out its readiness budget.
 - **No restart policy.** A crashed pod stays down, which removes launchd's
   restart-loop hazard entirely (a terminal refusal keeps its honest exit code —
   no exit-0 translation) but means the crash signal has to be recorded: the

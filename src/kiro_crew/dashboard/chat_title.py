@@ -1425,6 +1425,14 @@ async def title_then_refresh(state: DashboardState, slot: _ChatSlot) -> None:
     if pending is not None and not pending.done():
         await asyncio.wait([pending])
     await _maybe_auto_title(state, slot)
+    # Imported here because chat_title_fork imports this module.
+    from kiro_crew.dashboard.chat_title_fork import fork_title_pending, name_queued_fork
+
+    await name_queued_fork(state, slot)
+    # A fork that still waits for its first message keeps its fork name: the
+    # milestone refresh would name it from the parent's copied turns.
+    if fork_title_pending(slot):
+        return
     # A slot replaced at its key during the attempt is not refreshed: the
     # refresh's mark write would land on the line its successor shares.
     if state._slots.get(slot.key) is not slot:
@@ -1600,13 +1608,15 @@ async def maybe_refresh_title(state: DashboardState, slot: _ChatSlot) -> None:
 
 
 def _latest_human_question(slot: _ChatSlot) -> dict[str, Any] | None:
-    """The newest user row a PERSON typed into *slot* that has titleable text.
+    """The newest user row a PERSON typed into *slot*, when it has titleable text.
 
     An allowlist, not an exclusion list: only a row carrying
     ``history.HUMAN_TURN_META_KEY`` counts, so an automation envelope (a cron
     report, an auto-nudge, a session_send, a subagent completion), an app's
-    turn and a restored queue row can never name the session. A copied row
-    keeps its ``meta``, so the marker survives a fork.
+    turn and a restored queue row can never name the session. Only the newest
+    such row is considered: when it has no titleable text the answer is None,
+    never an older row, which in a fork would be a question copied from the
+    parent.
     """
     for message in reversed(_titling_messages(slot)):
         if message.get("role") != "user":
@@ -1616,21 +1626,24 @@ def _latest_human_question(slot: _ChatSlot) -> dict[str, Any] | None:
             continue
         if _title_text(message.get("content", ""), _message_attachment_paths(message)):
             return message
+        return None
     return None
 
 
 async def refresh_forked_title(state: DashboardState, slot: _ChatSlot) -> None:
-    """Background task: rename a fork child after the latest question it holds.
+    """Background task: rename a fork child after the first question sent to it.
 
     A fork is born titled ``↳ Fork of <parent>``, which names the PARENT's
-    topic; once the fork is acknowledged, ``chat_fork.fork_slot`` schedules this
-    one pass so the child is named for the question the user branched at.
+    topic, and keeps that name until the person sends the child a message.
+    That send (``chat_title_fork.schedule_fork_title``, or ``name_queued_fork``
+    for a queued send) runs this one pass, so the child is named for what the
+    user went on to ask in it, never for a question copied from the parent.
     Only an AUTO title is touched (``_refresh_blocked``): a fork whose parent
     carried a manual name keeps ``↳ Fork of <that name>`` as a final title, and
     an agent fork given an explicit title is "user" too.
 
     One initial-title generation over the latest person-typed question alone
-    (``_latest_human_question``), never the copied opening turns. The fork
+    (``_latest_human_question``), never the copied turns. The fork
     marker stays in front of the generated name, because the sidebar shows no
     other sign that a session is a fork. The parent is never read or written.
 

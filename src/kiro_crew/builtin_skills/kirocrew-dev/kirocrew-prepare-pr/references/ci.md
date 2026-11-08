@@ -36,14 +36,17 @@ Read from SKILL.md's *Before you rerun a red test*. When a job fails on a flaky
 test, or an AI review lane dies on infrastructure before it produces a verdict,
 rerun that one job: `gh run rerun <run-id> --failed`, or `--job <job-id>`. Do not
 rebase and push an identical commit to re-trigger it. A new head restarts every
-check, a full round of about 90 minutes, throws away the green rows already earned,
-and can hit the same flake again. Push only when the base actually moved.
+check, throws away the green rows already earned, and can hit the same flake
+again. A flake or a dead lane is never a reason to push: push only for one of the
+reasons SKILL.md lists under *Once the PR is open*.
 
-If `gh run rerun` is refused, read your current access before concluding you
-cannot rerun: `gh api repos/<owner>/<repo> --jq .permissions`. An older note that
-the account is read-only can be out of date. With `push: true` you can rerun the
-job yourself. Without it, ask a maintainer to rerun that one job and give them the
-run URL.
+Try the rerun before deciding you cannot: a note that the account is read-only is
+not evidence. If GitHub refuses it, read the error. A run still in progress cannot
+be rerun until it completes, and no run can be rerun more than 30 days after it
+first ran. For any other refusal, read your access with
+`gh api repos/<owner>/<repo> --jq .permissions`: with `push: false`, ask a
+maintainer to rerun that one job and give them the run URL; with `push: true`,
+report the error instead of retrying or re-pushing.
 
 ## File-overlap scan
 

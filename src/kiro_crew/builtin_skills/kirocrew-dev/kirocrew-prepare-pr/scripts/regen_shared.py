@@ -32,11 +32,27 @@ Stdlib only; Python 3.10+.
 """
 
 import fnmatch
+import importlib.util
 import os
 import shlex
 import shutil
 import subprocess
 import sys
+
+# argv[0] resolution and the batch-launcher guard ``run`` applies, from
+# _tool_argv.py beside this script, by path and without writing bytecode.
+_SPEC = importlib.util.spec_from_file_location(
+    "_prepare_pr_regen_tool_argv",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "_tool_argv.py"),
+)
+if _SPEC is None or _SPEC.loader is None:  # pragma: no cover - defensive
+    raise ImportError("cannot import kirocrew-prepare-pr sibling _tool_argv.py")
+_tool_argv = importlib.util.module_from_spec(_SPEC)
+_WRITES_BYTECODE, sys.dont_write_bytecode = sys.dont_write_bytecode, True
+try:
+    _SPEC.loader.exec_module(_tool_argv)
+finally:
+    sys.dont_write_bytecode = _WRITES_BYTECODE
 
 # One entry per generator that exists today. ``files`` are the repo-relative paths it
 # writes (and the only ones it may write); ``requires`` are paths that must exist for
@@ -102,9 +118,12 @@ def err(msg):
 
 
 def run(args, cwd=None):
+    argv, refused = _tool_argv.resolve(args)
+    if refused:
+        return refused
     try:
         p = subprocess.run(
-            args, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace"
+            argv, cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace"
         )
         return p.returncode, p.stdout, p.stderr
     except OSError as exc:

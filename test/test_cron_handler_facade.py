@@ -11,7 +11,7 @@ only because the mirror writes it into every module holding the name.
 global rebound). These tests pin what is particular to this facade: every name the test
 trees patch through it reaches every module holding it; the owners are exactly the
 ``cron_*.py`` siblings, loaded lowest layer first; the facade keeps no code of its own;
-every route keeps the owner-surface guard it had, and the four member-scoped routes stay
+every route keeps the owner-surface guard it had, and the member-scoped routes stay
 unwrapped; the family logs under the facade's name; the moved exception class keeps the
 facade's module; and the facade still runs as ``python -m``.
 """
@@ -74,10 +74,16 @@ _KNOWN_SEAMS = frozenset(
 #: The routes that verify and scope their own caller, so the route guard leaves them
 #: unwrapped; every other route is an owner surface.
 _MEMBER_SCOPED = frozenset(
-    {"api_cron_tools", "api_lessons", "api_lessons_create", "api_lessons_delete"}
+    {
+        "api_cron_tools",
+        "api_lessons",
+        "api_lessons_create",
+        "api_lessons_delete",
+        "api_lessons_update",
+    }
 )
 
-#: Every route the module served before its split.
+#: Every route the family serves.
 _ROUTES = frozenset(
     {
         "api_cron_ack",
@@ -103,6 +109,7 @@ _ROUTES = frozenset(
         "api_lessons",
         "api_lessons_create",
         "api_lessons_delete",
+        "api_lessons_update",
     }
 )
 
@@ -206,7 +213,7 @@ def test_the_facade_keeps_the_default_read_path_and_no_code_of_its_own() -> None
 
 def test_every_route_keeps_the_guard_it_had() -> None:
     """At BASE one ``guard_owner_surface_routes`` call wrapped every route as an owner
-    surface except the four that scope their own caller. Each owner now makes that call
+    surface except the ones that scope their own caller. Each owner now makes that call
     over its own routes: a route is wrapped exactly once, and only when it was before."""
     routes = {
         name: getattr(cron, name)

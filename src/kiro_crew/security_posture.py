@@ -68,6 +68,10 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # only to REFUSE a file whose rules, crons or carried files hold a
         # credential-shaped string. It returns no redacted text.
         "crewmate_bundle.py",
+        # Pure helper: `redact_note` returns a redacted copy and emits nothing. Its
+        # only caller is `notifications/bridge.py`, the registered sink that hands
+        # the copy to a transport.
+        "notifications/bridge_egress.py",
         # Selects which redaction the OTLP host audit rows go through in a
         # process with no platform context (`_policy_redactor` returns the
         # companion's), and calls none itself. The rows are written by the SEL,
@@ -540,9 +544,12 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "acp/client_start.py",
         "acp/client_tool_events.py",
         "acp/client_transport.py",
-        # The two-spelling stderr-tail check behind client_transport's exit error
-        # and runtime_liveness's death summary: it decides whether those strings
-        # may carry the tail, and both of its callers are already listed here.
+        # The two-spelling stderr-tail check behind client_transport's exit error,
+        # runtime_liveness's death summary and the browser supervisor's failed
+        # start detail: it decides whether those strings may carry the tail. The
+        # first two are listed here; the supervisor serves nothing, and
+        # `dashboard/handlers/browser_harness_status.py` and `browser_ops.py`
+        # serve its detail as it is.
         "acp/stderr_tail.py",
         "acp/client_turn.py",
         "acp/client_turn_control.py",
@@ -952,6 +959,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # `learn.py` and `spawn.py` are absent because they call no redactor (the
         # spawn reads that redact are in its `spawn_parts` owners) -- the allowlist
         # is checked for stale entries too.
+        # `app_tools.py` relays an app's answer to a declared agent tool and redacts it
+        # before returning it, the same classification as its sibling domains.
+        "mcp_tools/app_tools.py",
         "mcp_tools/apps.py",
         "mcp_tools/artifacts.py",
         "mcp_tools/control.py",

@@ -60,7 +60,7 @@ _DOES_NOT_FLUSH: dict[tuple[str, str], str] = {
         "a gateway-authored hidden turn (every caller is a crewmate welcome, goal "
         f"setup or reminder, or thread wake): {_AUTOMATIC}"
     ),
-    ("slack/gateway_runtime/nudge_dashboard_fire.py", "_fire_dashboard_nudge"): (
+    ("slack/gateway_runtime/nudge_dashboard_fire.py", "_start_dashboard_wake_turn"): (
         f"a monitor loop wake: {_AUTOMATIC}"
     ),
     ("slack/gateway_runtime/result_egress.py", "_deliver_result"): (

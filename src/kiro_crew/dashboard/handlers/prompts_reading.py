@@ -134,7 +134,9 @@ def _extract_sop_description(path: Path) -> str:
     unbounded by-name read could not do.
     """
     # Strict decode: a file that is not UTF-8 has no description we can trust,
-    # and replacement characters would put mojibake in the list.
+    # and replacement characters would put mojibake in the list. ``utf-8-sig``
+    # is still strict; it drops a leading byte-order mark so the column-0
+    # frontmatter fence of a file saved "UTF-8 with BOM" is still seen.
     try:
         canonical = validate_file_path(str(path))
         if canonical is None:
@@ -146,7 +148,7 @@ def _extract_sop_description(path: Path) -> str:
         if raw is None:
             _audit_unread("api_prompts", "prompt", "error", {"path": str(path)})
             return ""
-        return _description_from_text(raw.decode("utf-8"))
+        return _description_from_text(raw.decode("utf-8-sig"))
     except (OSError, UnicodeDecodeError):
         return ""
 
@@ -198,7 +200,7 @@ def _gated_sop_description(path: Path, root_real: Path) -> str:
         _audit_unread("api_prompts", "prompt", "error", {"path": str(path)})
         return ""
     try:
-        return _description_from_text(raw.decode("utf-8"))
+        return _description_from_text(raw.decode("utf-8-sig"))
     except UnicodeDecodeError:
         return ""
 

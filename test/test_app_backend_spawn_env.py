@@ -884,6 +884,95 @@ class TestTheMdNotebookBackendCanSeeItsOwnStateFiles:
         )
 
 
+class TestTheBackendSpawnLiftsTheAppsDeclaredMasks:
+    """``apps/backend.py`` hands an app's ``credentialMasks`` back to its own backend spawn.
+
+    The leaves themselves are pinned in ``test_app_credential_masks.py``; this pins the
+    call site: the lift reaches ``wrap_argv``, keyed on the provenance of the code the
+    spawn executes, never on a fixed source.
+    """
+
+    @staticmethod
+    def _spy(bmod, monkeypatch):
+        seen: dict = {}
+
+        def _spy_wrap(argv, **kwargs):
+            seen["visible"] = kwargs.get("extra_visible_dirs")
+            return (list(argv), None)
+
+        monkeypatch.setattr(bmod, "wrap_argv", _spy_wrap)
+        monkeypatch.setattr(
+            bmod.subprocess, "Popen", lambda *a, **k: (_ for _ in ()).throw(OSError("stop"))
+        )
+        return seen
+
+    @staticmethod
+    def _install(tmp_path, name, masks):
+        src = tmp_path / "source" / name
+        src.mkdir(parents=True)
+        (src / APP_MANIFEST_FILENAME).write_text(
+            json.dumps(
+                {
+                    "name": name,
+                    "version": "1.0.0",
+                    "displayName": name,
+                    "description": "declared credential masks",
+                    "backend": {"entryPoint": "server.py", "healthCheck": "/health"},
+                    "credentialMasks": masks,
+                }
+            )
+        )
+        (src / "server.py").write_text("import time\ntime.sleep(30)\n")
+        install_app(src)
+
+    def test_an_installed_apps_backend_gets_its_declared_leaves_back(
+        self, app_env, tmp_path, monkeypatch
+    ):
+        import kiro_crew.apps.backend as bmod
+        from kiro_crew.sandbox import app_declared_mask_targets
+
+        self._install(tmp_path, "masked-app", ["secrets.json"])
+        lifted = app_declared_mask_targets("masked-app", builtin=False)
+        assert lifted, "the declaration resolved to no target, so this pins nothing"
+        seen = self._spy(bmod, monkeypatch)
+
+        bmod.start_app_backend("masked-app")
+
+        assert seen.get("visible") is not None, "the spawn never reached wrap_argv"
+        for path in lifted:
+            assert path in seen["visible"], (
+                "the app's declared mask hides its credential from its own backend "
+                f"(missing {path!r}, saw {seen['visible']!r})"
+            )
+
+    @pytest.mark.parametrize(("name", "builtin"), [("masked-app", False), ("md-notebook", True)])
+    def test_the_lift_is_keyed_on_the_spawned_codes_provenance(
+        self, app_env, tmp_path, monkeypatch, name, builtin
+    ):
+        import kiro_crew.apps.backend as bmod
+
+        if builtin:
+            from kiro_crew.apps.manager import register_builtin_apps
+
+            register_builtin_apps()
+        else:
+            self._install(tmp_path, name, ["secrets.json"])
+        asked: list[tuple[str, bool]] = []
+        sentinel = "/declared-mask-sentinel"
+
+        def _declared(app_name, *, builtin):
+            asked.append((app_name, builtin))
+            return (sentinel,)
+
+        monkeypatch.setattr(bmod, "app_declared_mask_targets", _declared)
+        seen = self._spy(bmod, monkeypatch)
+
+        bmod.start_app_backend(name)
+
+        assert asked == [(name, builtin)]
+        assert sentinel in (seen.get("visible") or ())
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="shebang semantics are POSIX-only")
 class TestExecBackendShebangShim:
     def _spawn_cmd(self, tmp_path, shebang_line: str):

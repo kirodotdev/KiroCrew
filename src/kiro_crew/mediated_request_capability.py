@@ -310,7 +310,7 @@ class ApprovalMint:
     def _is_connection(self) -> bool:
         """A tool of a Crew-owned Connection this session reaches through its bridge.
 
-        Always False unless ``connections.crew_oauth`` projected a bridge for it.
+        Always False unless ``dashboard.feature_previews.crew_oauth`` projected a bridge for it.
         """
         event = self._gate_event
         if event is None or not self._session_key:

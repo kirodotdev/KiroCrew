@@ -306,7 +306,7 @@ describe('ManageAgentsFooter', () => {
   it('calls onManage when the link is activated', () => {
     const onManage = vi.fn()
     render(<ManageAgentsFooter onManage={onManage} />)
-    fireEvent.click(screen.getByText('Manage Bots…'))
+    fireEvent.click(screen.getByText('Manage bots…'))
     expect(onManage).toHaveBeenCalledTimes(1)
   })
 

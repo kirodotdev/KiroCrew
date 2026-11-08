@@ -367,6 +367,21 @@ a new draft session through the existing session controller. With `slotKey`, the
 routed chat activates that exact slot on cold entry and hot navigation before
 filling or sending. Target activation owns the mount fetch, so a previously
 active Redux slot cannot refresh itself over the app's target.
+A target the session list does not show yet (an app that created the slot through
+`POST /api/chat/slots` and opened it at once, before the create broadcast) is not
+switched to straight away: its first detail read can 404, and that unwinds to the
+outgoing chat. The claim holds URL sync, takes the sid from the deep-link path (so
+neither the mount activation nor its not-found deadline acts on it) and waits for the
+list, up to `APP_LAUNCH_LIST_WAIT_MS` (5s) from the launch, then switches either way.
+A session the user opens during the wait, or an address that stops naming the target,
+abandons the launch: the claim frees URL sync and hands the launch to the intake, whose
+"send cancelled" notice returns an unsent message for copying. The `?sid=` in the
+address bar keeps the page's auto-select from moving meanwhile. A claimed wait is
+owned by the claim until it switches or is abandoned, past the 10s a staged intent
+stays claimable, so a socket drop that outlasts that window resumes it on reconnect. A
+newer launch supersedes the wait silently, as it does a pending activation. Pinned
+by `src/test/ChatPageNewSessionPrefill.test.tsx` ("into a session the list does not
+show yet").
 The controller retains a claimed message through slow
 activation; a rejected switch reports failure and the unsent message together
 in the existing copyable session-open notice, without sending to another slot.
@@ -724,9 +739,9 @@ never another scanner. An app that core never calls, as with Auto-Improvement, n
 seam: its gate pins that direction and the reasoned rows left (see `auto-improvement.md`,
 "Repository boundary").
 Issue Radar's gate (`test/test_core_issue_radar_decoupling.py`) pins the rows
-that still name it, chiefly its three agent tools, which the data-only
-`apps.builtin_agent_tools` seam cannot carry (`issue-radar.md`, "Repository
-boundary").
+that still name it, chiefly its three agent tools, which still run in the core until the
+app serves them through the manifest `agentTools` seam (section 30.1; `issue-radar.md`,
+"Repository boundary").
 
 ## 0. Three-axis classification: origin, resources, lifecycle
 
@@ -1859,6 +1874,13 @@ own. It is **not** a precedent that a third-party (or non-desktop) builtin may
 ship main-process code; those stay renderer+backend. See
 `docs/system-specs/modules/mochi.md` § Deliberate divergences.
 
+The exception is closing, not open. An app that needs a desktop window or a global
+shortcut declares it in its manifest `desktop` block and the shell's generic window
+host serves it (§35); no new app code enters the main process.
+`website/electron/mochi/` and `website/electron/crew-companion/` remain until each app
+moves onto that seam, and `website/electron/test/app-window-host-independence.test.js`
+holds them to rows that only shrink.
+
 Relatedly, Mochi's vendored `ChatPanel`/`panelBridge` are a **deliberately owned
 fork**, not a convergence-pending copy of the dashboard's `ChatEmbed` — an
 approval-flow or widget-protocol change in the dashboard chat must be ported to
@@ -2504,8 +2526,36 @@ into the exclusion, a malformed authored `managedToolPolicy`, `exclude` or
 existing local user-owned sessions, choose generated response options, approve
 or deny tool requests, or change approval modes require an enabled app whose
 live manifest declares `permissions.sessionApproval: true`. The route must also
-be allowed by `permissions.api`. Cron, system, remote, member-mode, and other
-apps' sessions are denied. An app's existing access to its own slots is
+be allowed by `permissions.api`. Cron, system, remote, and other apps' sessions
+are denied, and so is a member-mode session unless the manifest also declares
+`permissions.memberThreads: true`: that scope widens the same grant, and
+nothing else, to a Bot's pinned DM thread -- the live slot
+`POST /api/members/{slug}/thread` minted, judged positively on both marks it is
+born with (`slot_ownership.is_member_thread`: `mode="member"` AND a
+`member-` key), USER origin, running on its own `dashboard:` session. The scope
+alone grants nothing, and it is never read apart from the grant: one read
+(`permissions.app_session_control_grant`, a `SessionControlGrant` of `granted`
+and `member_threads`) reads the manifest once, judges consent and enablement
+against it (`app_can_manage_session_approvals(..., manifest=)`) and takes the
+scope from that same manifest, so a request overlapping a manifest update can
+never pair the consented grant of the old manifest with the scope the new one
+declares before the owner re-consents. Every app caller pays that one read
+whatever session it named (`slot_ownership.read_session_control_grant`;
+`session_grant` memoizes both fields, `member_thread_grant` reads the memo
+synchronously), and a member-mode slot under any other key stays denied
+whatever the manifest says. With it, `POST /api/chat/slots/{slot}/approve`,
+`POST /api/chat/mode`, `POST /api/approvals/{id}/{action}` and a
+`POST /api/chat` turn (an `[OPTIONS:]` choice is one) reach the thread through
+the same session-control rule as a user session, the send's allow row naming
+the scope (`permissions.sessionApproval+memberThreads|slot=member-<slug>`).
+It reaches no more than that: every `/api/members/*` and `/api/teams*` route
+still answers an app 404, the thread's transcript stays owner-only, a resume or
+`POST /v1/chat/completions` naming a member key stays refused, and an app still
+never mints or holds a member slot -- `app_reserved_key_reason` stands down for
+a `member-` key only when a live Bot thread holds exactly that key on a
+grant route (`app_new_key_refusal(..., session_grant_route=True)`), so a send
+to a member key with no live thread is the uniform 404 and creates nothing.
+An app's existing access to its own slots is
 unchanged. On a user-owned session a `POST /api/chat` from the app sends a
 turn: a send carrying a change to the session's agent binding, persona settings,
 or a harness slash command (the body's `agent` onto an agent-less slot, its
@@ -2540,14 +2590,21 @@ require an explicit live allowed slot and are limited to Normal, Reads and
 Trust; YOLO is global rather than slot-scoped, so app tokens are refused
 (``app_yolo_forbidden``) for both arming and revoking it. Consent is captured
 when the user enables the app, so `update_app` disables an enabled app
-whose new version adds the flag (SEL operation `session_approval_widened`) and
+whose new version widens user-session control
+(`manager_records._session_control_widening`: the flag newly declared, or
+`memberThreads` newly declared on a held grant; SEL operation
+`session_approval_widened`, whose row names the keys actually added --
+`permissions.memberThreads` when the grant was already held) and
 returns `notice: "session_approval_reconsent"`; the detail page shows that notice
-and the user re-enables the app after seeing the grant. `register_external_app`
+and the user re-enables the app after seeing the grant and, when declared, its
+Bot-thread scope. `register_external_app`
 does the same for self-managed apps (a registration that newly declares the flag
-is written disabled, SEL caller `app_register`). App updates retain the prior
+or the scope is written disabled, SEL caller `app_register`). App updates retain the prior
 tree until the replacement and its metadata are durable, so a failed update
 restores the old manifest and enabled state together. A replacement manifest
-that removes the flag clears any lingering `sessionApprovalConsentPending` bit.
+that removes the flag clears any lingering `sessionApprovalConsentPending` bit;
+one that removes only the scope revokes the reach on the next live read and
+leaves the consent as it stands. `test_member_thread_grant` pins the scope.
 
 A record with no `sessionApprovalConsentPending` key is consent-pending. Every
 record this host writes carries the key, so one without it comes from a host
@@ -2560,7 +2617,22 @@ caller's copy: it never turns one that is key-less or already pending into
 "no consent needed" unless the write is `enable_app`'s consent write or the
 live manifest is readable and does not declare the grant, so no save path (a
 disable, an unreadable manifest, an early update, a stale copy written back by
-a rollback) records a consent that was not given. After `KIROCREW_READY`, `apps/session_consent.reconcile_after_ready`
+a rollback) records a consent that was not given. The Bot-thread scope
+follows the same rule: `enable_app`'s consent write records
+`memberThreadsConsented` when the live manifest declares
+`permissions.memberThreads` beside the grant. The consent is bound to the
+message that was shown: the enable request carries `memberThreadsConsent`
+only when the confirmed dialog named chats with the user's Bots, and `enable_app` refuses
+(`session_approval_consent_required`) a consent without it while the manifest,
+read once under the record lock, declares the scope, so an update that adds the
+scope while the dialog is open is not covered by that click. A consented record without
+that key (one written by a host that ignored the scope) reads as pending when
+the live manifest declares both, so a host upgrade never lends the scope to a
+consent that did not cover it. `_session_approval_consent_unrecorded` reads the
+manifest even for an already-consented record, so a manifest that gains
+`memberThreads` without going through an update (edited in place, for example)
+leaves the app disabled at the next reconcile until the owner consents again.
+After `KIROCREW_READY`, `apps/session_consent.reconcile_after_ready`
 (a tracked background task started from `service_boot.run`) handles each such
 record, and any record that reads both enabled and pending, under
 `app_lifecycle_lock`: it re-checks the record, runs the disable route's bounded
@@ -3159,8 +3231,26 @@ normal consent dialog can create the missing binding. The exception is an app
 still installed with positively local provenance: the grant endpoint binds to
 that installed source, so the dialog could only record a local grant again.
 That refusal returns `app_trust_local_only` instead, so no consent dialog opens,
-and its prose names the route that does record the repository: uninstall
-keeping data, then install from the App Store. A still-installed app with
+and carries `trustRepository`: the normalized, credential-free coordinate of the
+row it resolved (the prose names no coordinate). The update route is what
+records that repository (`apps/local_trust_switch.py`):
+`POST /api/apps/{name}/update` with `source: "registry:<name>"` and that value as
+`trustRepository`, owner-only like every update. Under the app's lifecycle lock,
+before the install starts, it requires the name to hold exactly a local-only grant
+(name plus local marker, no binding) over positively local installed code and the
+proof to equal the freshly resolved install row, refusing otherwise with
+`app_trust_switch_not_applicable` or `app_trust_repository_mismatch` and writing
+nothing. It then writes the grant the consent dialog writes for a fresh install
+(binding set, local marker dropped), so no repository byte is fetched under the
+local grant. When the install fails or raises, the local marker is put back
+(only while the binding still names that repository) before the old app is
+restored, so its backend starts admitted. A failure before the take-down puts
+the grant back and then starts the old backend again, because the health watch
+can stop it while the repository grant does not cover its local code. The detail page's banner for this
+refusal opens the consent dialog on that repository and sends this request; the
+App Store's Update on a path install that a registry row offers a newer version
+of runs the registry update (the detail page's Update), never a folder re-copy.
+A still-installed app with
 positively local provenance retains migration compatibility; an unknown/fresh
 same-name local source does not inherit that old grant. The commit is deliberately
 not bound: a new pin in the same repository is the ordinary catalog update path
@@ -3176,7 +3266,9 @@ Writers: `apps/official_catalog.py` (`list_catalog_rows`, `inventory`,
 (`list_catalog_apps`, `_resolve_registry_row`, `_append_external_registry_apps`,
 `_detect_installed_probe`), `apps/registry_pipeline/checkout.py` (`_git_fetch_commit`),
 `dashboard/handlers/security_trusted_apps.py` (`api_trusted_app_grant`),
-`apps/routes_registry.py` (`handle_registry`), `apps/routes_listing.py` (`handle_list_apps`, `handle_get_app`), and
+`apps/local_trust_switch.py` with `apps/routes_install.py` (`handle_update_app`),
+`apps/routes_registry.py` (`handle_registry`), `apps/routes_listing.py` (`handle_list_apps`, `handle_get_app`),
+`website/src/pages/AppDetailPage.tsx` (the local-only banner), and
 `website/src/components/appstore/TrustAppModal.tsx`.
 
 ## 15. A registry's credential posture follows its index's change control
@@ -3795,12 +3887,13 @@ URL's host under its label and opens it in a new tab with
 **Where the detail page's code lives.** `website/src/pages/AppDetailPage.tsx` is the
 page and its only import path: it loads the app (`load()` resolves the art fields
 described here), holds the page's state, and renders the actions and the info
-cards. Two owners beside it never import it. `AppDetailPageArt.tsx` renders the
+cards. Three owners beside it never import it. `AppDetailPageArt.tsx` renders the
 art, `HeroBanner` and `ScreenshotGallery`, each with its local-art second chance and
 the same-origin gate on that fallback, so new work on the banner, the gallery or its
 lightbox goes there. `appDetailPageTypes.ts` holds the page's view model (`AppInfo`
 and the manifest and registry-row types it joins), which is where a new view-model
-field goes.
+field goes. `appDetailPageLabels.ts` holds the display words for the installed
+record's origin, resources and lifecycle values.
 
 **An INSTALLED app's art is served from its own install directory, not the blob
 proxy.** `GET /apps/{name}/art/{path}` (`handle_app_art_file`) reads the bytes
@@ -4637,7 +4730,8 @@ The boundary:
   provider that show's own frozen `link.card` controls, each fixed to that
   invocation (there are no card controls on `ctx`), so a late completion for an
   earlier hover names the earlier show and the dashboard drops it. Dismissal
-  (leave, scroll, Escape) retires the current invocation too, and a ready card
+  (leave, Escape, blur, or a scroll that moves the link before its card is
+  open) retires the current invocation too, and a ready card
   that was not yet visible is still sent `hide`, so a late `open` never shows a
   dismissed card. An unnamed text pattern is named by its declaration index before
   the grant filter runs, so a pattern waiting for approval never renames a later
@@ -5473,6 +5567,11 @@ slot another create path made first (ChatEmbed's own POST) carries neither.
   withdrawn, and each withdrawal is a SEL row (`<app>.worker_slot_trust`,
   outcome `revoked`).
 
+A grant an app holds with no lease, renewed by its own watchdog, goes through the
+declared worker auto-approve seam instead (section 36). The lease's own `trust=True`
+grant is not gated on that seam's declaration or approval: it is bounded by the lease
+TTL, the slot owner and the `SafetyOverride` ceiling only.
+
 Writers: `apps/worker_slots.py`. Tests: `test/test_apps_worker_slots.py`.
 
 ## 23a. A built-in's worker slot mode is a seam the built-in fills
@@ -5791,7 +5890,7 @@ records which module owns which part, so a change lands in its owner.
 | `bridges_agents.py` | Materializing an app's agents: the app MCP policy (`_apply_agent_mcp_policy`, `_apply_agent_prompt`), host-managed MCP references, user edits carried across a refresh, shipped agent templates, `_register_agents` / `_deregister_agents` and `purge_uninstalled_agent_residue` |
 | `bridges_skills.py` | `_register_skills`, `_deregister_skills` and the startup `reconcile_app_skills` |
 | `bridges_crons.py` | The app cron manifest (`load_app_cron_defs`), the manifest digest and the resync of a changed job, `register_app_crons_with_service`, deregistration, and the execution-driven disarm and reconcile passes |
-| `bridges_mcp.py` | Registering an app's MCP servers: `resolve_stdio_command` and its interpreter and launch-target rules, the `kirocrew` host-CLI pin, the live backend port rewrite, the unresolvable-command and secret-reference warnings, backendless deps provisioning, `_register_mcp_servers` / `_deregister_mcp_servers`, re-registration and scrub, and the legacy shared `mcp.json` scrub |
+| `bridges_mcp.py` | Registering an app's MCP servers: `resolve_stdio_command` and its interpreter and launch-target rules, the `kirocrew` host-CLI pin, the live backend port rewrite (its launch-target anchor is also what adoption's E10 asks of a pinned tree's stdio server), the unresolvable-command and secret-reference warnings, backendless deps provisioning, `_register_mcp_servers` / `_deregister_mcp_servers`, re-registration and scrub, and the legacy shared `mcp.json` scrub |
 | `bridges_register.py` | `register_app` / `deregister_app` with `RegistrationResult`, `refresh_app_agents` and `refresh_app_agents_if_enabled`, the manifest-upgrade prune, `reconcile_enabled_app_resources`, and dropping the session resume pointers an app's conversations held (`discard_app_session_pointers`) |
 
 Imports only point down, in the facade's `_OWNERS` order: sources, mcp_config, agents,
@@ -5907,67 +6006,128 @@ under `src/kiro_crew` outside `apps/builtins/`, and no `scripts/` file, imports
 name the package are a pinned list that may only shrink (see `aws-control.md`,
 "Repository boundary"). Its scans are the shared `test/core_app_independence.py`.
 
-### 30.1 A built-in's agent tool is the built-in's own data
+### 30.1 An app's agent tools are declared in its manifest and served by the app
 
-Some built-ins hand their agent work whose progress it must post back to one of the
-app's own backend routes. The agent cannot call that route itself: the gateway's app
-reverse proxy (`/apps/<app>/api/<route>`) needs a dashboard credential no agent session
-holds. The `kirocrew-core` MCP server holds the gateway's internal secret, so the tool
-runs there, and the gateway admits that one route to internal-secret callers.
+Some apps hand their agent work whose progress it must post back to the app. The agent
+cannot call the app itself: the app's routes need a dashboard credential no agent session
+holds. Ruling 2 of #26967 (comment 6713005850) settled where such a tool runs: app code
+never runs in the `kirocrew-core` MCP server, which holds the gateway's internal secret;
+app tools are MCP tools the app registers and serves from its own process.
 
-`kiro_crew/apps/builtin_agent_tools.py` is the seam. Any directory under
-`apps/builtins/` may ship an `agent_tools.py` holding one `AGENT_TOOLS` mapping of plain
-data: the app's installed name and its tools, each with a name, the model-facing
-description and `inputSchema`, the string fields a call is validated by, the route below
-`/apps/<app>/api`, which query parameters and body keys the arguments fill, the fixed
-body keys and the answer's length cap. The loader finds the files on disk, imports each
-once per process and caches the result. Three core tables read it, and none names an
-app:
+**The declaration.** An app's `app.json` may carry an `agentTools` block: one `route`
+below the app's own API, and up to 16 `tools`, each with a `name`, the model-facing
+`description`, an optional one-line `title`, the `inputSchema` and an optional
+`maxResultChars` (default 20,000, at most 60,000). `apps/manifest_agent_tools.py` owns
+the rules, and `AppManifest.validate` refuses an install that breaks one:
 
-| Reader | What it builds |
+- a tool name begins with the app's name, `-` read as `_`, and `_` (`design_tweak_`),
+  so an app names tools in its own namespace only;
+- the route is a plain lowercase path such as `agent-tools`: no scheme, host, query,
+  leading `/` or `..`;
+- an `inputSchema` uses only the subset the core enforces: `string` (with `enum` and
+  `maxLength`, default and ceiling 65,536), `integer` and `number` (with `minimum` and
+  `maximum`), `boolean`, and arrays of strings or integers (`maxItems`, default and
+  ceiling 256, item `maxLength`); `additionalProperties` may only be false, and
+  `required` names declared arguments. A bool is refused where an integer is declared,
+  as an argument or as an array item.
+
+The block is in `signing_payload` (a description is text every agent reads as an
+instruction, and the route decides where calls go), in `to_dict` and in the built-in
+discovery conversion, so a built-in's persisted `app.json` keeps it.
+
+**Which apps are read: first-party only.** The tools are listed under `kirocrew-core`,
+and the default agent's `allowedTools` grants `@kirocrew-core` as a whole server
+(`config/defaults.json`), so a call to a tool listed there is auto-approved with no
+permission prompt. Ruling 2 places the tool's code in the app; it does not give a
+third-party app core's auto-approval. So `apps/app_agent_tools.py` reads the block of an
+app only when it is first party, `execution.builtin_app_names()` (a shipped manifest
+declares the name AND the builtin owns the installed slot), and reads it from that
+shipped `app.json` (`execution.shipped_builtin_app_root`), never from the data-home copy.
+An installed or registry app's `agentTools` block, and a built-in's once its wheel copy
+is released by adoption, lists nothing: it still validates and installs, and the app can
+ship its own `mcpServers` entry, whose calls are approved one by one
+(`register_app_mcp_servers` strips its `autoApprove`). Listing such an app's tools needs a
+path that asks before each call (a server of its own outside `allowedTools`, or a
+per-tool approval); that is a maintainer's decision, not this seam's.
+
+**The readers.** The scan stats `<apps dir>/<name>/app.json` for every installed app and
+caches on each file's mtime and size and on the first-party set. It keeps a tool only
+when the app's whole block validates, and drops a name two apps both declare. Nothing
+in it names an app:
+
+| Reader | What it does |
 |---|---|
-| `mcp_tools/apps.py` | the descriptor in `schemas()`, the `TOOL_APPS` row that hides it while the app is off, and `HANDLERS[name]` = `builtin_agent_tool` |
-| `validation_parts/server_registries.py` | the `MCP_CORE_SCHEMAS` row, one `FieldSpec(name, str, ...)` per declared field |
-| `dashboard/server_internal_paths.py` | `/apps/<app>/api<route>` in `_MIXED_INTERNAL_API_PATHS` |
+| `mcp_tools/app_tools.py`, the last domain of `kirocrew-core` | `schemas()` names every tool a shipped first-party manifest declares, installed, released by adoption or neither (`app_agent_tools.shipped_tools`, read once per process with no release check, so this names-only build reads no config). It is the names-only build an app agent's deny universe reads, and that universe is fixed when the agent is materialized, so a tool is withheld from a scoped agent before its app is installed. `advertised()` lists the installed first-party apps' tools in `tools/list`, minus a readably disabled app's (the `apps.advertised` rule). Every name in `schemas()` is answered by one core handler, `app_agent_tool`, which refuses a tool no installed first-party app declares without posting |
+| `mcp_core._validate_args` | checks a call against the declared schema through the field engine every core tool uses (`app_tools.tool_schema`): strings sanitized and bounded, enums held, an undeclared argument refused |
+| `dashboard/handlers/app_agent_tools.py`, `POST /api/app-tools/call` | decides the call (below) |
 
-`builtin_agent_tool` is the one handler. It sends a required argument as its query
-parameter always and an optional one only when non-empty, URL-quoted with `safe=''`. It
-copies the declared body arguments that are non-empty after the fixed keys, posts
-through `mcp_core._post`, redacts the answer and cuts it at the cap. A declaration
-therefore chooses data and runs no code in the process that holds the secret. The load
-raises `ValueError` on a malformed row, never skips it: `app` must be the directory's
-installed name, a tool name must begin with the package name and `_`, a route must be a
-plain path, the `inputSchema` must advertise exactly the declared fields and mark exactly
-the required ones, and every forwarded argument must be declared. With no built-in
-declaring a tool, every reader adds nothing.
+A name any other `kirocrew-core` domain declares is never an app's: the domain drops it,
+so a core tool keeps its name, its schema and its handler.
 
-Only shipped package directories are read, so a declaration is reviewed in this
-repository; an installed or registry app cannot declare one. Design Tweak's
-`design_tweak_update_thread` is the one declared tool.
+**The call.** `app_agent_tool` posts `{"tool", "arguments"}` to `POST /api/app-tools/call`,
+one fixed core route in `_STRICT_INTERNAL_API_PATHS`. Its handler re-asserts
+`internal_auth`, takes the app from the manifest that declares the tool (never from the
+request), checks that the arguments are exactly what validating them against the
+declaration returns (so the bytes forwarded are the bytes checked), and refuses a
+disabled app. It then hands the request to the dispatcher that already serves that app:
+the signed reverse proxy for a process-backed app (`/apps/<app>/api/<route>`, principal
+`agent-tool`, the gateway's own credentials stripped, handed the body the handler
+already read: `request.can_read_body` is False once a payload is at EOF), or the route registry for an app
+whose routes run in the gateway (`/api/apps/<app>/<route>`, a route the app registered
+through `RouteRegistry` and never a core route; a built-in that still mounts its routes
+on the gateway router directly is not reached this way). The app's answer is relayed unchanged; `app_agent_tool` redacts
+it and then cuts it at the tool's `maxResultChars`, so a cut never splits a credential.
+No app route is admitted to internal-secret callers, so the one path in is the declared
+route, with declared arguments.
 
-`test/test_builtin_agent_tools.py` pins the seam with synthetic declarations: empty by
-default, every reader fed from the one load, the handler's URL, body and capped answer,
-and each malformed row. `test_mcp_call_site_auth_coverage.py` resolves the handler's
-call site to every declared URL, so the internal-path grant check still covers it.
-`test/test_core_design_tweak_decoupling.py` is Design Tweak's gate, on the shared
-`test/core_app_independence.py` scans: no core module or script imports the app, and the
-only core strings naming it are the security-posture redaction rows for its three
-backend modules, which leave with those files. The UI half is
-`website/src/apps/design-tweak/designTweakBoundary.test.ts`: only `builtinRegistry.ts`
-imports the app's directory, and the app's tests live in it.
+| Refusal | Code |
+|---|---|
+| no `internal_auth` | 403 `loopback_only` |
+| a body other than exactly `{tool, arguments}` | 400 `invalid_json` |
+| a tool no first-party app declares | 404 `unknown_tool` |
+| arguments outside the declaration, or not in validated form | 400 `invalid_arguments` |
+| the declaring app is not enabled | 403 `app_not_enabled` |
 
-Ops Mission Control's `ops_mission_control_api` is not a declared tool: it is a GET/POST
-dispatcher over an allowlist of the app's `/api/apps/ops-mission-control` routes, with a
-query, a JSON body and a per-operation channel deny, and this seam carries one POST route
-under the app proxy. The tool therefore stays core (`mcp_tools/apps.py`, its validation
-row, its internal paths and its `channel.py` deny), unchanged for users, until an
-app-contributed tool seam can carry it under the same name and permission key.
-`test/test_core_ops_mission_control_decoupling.py` is that app's gate, on the shared
-scans: no core module or script imports it, and the core strings still naming it (that
-tool, the `webhooks` source id, the sandbox leaf tables, the security-posture rows, its
-packaged skill id and two docs-lint rows) are a pinned list that may only shrink (see
-`ops-mission-control.md`, "Repository boundary"). The UI half is
-`website/src/apps/ops-mission-control/opsMissionControlBoundary.test.ts`.
+**One core table still names tools one by one.** The display-title table
+(`data/mcp_tool_titles.json`) is read by the chat's tool-call label on both sides, and
+a remote session's whole-`@kirocrew-core` grant is expanded per tool from it
+(`acp/runtime_remote_workspace._without_local_only_grants`), where every row is
+reviewed remote-safe or local-only. A declared tool with no row there shows its
+humanized name in the chat and is not granted to a remote session by a whole-server
+grant; its descriptor still carries its own `title`.
+
+**Level.** The seam is App Kit seam level 2 (`APP_SDK_LEVEL`). A host below it reads
+`agentTools` as an unknown key, so an app that declares tools installs there without
+them.
+
+Design Tweak's `design_tweak_update_thread` is the one shipped tool on the seam: its
+`app.json` declares it, with the description and schema it always had plus each string's
+`maxLength` (200, 200, 2,048), and its backend serves `POST /api/agent-tools` as the same
+`/thread` write the tool always made. Its row in the title table stays, so its chat label
+and its remote-session grant are unchanged; the row leaves with the app. `test/test_app_agent_tools.py` pins the seam with
+synthetic apps, including every way a call beyond the declaration is refused before it
+reaches the app; `src/kiro_crew/apps/builtins/design_tweak/tests/test_agent_api_tool.py`
+pins Design Tweak's declaration and route. `test/test_core_design_tweak_decoupling.py`
+is Design Tweak's gate, on the shared `test/core_app_independence.py` scans: no core
+module or script imports the app, and the only core strings naming it are the
+security-posture redaction rows for its three backend modules, which leave with those
+files. The UI half is `website/src/apps/design-tweak/designTweakBoundary.test.ts`.
+
+Ops Mission Control's `ops_mission_control_api` and Issue Radar's three tools still run
+in the core (`mcp_tools/apps.py`, their validation rows, their internal paths and the
+`channel.py` deny), unchanged for users. They move onto this seam when each app serves
+its own route: for Ops Mission Control the GET/POST dispatcher over its allowlist and
+the per-operation channel deny; for Issue Radar the three tools, the
+strictly-identified crew session the crew tools resolve, and the `radar` crew-log fold.
+`test/test_core_ops_mission_control_decoupling.py` and
+`test/test_core_issue_radar_decoupling.py` pin those rows (see `ops-mission-control.md`
+and `issue-radar.md`, "Repository boundary").
+
+Writers: `apps/manifest_agent_tools.py`, `apps/manifest.py`, `apps/discovery.py`,
+`apps/app_agent_tools.py`, `mcp_tools/app_tools.py`, `mcp_tools/__init__.py`,
+`mcp_core.py` (`_validate_args`), `dashboard/handlers/app_agent_tools.py`,
+`dashboard/server_runtime/mcp_routes.py`, `dashboard/server_internal_paths.py`,
+`apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`.
 
 ## 31. A marketplace app installs disabled and is trusted by its listing
 
@@ -6094,6 +6254,140 @@ Writers: `apps/app_sdk_level.py`, `apps/route_registry.py`, `apps/context.py`,
 `website/src/pages/chat/page/launchIntake.ts`, `website/src/appNav.ts`,
 `website/src/components/appstore/appManifest.ts`.
 
+## 32a. App Kit seam level 2: agent turns and untrusted text
+
+Level 2 (`APP_SDK_LEVEL = 2`), alongside `ctx.lifecycle` (§32b), publishes what a
+built-in that drives background agents (Meetings) reached privately: the session
+manager read off
+`request.app["state"]`, `llm_helpers.stream_and_collect` with its approval policy,
+Shared Crew admission, and the injection screen, neutralizer and fence markers.
+Nothing in either seam names an app, and neither widens the sandbox or governance:
+each call goes through the same spawn ceiling, gate, admission and neutralizer a
+core surface uses.
+
+**Agent turns** (`apps/agent_turn_sdk.AgentTurnSDK`, `ctx.turns`). Built only when
+the manifest declares `permissions.agentTurns` as the literal `true` and the
+gateway's Application is wired in (`turn_host`, passed by both context builders,
+like `crewmate_host`); otherwise `None`. `run(key, text, *, agent, timeout_secs,
+cancel_ack_secs)` runs one turn under `ToolApprovalPolicy.HOOK_BASED` with
+`app=<ctx.name>`, so the PreToolUse gate resolves `POLICY ∩ PROFILE` for this app,
+and admits it through `run_admitted_or_raise(automation=True,
+operation=BACKGROUND)`. Session acquisition is outside the budget; past it, or on
+the caller's cancellation, the provider is asked to cancel and the session is reset
+when it does not acknowledge, and the turn lease is always released, never the
+session. `run_oneshot(prompt, *, label)` is the tool-less pattern
+(`kirocrew-lite`, `REJECT_ALL`, released and destroyed). `has_session(key)` reads
+liveness. No method takes an app name, an approval policy or an admission class.
+A key must be `<app>-<id>` with *id* 1 to 400 of `[A-Za-z0-9._-]`, checked before
+the session manager is touched, so an app cannot address a person's chat slot or a
+core session. The separator is a plain `-`, so app `x` can spell a key of app
+`x-y`: the check is attribution, not a boundary against the app's own in-gateway
+Python, which could reach the manager anyway. The managers are read off the
+Application on every call, so a context built before the gateway state exists
+works once it does. The agent a session starts as is the app's choice (Meetings
+lets the owner configure any agent per meeting), and the operator's
+`capabilities.spawn` row bounds that choice: before any session is acquired, `run`
+and `run_oneshot` ask `subagent._vet_spawn_governance` under `app=<ctx.name>`
+whether spawning is on for the app and whether the agent is in its `agents` scope,
+the same two questions `SpawnSDK` and the workflow `ctx.agent()` step ask. An
+empty `agent` is resolved first to the template a plain session runs
+(`dispatch_kiro_agent(default_template(...))`, off the loop), `run_oneshot` asks
+about `kirocrew-lite`, and a default that cannot be resolved is a refusal. The
+session is then opened BY that name (`get_or_create(key, agent=<name>)`, never
+`None`): a cold start with a `None` agent launches the literal `kirocrew`
+(`providers/acp_runtime_start.py`), not `agent.default_agent`, so passing the name
+is what makes the agent that starts the agent the ceiling was asked about. Once
+the lease is held, the agent the turn carries is read back from the session
+manager's record (`get_agent(key)`) on every path, `run` and `run_oneshot` alike:
+a reused session answers with the agent it started as, which is asked about again
+when it differs from the one just asked, and a session whose record names no agent
+is refused; the lease is released on every refusal. So neither a changed default nor a different `agent` argument puts a reused
+session outside a narrowed scope. The hook gate is handed that recorded agent
+(`stream_and_collect`'s `agent=`), so `resolve_active_scope`'s task bind is the
+running agent's and a later call's `agent` argument cannot pick a looser profile.
+A refusal is
+SEL-audited as `agent_turn` (`spawn_sdk._audit_spawn_denied`) and raises
+`AgentTurnRefused`, a `PermissionError`. With no policy and no profile both
+questions permit, so an ungoverned host runs as before. Every tool the agent calls
+is still gated.
+
+**Untrusted text** (`apps/untrusted_text_sdk.UntrustedTextSDK`, `ctx.untrusted`).
+Always present, built in `AppContext.__post_init__` from `name`, because it adds no
+reach and an app refused it would ship its own patterns. `flagged` is
+`security.contains_injection`, `neutralize` is `context.neutralize_untrusted_text`,
+and `fence(body, *, kind)` returns `open\n<neutralized body>\nclose` for a kind in
+the closed `UNTRUSTED_FENCE_KINDS` (`"calendar"`), whose markers come from
+`context_assembly/markers.py` so every other fence neutralizes them. Neutralizing a
+body whose fields were already neutralized returns it unchanged, so a caller that
+screens field by field gets the same bytes. `record_dropped(surface, ...)` calls
+`audit_injection_dropped` with surface `<ctx.name>_<surface>` and agent
+`<ctx.name>`; a surface outside `[a-z0-9][a-z0-9_]{0,63}` is recorded as
+`<app>_unnamed`, and the session key label is capped at 256 characters.
+
+**The built-in on the seam.** A built-in has no context (its routes are registered
+on the Application directly), so Meetings constructs the same classes with its own
+name: `domain/session.dispatch_to_agent` is one `AgentTurnSDK.run`,
+`translate.run_oneshot_translation` is one `run_oneshot(label="translate")`, and
+`build_meeting_context` screens, neutralizes, audits and fences through one
+module-level `UntrustedTextSDK`. Keys (`meetings-<agent>-<meeting>`,
+`meetings-translate-<hex>`), the audit surfaces (`meetings_calendar_<field>`), the
+fenced bytes, the cancellation and release order and the admission class are
+unchanged; its agents now answer its `capabilities.spawn` row like any app's. Its
+manifest declares `agentTurns`, so an installed copy gets the same
+seam from `ctx.turns`. The session manager it hands the SDK is still the one its
+routes read off `request.app["state"]`.
+
+**Not here.** Spec Builder's turns are dashboard chat-slot turns (`_run_chat`, the
+slot queue, restore and archive), which need an app-owned chat slot API rather than
+a background turn. Protected subdirectories (Meetings' `edits/` and `notes/`, Spec
+Builder's decision record under `trust/`) stay core rows: a manifest-declared HIDDEN
+leaf under the app's own data directory is the credential-mask seam, and a
+write-only fence an app declares for itself is not yet an approved seam.
+
+Writers: `apps/agent_turn_sdk.py`, `apps/untrusted_text_sdk.py`, `apps/context.py`,
+`apps/manifest_sections.py`, `apps/hooks_integration.py`, `apps/lifecycle.py`,
+`apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`,
+`apps/builtins/meetings/app.json`, `apps/builtins/meetings/backend/domain/session.py`,
+`apps/builtins/meetings/backend/domain/translate.py`. Tests:
+`test/test_app_agent_turn_sdk.py`, `test/test_app_untrusted_text_sdk.py`.
+
+## 32b. `ctx.lifecycle`: an app's own switch and admission (seam level 2)
+
+`AppContext.lifecycle` is part of level 2 (§37 raises `APP_SDK_LEVEL` to 3): an
+`AppLifecycleSDK` (`apps/lifecycle_sdk.py`) bound to `ctx.name`, the public form of
+the `apps.manager.is_app_enabled` / `app_lifecycle_lock` pair that the auto-improvement,
+auto-research and aws-control built-ins read for their own name (auto-improvement's
+external copy still reaches that pair by private name through its `_host`).
+
+- `is_enabled()` is `apps.manager.is_app_enabled(ctx.name)`: blocking, read-only,
+  no record reads `False`.
+- `admit(check=None, *, timeout)` takes `apps.manager.app_lifecycle_lock(ctx.name)`,
+  reads the switch and, when on, runs `check` through `asyncio.to_thread`, all inside
+  one `asyncio.wait_for` deadline. The deadline is clamped to
+  `MAX_ADMIT_TIMEOUT_SEC` (30s, the lifecycle hook deadline of §7.1); a
+  non-number, a bool, zero, a negative or NaN uses `DEFAULT_ADMIT_TIMEOUT_SEC`
+  (10s). Past it the answer is `Admission(admitted=False, timed_out=True)` and the
+  lock is free; a check still running on its thread is not interrupted and its
+  result is dropped. An exception from `check` propagates after the lock is
+  released. Because the disable path holds the lock around the app's
+  `on_shutdown`, a call from that hook times out rather than deadlocking.
+
+Scope is identity, not a manifest grant: no member takes an app name, so the SDK
+reads only its own record and contends only on its own lock, and the lock itself
+is never handed out, so an app cannot keep its own disable, update or uninstall
+waiting past the clamp. It is cooperative, like `ctx.audit`: in-process hook code
+could still import the manager. No permission gates it, because it adds no reach;
+`build_app_context` populates it for every app, and a hand-built context leaves it
+`None` rather than invent a name. The wheel's built-ins keep their direct calls:
+their `register_routes(app)` handlers receive no context, so moving them is each
+app's own repository's change, made against `ctx.lifecycle`. No core row names a
+built-in for this, so no decoupling gate changes.
+
+Writers: `apps/lifecycle_sdk.py`, `apps/context.py`, `apps/app_sdk_level.py`,
+`website/src/app-sdk/sdkLevel.ts`. Tests: `test/test_app_lifecycle_sdk.py`,
+`test/test_app_sdk_level_mirror.py`. App authors: `docs/app-kit/api-reference.md`
+"App lifecycle".
+
 ## 33. Former built-in adoption
 
 A built-in app that moves to its own repository keeps working for everyone who
@@ -6104,6 +6398,16 @@ pinned repository tree, keeping `data/`, `.app_secret`, the approved grants and
 names no app anywhere in this machinery: the pin table is data, and
 `test_builtin_adoption_pins.py` fails on a shipped built-in name in any adoption
 module.
+
+**What the swap keeps is `data/`, so a built-in keeps its state there before it
+is pinned.** Everything else in the record's directory is retired with the old
+tree, and the swap runs at a start before any route registers, so a built-in that
+kept a file beside `app.json` copies it into `data/` itself, from a startup hook
+that runs whether or not the app is enabled, in a release before its pin row is
+added; core grows no per-app carry list. Nothing at the swap enforces that order:
+a user who never starts that release loses the file, so the app's pin row lands
+with a refusal or carry at the swap for it. Research Lab's campaigns database is
+the worked case (knowledge.md § 7); its test fails while the app is pinned.
 
 **Pins.** `apps/adoption-pins.json` (packaged; each row is the output of
 `scripts/adoption_pin.py compute`, re-checked with `adoption_pin.py verify`, and the
@@ -6227,7 +6531,10 @@ consumes), it is on hold (`blocked`), or it switches in the background. Only the
 Per pin, for a builtin-owned record, it fetches the commit with the catalog's
 credential-free `strict`-sandbox git clone into `app-sources/<name>/`, falling back
 in the same attempt to the codeload archive (redirects refused, 60 s, 64 MiB cap,
-`archiveSha256` checked) when git is absent or the network fails. Both locations
+`archiveSha256` checked) when git is absent or the network fails. The verified
+archive is renamed into place through `replace_with_retry`; a rename that still
+fails is the transient `stage_io_failed` (`disk_full` for ENOSPC), never a network
+code, since the download itself succeeded. Both locations
 come from the pin (`builtin_adoption_fetch.staged_location`), and the clone's
 moved-aside checkouts are deleted off the event loop. The staged
 artifact is copied into a throwaway owner-only directory, its `treeSha256` checked
@@ -6270,12 +6577,45 @@ after STAGE is never executed), then:
 |---|---|---|
 | E7 identity, version (= pin, = wheel, not below the record) | `manifest_identity_mismatch`, `version_mismatch` | never for this pin |
 | E8 no root build input or `.gitattributes` | `tree_requires_build` | never |
-| E10 no `mcpServers`, `ui.overlays`, `defaultEnabled: true`, nor a name a core table keys on | `pinned_feature_unsupported` | never |
+| E10 no `ui.overlays`, `defaultEnabled: true`, nor a name a core table keys on; an `mcpServers` entry only as a stdio server started from the tree within the wheel copy's declaration (below) | `pinned_feature_unsupported` | never |
 | E3/E5 host version, `APP_SDK_LEVEL`, `platform.os` | `host_too_old`, `host_sdk_too_old`, `platform_mismatch` | every STAGE pass |
 | E4 admission (`action="update"`, no exemption) | `admission_denied` | every STAGE pass |
 | E9 permission parity: nothing held back, no new `sessionApproval` | `permission_widening` | every STAGE pass |
 | E6 trust: a grant to another repository is never overwritten | `trust_conflict`, `trust_overlay_owned`, `config_unreadable` | every STAGE pass |
 | a transient failure (the config or the disk) | `config_unreadable`, `disk_full` | every STAGE pass, from the kept staged artifact |
+
+**A stdio MCP server through adoption** (`apps/builtin_adoption_mcp.py`,
+`adopted_mcp_servers_refusal`, called from the E10 check). A pinned tree may declare
+`mcpServers` only as stdio servers it starts from its own files: a bare `python`,
+`python3` or `py` `command` (`.exe` allowed) and `args` whose launch target is a
+relative `.py` path naming a file inside the tree. That is exactly the shape
+`resolve_stdio_command` anchors to an installed app's root ("An app's own `.py`
+launcher" in the manifest reference): the check asks the same
+`bridges._resolve_app_launcher_arg`, so a tree is accepted only when its server will
+register from the adopted root. Everything else runs code the pin's `treeSha256` does
+not cover and is refused: `-m` (it would run the released wheel package or another
+installed module), `-c`, the `kirocrew` host CLI, a PATH binary, a command or launch
+target carrying an absolute path, a file outside the tree, a missing file, and any
+`url` (an HTTP server is not carried). The wheel built-in's own `mcpServers` is the
+ceiling, never more: no server name it does not declare, no `autoApprove` verb it does
+not list (a wildcard it does not list included), no `env` entry it does not set with the same value (a value is a launch input too: `PYTHONPATH` or `PYTHONSTARTUP` would point the server at code outside the tree), a server
+it ships `disabled` stays disabled, and no field beyond `command`, `args`, `env`,
+`autoApprove` and `disabled`. Narrower is accepted, since it only removes reach. With no
+readable wheel manifest every server is refused. After the swap the record is an
+ordinary registry app, so the boot reconcile re-registers the server under the same
+`<app>:<server>` key through `_register_mcp_servers`, with the gateway's own
+interpreter, and it is spawned, sandboxed and governed like every other registry app's
+stdio server; nothing here changes the sandbox, the tool gate or the `autoApprove`
+strip. Not carried by this check: the gate's app-own-server auto-approve, which reads
+`builtin_app_mcp_servers` and so stops covering an adopted record, so its calls would
+start asking for approval on a governed host (where the `autoApprove` strip removes
+the local list) and on a harness that relies on the PreToolUse gate. That would change
+behaviour for the built-in's current users, so no pin may name a built-in whose wheel
+manifest declares `mcpServers` until the gate trust follows an adopted record:
+`test_no_shipped_pin_names_a_built_in_that_ships_an_mcp_server` fails on such a pin,
+and the change that carries the trust removes it. Pinned by
+`test/test_builtin_adoption_mcp.py`, including registration before and after an
+adoption.
 
 Then ONE trust-writer transaction (`agent_config_writer.mutate_trust_settings`)
 writes the grant exactly as `default_installs._grant` does (`apps_trusted`,
@@ -6424,8 +6764,8 @@ control for (wider access, another platform, a failed verification) says the mov
 on hold, never "until then".
 
 Writers: `apps/builtin_adoption.py`, `apps/builtin_adoption_apply.py`,
-`apps/builtin_adoption_checks.py`, `apps/builtin_adoption_fetch.py`,
-`apps/builtin_adoption_pins.py`, `apps/builtin_adoption_state.py`,
+`apps/builtin_adoption_checks.py`, `apps/builtin_adoption_mcp.py`,
+`apps/builtin_adoption_fetch.py`, `apps/builtin_adoption_pins.py`, `apps/builtin_adoption_state.py`,
 `apps/builtin_adoption_markers.py`, `apps/manager_adopt.py`,
 `apps/agent_config_writer.py`, `apps/routes_listing.py` (the released 404), `apps/adoption-pins.json`, `testing/harness.py`,
 `scripts/adoption_pin.py`. Tests: `test/test_builtin_adoption_*.py`,
@@ -6502,6 +6842,286 @@ Writers: `apps/builtin_host_grants.py`, `apps/bridges_agents.py`,
 `apps/agent_template_values.py`, `apps/builtins/dev_fleet/host_grants.py`,
 `apps/builtins/pptx_maker/agent_placeholders.py`. Tests:
 `test/test_app_agent_template_values.py`.
+
+## 35. Desktop window host: app-declared windows and shortcuts, no app code in the shell
+
+An app reaches the Electron desktop shell only through its manifest `desktop` block.
+The shell's window host serves that block for every app and names none: it never
+imports or runs app code in the main process. This is the seam a desktop app such as
+Mochi or Crew Companion moves onto (owner ruling, #26967, 2026-11-07, item 5).
+
+**The declaration.** `desktop.windows` (1 to 4) and `desktop.shortcuts` (0 to 4).
+A window has an `id` (`^[a-z][a-z0-9-]{0,31}$`), an `entry` (a `.js`/`.mjs` path under
+the app's `ui/` directory, the base `contributes.panelTabs[].entry` uses, contained
+against the app root at install), a `kind` and optional `openOnEnable`. The kinds are a
+closed set. An `overlay` covers the display under the cursor: frameless, transparent,
+always on top, on every workspace, invisible to screen capture, non-focusable outside
+Windows, and click-through except over the hit regions its page reports. A `panel` is a
+frameless always-on-top window of a declared `width` (160 to 1600) and `height` (120 to
+1200) at `bottom-right`, `top-right` or `center` of that display's work area, optionally
+`transparent`. A shortcut has an `id`, an `accelerator` and the `window` it is
+delivered to. The accelerator must hold two different modifier keys on every
+platform (counted per platform: on macOS `CommandOrControl`, `Command` and `Super` are
+one key, elsewhere `CommandOrControl` and `Control` are), so at least one is not Shift,
+and one letter, digit, F-key, arrow or Space, so no app can take a single-modifier
+chord such as copy or paste; two spellings of one chord are one chord.
+Anything else is an install refusal (`apps/desktop_manifest.py`), the block is in
+`signing_payload`, and built-in discovery keeps it. The shell re-checks every rule
+(`website/electron/app-window-host-rules.js`) and drops a declaration it refuses whole,
+because it must not trust a gateway of another version.
+
+**The lifecycle.** `app-window-host.js` runs a 5-second reconcile on `/api/apps` with
+the dashboard window's credential chain, the same answer shape Crew Companion's loop
+reads: only an enabled app the gateway did not skip at boot is served. It opens each
+`openOnEnable` window, registers each shortcut, and closes and releases everything for
+an app that is disabled, gone, or whose declaration changed. A probe that is refused is
+re-resolved once; one that cannot be answered leaves every window and shortcut as it is.
+An update install suspends the host with Crew Companion and resumes it if the install
+does not proceed. A shortcut is never given to an app when the shell's own owners
+(the summon hotkey, Mochi) are configured for it, held right now or not: each records
+its configured chords in `website/electron/shell-shortcut-reservations.js` (Mochi's
+even while it is disabled, the summon hotkey's on every rebind), the host refuses a
+reserved chord, and a reservation of a chord an app holds releases it synchronously,
+before the owner's own `register()` runs. A chord another app or another program holds
+at that moment is not taken either: the app holding a chord keeps it for as long as it
+still declares that binding, whatever order the app list arrives in, and an app enabled
+later that declares the same chord gets it only once the holder lets it go. Each
+refusal is logged once. A press opens its
+window if it is closed and delivers the id once the page is ready. A panel takes focus
+only when a user action opened it (a shortcut, or `open()` from another of the app's
+windows); one opened for `openOnEnable` is shown inactive, and an overlay never takes
+focus unless its page asks.
+
+**The window.** Each window is created by the host with `contextIsolation`, `sandbox`,
+no Node, no webview, `app-window-preload.js` as its preload, window.open denied, and
+navigation and redirects pinned to its own document: the host's
+`/popout/desktop/<app>/<id>` route on the gateway origin. `main.tsx` renders that path
+with `website/src/desktopWindow/DesktopWindowRoot.tsx` instead of the dashboard: it
+requires the shell bridge naming that app and window, reads the app row, and mounts the
+declared `entry` through `AppHost` (§18) with `onFailure`, so a bundle that fails or
+throws renders nothing and closes the window. A browser tab on the same path has no
+bridge and renders nothing. A window is shown only when its page calls `ready()`, and a
+main-frame error document or transport failure is latched hidden (§6) until a later
+answered tick reloads it. A crashed page is closed; an `openOnEnable` one is reopened at
+tick cadence.
+
+**The bridge.** The page gets `window.kirocrewDesktopWindow`: `level` (1), `app`,
+`window`, `kind`, `ready()`, `close()`, `open(id)`, `setHitRegions(rects)`,
+`setFocusable(bool)` and `onShortcut(cb)`. The identity is informational: the host
+resolves every message to the window that sent it, from its main frame, still showing
+its own document, and acts only within that window's own app declaration. A page can
+open only a window its own app declares, shape (hit regions, focus) only an overlay, and
+nothing from a sender the host did not create. Hit regions are at most 16 finite boxes
+in page pixels at the page's zoom; anything else leaves the overlay click-through.
+
+**Levelling.** The seam belongs to the desktop shell, which a browser-only host never
+offers, so it is versioned by the bridge's own `level` rather than `APP_SDK_LEVEL`: an
+app feature-detects the bridge, and a gateway that predates the block shows the shell
+no declaration, so nothing opens.
+
+**What still runs in the shell.** Mochi and Crew Companion keep their main-process
+windows until each moves onto this seam (§9).
+`website/electron/test/app-window-host-independence.test.js` pins the host free of
+every built-in name and of app-owned shell code, and pins the app-owned shell
+directories and `main.js` requires as rows that only shrink.
+
+Writers: `apps/desktop_manifest.py`, `apps/manifest.py`, `apps/discovery.py`,
+`website/electron/app-window-host.js`, `website/electron/app-window-host-rules.js`,
+`website/electron/app-window-preload.js`, `website/electron/main.js`,
+`website/src/desktopWindow/desktopWindowTarget.ts`,
+`website/src/desktopWindow/DesktopWindowRoot.tsx`, `website/src/components/AppHost.tsx`,
+`website/src/main.tsx`. Tests: `test/test_app_manifest_desktop.py`,
+`website/electron/test/app-window-host.test.js`,
+`website/electron/test/app-window-host-rules.test.js`,
+`website/electron/test/app-window-preload.test.js`,
+`website/electron/test/app-window-host-independence.test.js`,
+`website/src/desktopWindow/desktopWindow.test.tsx`,
+`website/src/test/AppHostCoverage.test.tsx`.
+
+## 36. An app's worker auto-approve grant is declared, its own, and under the ceiling
+
+An app that runs an agent session with nobody watching (Issue Radar's unattended crews)
+needs that session's tool calls approved without a person clicking. The grant behind it
+is a `SafetyOverride` scoped grant on the slot's `_trust_scope`, which
+`chat_turn/tool_approval._slot_is_trusted` re-checks on every approval and which is never
+cached as a session policy (section 23). `apps/worker_auto_approve.py` is the App Kit
+seam for such a grant held without a worker-slot lease, and it names no app. It is not
+the only path to one: a section 23 lease taken with `acquire_worker_slot(trust=True)`
+mints the same kind of grant on its leased slot with no manifest declaration, no owner
+approval and no `revoke_app` tracking, so the guarantees below are this seam's, not the
+platform's.
+
+- **Declaration.** `permissions.workerAutoApprove: true` (the literal `true`; anything
+  else declares nothing). `build_app_context` populates `ctx.auto_approve`, a
+  `WorkerAutoApprove(app)`, only for a manifest that declares it. The flag reaches the
+  hook context as declared: `approved_manifest_permissions` filters only the entry-list
+  families, and every `hold` reads the owner's approval itself. A built-in whose
+  routes hook takes no context builds the same object itself; the checks are the same.
+- **Operator-visible.** The trust prompt (`TrustAppModal`) shows it in its own box
+  beside `sessionApproval`, from the installed manifest or from the official catalog's
+  pre-install projection (`official_catalog._disclosed_permissions_manifest`). The app's
+  detail page lists it with the other permissions, and the CLI install summary
+  (`permissions.format_permissions_summary`) names it.
+- **Approved like an API path.** It is the `workerAutoApprove` grant family (one entry,
+  `ownSlots`) of the app's approved-grants file, registered through
+  `point_grants.register_permission_grants`. An install approves what it declares; an
+  update or re-registration that ADDS it is held back, the row's
+  `workerAutoApproveGrant` reads `{approved: false, staged: true}`, and the detail
+  page's "Approve new permissions" sends `grantsConsent.workerAutoApprove = ["ownSlots"]`.
+  A built-in stores no approved-grants file, so its packaged declaration is approved.
+- **Re-read on every grant.** `app_holds_worker_auto_approve(app)` reads the live
+  manifest, the approval and the record's `enabled` (in that order), and fails closed.
+  `hold` checks it before the mint and again after it, so a disable that lands between
+  the two leaves no grant.
+- **Only the app's own slots.** `hold(slot, name, ttl_secs=...)` refuses a slot whose
+  `_app` is not the app (another app's, a person's, a cron job's) and a slot already
+  carrying another holder's scope. `release_slot` clears only the app's own slot, and
+  deactivates a scope only inside the app's namespace.
+- **Only the app's own scopes.** The key is `app:<app>:grant:<name>:autoapprove`, built
+  by the seam from a name of 1-128 `[A-Za-z0-9_.-]` characters (first alphanumeric), so
+  an app can neither mint, renew nor revoke a task run's, a person's or another app's
+  grant. Section 23's leases use `app:<app>:worker:<key>:autoapprove`, a different key.
+- **Never above the ceiling.** `hold` is `SafetyOverride.activate_scoped` (or a
+  `renew_scoped` slide of a live grant), so the `approval_modes` deny of `yolo` refuses
+  it, the activation is SEL-audited fail-closed under source `app:<app>` before it
+  exists, the TTL must be in `(0, 24h]` and a slide never passes the ceiling counted from
+  activation (or `yolo_max_seconds`). It replaces only the approval PROMPT: the
+  `POLICY ∩ PROFILE` PreToolUse gate still runs on every call.
+- **Revoked with the app.** `revoke_app(app)` deactivates every scope the app was
+  granted in this process. It runs first in `teardown.notify_app_disabled` (before the
+  app's own disable hook, so a failing or stalled hook cannot keep a grant), and again,
+  revoke-only, wherever the host-exec grant is revoked: `_write_installed` of a disabled
+  record, `disable_app` of an already-disabled one, and `uninstall_app`.
+
+A misused call (a malformed name, a TTL outside the bound) raises `ValueError`; every
+refusal returns `False` and leaves the slot on interactive approval. Revocation needs no
+permission. The seam adds no reach an app's in-gateway Python lacks: it makes the grant
+declared, shown, approved, bounded and revoked with the app.
+
+Issue Radar declares it and holds its crews' grant through it
+(`crew_runtime_session._GRANTS`, scope name `crew-<id>`), with the same 900 s TTL slid
+each watchdog cycle, the same re-mint at the ceiling and the same revocation paths.
+`apps/builtins/issue_radar/tests/test_auto_approve_seam.py` pins the declaration, that
+no backend module imports `kiro_crew.safety_override`, and that the built-in registered
+as at startup passes the seam's own gate with nothing stubbed. Its audit trail moved
+with it: the SEL source is `app:issue-radar` (was `issue-radar-crew`) and the scope key
+`app:issue-radar:grant:crew-<id>:autoapprove` (was `crew:<id>:autoapprove`).
+
+**Seam level.** `APP_SDK_LEVEL` is unchanged; an app feature-detects the seam with
+`getattr(ctx, "auto_approve", None)`, which is `None` on an older host and for an app
+that does not declare it.
+
+Writers: `apps/worker_auto_approve.py`, `apps/point_grants.py`, `apps/context.py`,
+`apps/manifest_sections.py`, `apps/manager_lookup.py`, `apps/manager_records.py`,
+`apps/manager_activation.py`, `apps/manager_uninstall.py`, `apps/teardown.py`,
+`apps/official_catalog.py`, `apps/permissions.py`,
+`website/src/components/appstore/TrustAppModal.tsx`, `website/src/pages/AppDetailPage.tsx`.
+Tests: `test/test_apps_worker_auto_approve.py`, `test/test_catalog_inventory.py`,
+`website/src/test/TrustAppModalWorkerAutoApprove.test.tsx`,
+`website/src/test/AppDetailPageCoverage.test.tsx`.
+
+## 37. An app's credential files are masked by its own manifest (seam level 3)
+
+An app that keeps a credential on disk declares it in `app.json`:
+`"credentialMasks": ["secrets.json", "tokens/oauth.json"]`. Each entry is a path
+relative to the app's data directory, so it names `apps/<name>/data/<entry>` under the
+data home. Owner ruling of 2026-11-07 on #26967: an app may declare leaves under its OWN
+data directory that the sandbox hides and refuses hard links on; tightening only, never a
+widening, and no path outside the app's data directory.
+
+**Grammar** (`apps/credential_masks.py`, `entry_error`). A relative POSIX path of at most
+240 bytes and 16 segments, with no empty, `.` or `..` segment, no backslash, colon,
+control character or lone surrogate (a filesystem call cannot encode one, so it would
+raise in the alias pass), and no segment that starts or ends with a space or ends with a dot
+(Windows drops both, so `a.` would name `a`). At most 32 entries. `AppManifest.validate`
+refuses a manifest with a bad entry, `signing_payload` covers a non-empty declaration
+(sorted; absent when empty, so an older signature still verifies), and `to_dict` and the
+built-in snapshot (`discovery._manifest_to_builtin_dict`) keep it.
+
+**Where it is read.** Per spawn, cached on each manifest's device, inode, size and mtime:
+every shipped package's `apps/builtins/<package>/app.json` whose `name` is the package
+name hyphenated, and every `<data home>/apps/<dir>/app.json` whose `name` is `<dir>`. The
+name comes from where the manifest sits, so one app cannot declare a leaf under another
+app's directory. A sidecar (`.`-prefixed) directory is not an app. An absent, unreadable
+or non-JSON manifest, or one nested past the parser's depth, declares nothing; an invalid
+entry is dropped with a warning and the rest apply. A retained record (below) is read with
+the installed manifests. A declaration applies whether the app is enabled or not, because a disabled
+app's credential is still on disk.
+
+**Wherever the data is.** The lifecycle moves `data/` to `apps/.<name>-data-tmp/` while an
+install or update replaces the app's files, and a default uninstall removes `app.json` and
+keeps `data/`. So every entry is declared at both `apps/<name>/data/<entry>` and
+`apps/.<name>-data-tmp/<entry>`, and `credential_masks.remember_declaration` keeps the
+declaration in `apps/.<name>-credential-masks.json` beside the app directory. It runs on
+every `manager_records._write_installed` (best-effort) and, strictly, before
+`update_app` and a keep-data `uninstall_app` move the data: a record that cannot be
+written refuses the update or uninstall before anything moves. Only a manifest that reads
+cleanly (`_clean_declaration`: a regular file under the size cap, a JSON object with the
+right `name` and a valid declaration) changes the record, and one declaring nothing
+removes it. An absent, unreadable, unparseable, misnamed or invalid `app.json` leaves the
+record as it is, because the data beside it may still hold what the last clean manifest
+declared. The record only adds masks, like a manifest, and is as writable as one.
+
+**What the sandbox does with it.** Exactly what it does with a core `HIDDEN` crew-home
+leaf, because each declared leaf joins the same lists at the same points:
+`sandbox_argv._live_plan_host` adds it to the tier's mask list (both data-home spellings),
+to `crew_hidden_dirs` (so Seatbelt write- and link-seals it) and to the relocated-home
+targets; `sandbox_aliases._hidden_leaves` adds it to the alias pass, so a symlink at the
+leaf or at any component below the data home refuses the spawn; and
+`sandbox_aliases._hardlink_refused_leaves` adds it to the hard-link set, so a second name
+inside a data home is masked too and one outside every data home refuses the spawn,
+which `kirocrew doctor` reports first. An entry names a file: a directory at a declared
+spelling in the live home refuses the spawn (`_refuse_aliased_masked_leaves`), so no
+declared directory hides files the hard-link pass never judged. On Seatbelt, whose masks are path rules, every parent of every
+declared spelling joins the literal ancestor guards (`readonly_ancestor_guards`), so no
+parent can be renamed from under its deny; only the entries are guarded, not their
+contents. The spawn that lifts a leaf (the app's own backend, below) leaves that
+spelling's parents unguarded, so the backend can create, rotate and remove the folders it
+keeps its credential in. A namespace mask is a mount, which moves with a renamed parent,
+so that plan gains no guard. No seal, tool-gate row or keystone disposition
+reads a declaration, and the one carve-out that does (the app's own backend, below)
+never lifts a core leaf, so a manifest can only add masks.
+`test_sandbox_governance_mask.py`'s pin over the three dispositions is untouched: it is
+over the core tables, and a declared leaf is never on the tool-gate floor.
+
+**The app's own backend.** `sandbox_tiers.app_declared_mask_targets(name, builtin=...)`
+returns the declared leaves as every mask spells them, minus any leaf that is a core
+leaf of any disposition (`HIDDEN`, relocated `HIDDEN`, `READONLY`, `VISIBLE`) or a
+directory holding one, and minus any spelling beneath another mask or behind a planted
+link (`carveout_shadowed_by_foreign_mask`, `carveout_chain_has_planted_link`), and minus
+any spelling that exists and is not a regular file with one name
+(`_liftable_declared_file`, by `lstat`). A second hard link makes the declared bytes
+another path's bytes too, possibly a core credential's, which no path comparison sees, so
+that file stays masked for the backend as well; the same rule is what lets
+`_inode_aliases_under` count a declared name as covering a multi-linked inode. A core
+leaf is masked without the declaration, so lifting it would hand back core's mask, not
+the app's: `meetings` declaring `edits` gets nothing back for
+`apps/meetings/data/edits`. `apps/backend.py` passes the result as
+`extra_visible_dirs` to that app's backend spawn only. `builtin` is the provenance the
+spawn already established for the code it executes, and only that source's manifest is
+read, so an installed app holding a built-in's name never gets back what the built-in
+declared.
+
+**Residual.** The installed tree is sandbox-writable, so a mask is as strong as the
+manifest that declares it: an agent that rewrites an installed app's `app.json` drops
+that app's masks from the next spawn, as it could rewrite the app's code. Sealing an
+installed tree is a sandbox widening for the operator to choose. A declared file absent
+at spawn is not masked for that spawn, as for a core file leaf.
+
+**Built-ins.** None declares one yet. Ops Mission Control's provider tokens live at the
+data-home root, outside its data directory, so they keep their core rows until the
+store moves under `apps/ops-mission-control/data/` (#32681; see `ops-mission-control.md`,
+"Repository boundary").
+
+**Seam level.** `APP_SDK_LEVEL` is 3: an app that stores a credential reads
+`ctx.sdk_level` and, below 3, knows nothing masks the file.
+
+Writers: `apps/credential_masks.py`, `apps/manifest.py`, `apps/app_sdk_level.py`,
+`website/src/app-sdk/sdkLevel.ts`, `sandbox_aliases.py`, `sandbox_argv.py`,
+`sandbox_tiers.py`, `sandbox.py` (facade), `apps/backend.py`, `apps/manager_records.py`,
+`apps/manager_install.py`, `apps/manager_uninstall.py`, `apps/discovery.py`. Tests:
+`test/test_app_credential_masks.py`, `test/test_app_backend_spawn_env.py`
+(`TestTheBackendSpawnLiftsTheAppsDeclaredMasks`).
 
 ## Windows stale-backend cleanup capacity
 

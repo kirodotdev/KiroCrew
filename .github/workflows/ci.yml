@@ -3817,6 +3817,13 @@ jobs:
           FORKS=$(( by_cpu < by_mem ? by_cpu : by_mem ))
           [ "$FORKS" -ge 1 ] || FORKS=1
           echo "vitest forks: $FORKS"
+          # The third reporter writes a run manifest (which files the pool was
+          # handed, which it reported, and each unhandled error's message) for
+          # the lost-file recovery below. It never changes the run's verdict.
+          LOST_FILES="$GITHUB_WORKSPACE/.github/scripts/frontend-lost-files.mjs"
+          MANIFEST="$RUNNER_TEMP/frontend-run-manifest.json"
+          SHARD_BLOB=".vitest-reports/blob-${{ matrix.shard }}-${SHARD_COUNT}.json"
+          rc=0
           if [ "$REDUCED" = "true" ]; then
             # Subset run (backend-only diff): coverage of a subset is not
             # comparable to the repo floor, so it is not collected and the
@@ -3832,8 +3839,10 @@ jobs:
             # failing shard's log would end at "exit code 1" with no FAIL line
             # or summary; the second reporter keeps a human-readable verdict in
             # this job's own log.
-            npx vitest run --maxWorkers="$FORKS" --reporter=blob --reporter=default --passWithNoTests \
-              --shard=${{ matrix.shard }}/"$SHARD_COUNT" ${TARGETS[@]+"${TARGETS[@]}"}
+            MODE_ARGS=(--passWithNoTests)
+            FRONTEND_RUN_MANIFEST="$MANIFEST" npx vitest run --maxWorkers="$FORKS" \
+              --reporter=blob --reporter=default --reporter="$LOST_FILES" ${MODE_ARGS[@]+"${MODE_ARGS[@]}"} \
+              --shard=${{ matrix.shard }}/"$SHARD_COUNT" ${TARGETS[@]+"${TARGETS[@]}"} || rc=$?
           else
             # --reporter=blob stores results + per-shard coverage under
             # website/.vitest-reports/; the frontend-coverage-merge job stitches
@@ -3844,19 +3853,53 @@ jobs:
             # failing shard's log would end at "exit code 1" with no FAIL line
             # or summary; the second reporter keeps a human-readable verdict in
             # this job's own log.
-            npx vitest run --maxWorkers="$FORKS" --coverage --reporter=blob --reporter=default \
-              --shard=${{ matrix.shard }}/"$SHARD_COUNT"
+            MODE_ARGS=(--coverage)
+            FRONTEND_RUN_MANIFEST="$MANIFEST" npx vitest run --maxWorkers="$FORKS" \
+              --reporter=blob --reporter=default --reporter="$LOST_FILES" ${MODE_ARGS[@]+"${MODE_ARGS[@]}"} \
+              --shard=${{ matrix.shard }}/"$SHARD_COUNT" || rc=$?
           fi
+          # A fork that exits after the pool handed it a file but before the
+          # file started loses that file: every reported test passes, the file
+          # is in no count, and the only unhandled error is "Worker exited
+          # unexpectedly". The file never ran, so running it now is its first
+          # run, not a retry. `plan` names the lost files only when that is the
+          # WHOLE failure; the re-run must pass, with coverage collected as the
+          # shard collected it, and `finalize` checks its blob before dropping
+          # the matching worker-exit errors from the shard blob. Any other
+          # failure, or a failing re-run, leaves the shard red and the shard
+          # blob's errors in place, so the merge fails on them too. Procedure
+          # and limits: website/docs/testing.md, "CI gates".
+          if [ "$rc" -ne 0 ] && LOST_LIST="$(node "$LOST_FILES" plan "$MANIFEST")"; then
+            LOST=()
+            while IFS= read -r line; do if [ -n "$line" ]; then LOST+=("$line"); fi; done <<< "$LOST_LIST"
+            # `plan` exits 0 only after naming at least one file, so an empty
+            # list means the CLI never ran: re-run nothing and stay red. A bare
+            # `vitest run` with no file argument would run the whole suite.
+            if [ "${#LOST[@]}" -ge 1 ]; then
+              RECOVERY_BLOB=".vitest-reports/blob-${{ matrix.shard }}-${SHARD_COUNT}.recovery.json"
+              rerun=0
+              npx vitest run --maxWorkers="$FORKS" --reporter=blob --reporter=default ${MODE_ARGS[@]+"${MODE_ARGS[@]}"} \
+                --outputFile.blob="$RECOVERY_BLOB" ${LOST[@]+"${LOST[@]}"} || rerun=$?
+              if [ "$rerun" -eq 0 ] && node "$LOST_FILES" finalize "$MANIFEST" "$SHARD_BLOB" "$RECOVERY_BLOB"; then
+                rc=0
+                echo "recovered=true" >> "$GITHUB_OUTPUT"
+              fi
+            fi
+          fi
+          exit "$rc"
 
       # A forks worker sometimes dies with no output of its own, and Vitest 4
       # reports only "Worker exited unexpectedly": no exit code, no signal, no
-      # file (#23640). The kernel log is the one record of which kill it was --
-      # an OOM kill ("Out of memory: Killed process") or a native crash
-      # ("segfault at"). Failure-only and read-only. A runner that hides the
-      # kernel log (a CodeBuild container) says so, and the step stays green so
-      # the shard's own red is the only red.
-      - name: Kernel log on a failed shard
-        if: ${{ failure() && steps.unit.outcome == 'failure' }}
+      # file. The kernel log records an OOM kill ("Out of memory: Killed
+      # process"). It does NOT record a native crash inside Node: Node installs
+      # its own SIGSEGV handler and re-raises the signal from it, so the kernel
+      # never prints "segfault at" for a Node process, and a clean log does not
+      # rule a crash out. Runs on a failed shard and on one that recovered a
+      # lost file, read-only. A runner that hides the kernel log (a CodeBuild
+      # container) says so, and the step stays green so the shard's own
+      # verdict is the only verdict.
+      - name: Kernel log on a failed or recovered shard
+        if: ${{ (failure() && steps.unit.outcome == 'failure') || steps.unit.outputs.recovered == 'true' }}
         run: |
           free -m || true
           if klog="$(sudo -n dmesg -T 2>/dev/null || dmesg -T 2>/dev/null)" && [ -n "$klog" ]; then
@@ -4243,9 +4286,11 @@ jobs:
     # this job runs on `kirocrew-linux-4-core`, where the slowest of six
     # observed fork runs took 23.9 of the 25 minutes -- 66 seconds of margin, so
     # a green run is one slow dependency install away from a cancellation with
-    # no failing test. The fleet keeps 25; only the slower route gets room, and
-    # a genuinely hung job is still bounded.
-    timeout-minutes: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 25 || 40 }}
+    # no failing test. The fleet gets 30, the smallest budget whose derived
+    # Playwright ceiling reaches the 1500 s cap: the 1200 s a 25-minute budget
+    # derives leaves a slow fleet runner under 20 s past its ~1183 s of spec
+    # time for the run's own overhead. A genuinely hung job is still bounded.
+    timeout-minutes: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 30 || 40 }}
     defaults:
       run:
         shell: /usr/local/bin/ci-shell {0}
@@ -4341,7 +4386,7 @@ jobs:
       - name: Install Playwright browser (Chromium)
         # A step-level cap. The download itself takes ~7s, so anything approaching
         # this is a stalled mirror or CDN -- fail here with budget left for the
-        # specs instead of consuming the job's 25min and reporting nothing.
+        # specs instead of consuming the job's budget and reporting nothing.
         timeout-minutes: 6
         shell: bash
         working-directory: website
@@ -4456,8 +4501,8 @@ jobs:
           # The Playwright run's ceiling is sized from this job's wall-clock budget
           # so it cannot kill a green suite that still has job budget to spare. Set
           # from the SAME expression as this job's timeout-minutes above so the two
-          # cannot drift: 25 on the CodeBuild fleet, 40 on the hosted route.
-          KIROCREW_E2E_JOB_TIMEOUT_MINUTES: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 25 || 40 }}
+          # cannot drift: 30 on the CodeBuild fleet, 40 on the hosted route.
+          KIROCREW_E2E_JOB_TIMEOUT_MINUTES: ${{ startsWith(needs.changes.outputs.linux_runner_large, 'codebuild-') && 30 || 40 }}
         run: exec python scripts/ci_e2e_parallel.py
 
       - name: Upload read-aloud recovery evidence

@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
+from kiro_crew.apps.version import known_version
 from kiro_crew.instances.constants import CAPABILITY_REPLY_MAX_BYTES as _CAPABILITY_REPLY_MAX_BYTES
 from kiro_crew.instances.constants import (
     DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS as _CAPABILITY_PROXY_TIMEOUT,
@@ -47,6 +48,7 @@ from kiro_crew.instances.constants import DEFAULT_SEARCH_PROXY_TIMEOUT_SECS as _
 from kiro_crew.instances.constants import DEFAULT_SESSION_TRANSFER_TIMEOUT_SECS as _TRANSFER_TIMEOUT
 from kiro_crew.instances.constants import DEFAULT_TOKEN_PROBE_TIMEOUT_SECS as _TOKEN_PROBE_TIMEOUT
 from kiro_crew.instances.constants import SEARCH_REPLY_MAX_BYTES as _SEARCH_REPLY_MAX_BYTES
+from kiro_crew.instances.constants import SESSION_BUNDLE_CONTEXT_KEYS as _CONTEXT_KEYS
 from kiro_crew.instances.constants import SESSION_IMPORT_MEMORY_WAIT_SECS as _IMPORT_MEMORY_WAIT
 from kiro_crew.instances.constants import (
     SESSION_TRANSFER_REPLY_MAX_BYTES as _TRANSFER_REPLY_MAX_BYTES,
@@ -798,7 +800,7 @@ async def send_session_bundle(
                         and bundle.get("bundle_version") == 2
                     ):
                         downgraded = True
-                        bundle = {k: v for k, v in bundle.items() if k != "layer_b"}
+                        bundle = {k: v for k, v in bundle.items() if k not in _CONTEXT_KEYS}
                         bundle["bundle_version"] = 1
                         logger.info(
                             "Session transfer to %s: peer refused v2; "
@@ -812,9 +814,13 @@ async def send_session_bundle(
                     # copy rather than fail the transfer. The peer then
                     # answers ``prefix`` and the row reads "Sent (transcript
                     # only)", which is true.
-                    if code in _PEER_SIZE_REFUSALS and not trimmed and "layer_b" in bundle:
+                    if (
+                        code in _PEER_SIZE_REFUSALS
+                        and not trimmed
+                        and any(k in bundle for k in _CONTEXT_KEYS)
+                    ):
                         trimmed = True
-                        bundle = {k: v for k, v in bundle.items() if k != "layer_b"}
+                        bundle = {k: v for k, v in bundle.items() if k not in _CONTEXT_KEYS}
                         logger.info(
                             "Session transfer to %s: peer refused the size (%s); "
                             "retrying without Layer B",
@@ -995,7 +1001,7 @@ async def peer_version(self: SshTunnelManager, instance_id: str) -> tuple[bool, 
         code = payload.get("code", "capability_unreachable") if isinstance(payload, dict) else ""
         return False, str(code)
     version = payload.get("version") if isinstance(payload, dict) else None
-    if not isinstance(version, str) or not version:
+    if not isinstance(version, str) or not known_version(version):
         return False, "capability_malformed_reply"
     return True, version
 

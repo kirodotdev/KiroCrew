@@ -26,7 +26,7 @@
  * directly instead of waiting on a socket jsdom will never open.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, waitFor, fireEvent, act } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent, act, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { Provider } from 'react-redux'
@@ -191,10 +191,30 @@ describe('ResearchLabPage — root list and wizard branches', () => {
     const user = userEvent.setup()
     renderPage()
     await openWizard(user)
-    await user.click(screen.getByRole('button', { name: /Dynamic Workflow/i }))
+    await user.click(screen.getByRole('radio', { name: /Dynamic Workflow/i }))
     expect(screen.getByText(/can fan out to many sub-agents/i)).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: /Agent \(adaptive\)/i }))
+    await user.click(screen.getByRole('radio', { name: /Agent \(adaptive\)/i }))
     expect(screen.queryByText(/can fan out to many sub-agents/i)).not.toBeInTheDocument()
+  })
+
+  // #32040: the two mode cards showed the choice only by their accent border.
+  // They are a radio group named by the line above them, so the chosen mode is
+  // announced.
+  it('announces the execution mode cards as a named radio group with the chosen one checked', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await openWizard(user)
+    const group = screen.getByRole('radiogroup', { name: /How sub-agent execution is orchestrated/i })
+    const agent = within(group).getByRole('radio', { name: /Agent \(adaptive\)/i })
+    const workflow = within(group).getByRole('radio', { name: /Dynamic Workflow/i })
+    expect(agent).toHaveAttribute('aria-checked', 'true')
+    expect(workflow).toHaveAttribute('aria-checked', 'false')
+    // One Tab stop, on the checked card.
+    expect(agent).toHaveAttribute('tabindex', '0')
+    expect(workflow).toHaveAttribute('tabindex', '-1')
+    await user.click(workflow)
+    expect(workflow).toHaveAttribute('aria-checked', 'true')
+    expect(agent).toHaveAttribute('aria-checked', 'false')
   })
 
   it('a grill that returns no nodes reports itself unavailable', async () => {

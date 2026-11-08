@@ -235,12 +235,20 @@ class World:
 
 
 def write_builtin_record(
-    *, enabled: bool = True, data: str = "kept", secret: bytes = b"s3cret"
+    *,
+    enabled: bool = True,
+    data: str = "kept",
+    secret: bytes = b"s3cret",
+    manifest: dict[str, Any] | None = None,
 ) -> None:
-    """The record ``register_builtin_apps`` leaves for the fixture app, with data and a secret."""
+    """The record ``register_builtin_apps`` leaves for the fixture app, with data and a secret.
+
+    *manifest* is the wheel ``app.json`` the record copies, :func:`shipped_manifest` by default.
+    """
     dest = manager.app_dir(NAME)
     dest.mkdir(parents=True, exist_ok=True)
-    (dest / "app.json").write_text(json.dumps(shipped_manifest(), indent=2), encoding="utf-8")
+    shipped = shipped_manifest() if manifest is None else manifest
+    (dest / "app.json").write_text(json.dumps(shipped, indent=2), encoding="utf-8")
     (dest / "data").mkdir(exist_ok=True)
     (dest / "data" / "store.txt").write_text(data, encoding="utf-8")
     (dest / ".app_secret").write_bytes(secret)
@@ -257,13 +265,25 @@ def write_builtin_record(
     manager._write_installed(NAME, meta)
 
 
-def build_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **repo_overrides: Any) -> World:
-    """Wheel copy + repository + archive + pins on a host with the seams, under *tmp_path*."""
+def build_world(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    wheel_manifest: dict[str, Any] | None = None,
+    tree_files: dict[str, str] | None = None,
+    **repo_overrides: Any,
+) -> World:
+    """Wheel copy + repository + archive + pins on a host with the seams, under *tmp_path*.
+
+    *wheel_manifest* replaces the wheel's :func:`shipped_manifest`; *tree_files* adds
+    files (relative path to text) to the repository tree.
+    """
     home = Path(os.environ["KIROCREW_HOME"])
     wheel_root = tmp_path / "wheel"
-    wheel = write_tree(wheel_root / PACKAGE, shipped_manifest())
+    shipped = shipped_manifest() if wheel_manifest is None else wheel_manifest
+    wheel = write_tree(wheel_root / PACKAGE, shipped)
     monkeypatch.setattr(exec_mod, "_builtin_manifest_sources", lambda: (wheel_root.resolve(),))
-    tree = write_tree(tmp_path / "repo-tree", repository_manifest(**repo_overrides))
+    tree = write_tree(tmp_path / "repo-tree", repository_manifest(**repo_overrides), tree_files)
     bare, commit = make_bare_repo(tmp_path / "git", tree)
     archive = make_archive(tree, commit)
     world = World(

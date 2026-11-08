@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import atexit
 import functools
+import importlib
 import sys
 import time
 import traceback
@@ -215,13 +216,32 @@ def _retry_delay(attempts: int) -> float:
     return writer.limits.retry_delay(attempts)
 
 
-def flush(timeout: float = 5.0) -> bool:
-    """Wait until no append is queued. True when the queue drained in time.
+_RELAY_FEED: Final = "kiro_crew.crew_log.work_relay_feed"
+
+
+def _relay_feed() -> Any:
+    """The relay module once a job has loaded it, else None; never loads it first.
+
+    Through ``import_module``, not ``sys.modules`` alone: a module another thread is
+    still importing is already listed there without its functions, and only the
+    import machinery waits for that import to finish.
+    """
+    return importlib.import_module(_RELAY_FEED) if _RELAY_FEED in sys.modules else None
+
+
+def flush(timeout: "float | None" = 5.0) -> bool:
+    """Wait until no append and no board-relay copy is queued. True when both drained.
+
+    *timeout* ``None`` waits without a deadline, as the writer's own flush does.
 
     For a caller that must read the file it just wrote -- a test, a shutdown
     path -- since an entry point returns as soon as the work is HANDED to the
     writer. Never called from the turn path: waiting there would reintroduce the
     block this queue exists to remove.
+
+    The board relay decides off the writer and hands its copies back to it, and a
+    copy can be relayed once more up a nested board, so True means one round found
+    the writer quiet, the relay idle and no wake noted since the round began.
 
     Terminates even against a filesystem that never answers: a batch the writer
     cannot write is retried a bounded number of times and then dropped, so the
@@ -229,7 +249,29 @@ def flush(timeout: float = 5.0) -> bool:
     A process that never wrote has no writer, and nothing to wait for.
     """
     writer = _writer_instance
-    return True if writer is None else writer.flush(timeout=timeout)
+    if writer is None:
+        return True
+    deadline = None if timeout is None else time.monotonic() + timeout
+
+    def left() -> "float | None":
+        return None if deadline is None else max(deadline - time.monotonic(), 0.0)
+
+    while True:
+        # Read every round: the relay module can be loaded by a job this wait drains.
+        feed = _relay_feed()
+        before = feed.generation() if feed is not None else 0
+        if not writer.flush(timeout=left()):
+            return False
+        if feed is None:
+            if _relay_feed() is None:
+                return True
+            continue
+        if not feed.drain(left()):
+            return False
+        if writer.flush(timeout=0) and feed.generation() == before and feed.idle():
+            return True
+        if deadline is not None and time.monotonic() >= deadline:
+            return False
 
 
 def dropped_writes() -> int:
@@ -525,6 +567,52 @@ def _ensure_shutdown_hook() -> None:
     atexit.register(drain_for_shutdown)
 
 
+#: Most writer-and-relay rounds the shutdown drain runs. Each nested board adds one round
+#: (its copy is relayed up only once it is written), so this is far above any real chain.
+_SHUTDOWN_RELAY_ROUNDS: Final[int] = 16
+
+
+def _drain_writer_and_relay(writer: "CrewLogWriter", started: float, timeout: float) -> bool:
+    """Alternate the relay's decisions and the writer's shutdown drain until both are quiet.
+
+    A copy the drain writes into a nested board is relayed up only after that, by the
+    relay, as a follow-on the writer never writes inline, so one drain is not enough: the
+    writer is drained again until a round queues nothing new. The relay module is looked
+    up every round, since the drain's own first relayable append may be what loads it.
+    Bounded by *timeout* from *started* and by :data:`_SHUTDOWN_RELAY_ROUNDS`; work still
+    owed when either runs out is logged and answers False.
+    """
+    for round_no in range(_SHUTDOWN_RELAY_ROUNDS):
+        feed = _relay_feed()
+        before = feed.generation() if feed is not None else 0
+        if feed is not None:
+            try:
+                feed.drain(max(started + timeout - time.monotonic(), 0.0))
+            except Exception:  # pragma: no cover - a relay must not cost the shutdown
+                # Rendered text, never ``exc_info``, for the reason ``_note_eager`` gives.
+                logger.debug("crew log relay drain failed:\n%s", traceback.format_exc().rstrip())
+        left = started + timeout - time.monotonic()
+        if round_no == 0:
+            left = max(left, _EAGER_SETTLE_FLOOR_SECONDS)
+        if left <= 0:
+            break
+        report = writer.drain_for_shutdown(left)
+        feed = _relay_feed()
+        if report.drained and (feed is None or (feed.idle() and feed.generation() == before)):
+            return True
+        if not report.drained:
+            break
+    feed = _relay_feed()
+    stats = writer.stats()
+    logger.warning(
+        "crew log shutdown drain ran out with work left: %d append(s) buffered, %d relay "
+        "decision(s) pending",
+        stats.buffered,
+        feed.pending() if feed is not None else 0,
+    )
+    return False
+
+
 def drain_for_shutdown(timeout: float = _SHUTDOWN_DRAIN_SECONDS) -> bool:
     """Write out everything buffered, then let the eager folder finish what it was handed.
 
@@ -543,7 +631,7 @@ def drain_for_shutdown(timeout: float = _SHUTDOWN_DRAIN_SECONDS) -> bool:
     """
     started = time.monotonic()
     writer = _writer_instance
-    drained = True if writer is None else writer.drain_for_shutdown(timeout).drained
+    drained = True if writer is None else _drain_writer_and_relay(writer, started, timeout)
     eager = sys.modules.get("kiro_crew.crew_log.eager")
     settle = getattr(eager, "drain", None)
     if settle is not None:

@@ -244,6 +244,19 @@ async def api_file_search(request: web.Request) -> web.Response:
             return _probe_busy_response(resource=ws_path, operation="file_search", caller=caller)
         if ws_is_dir:
             search_roots.append(ws_path)
+        else:
+            # Same answer as a missing ``?project=`` root. Falling through to the
+            # default roots below would return another directory's files as if
+            # they belonged to the workspace the caller named.
+            await _audit_file_search_exit(caller, f"workspace={ws_name}", error="not a directory")
+            return web.json_response(
+                {
+                    "results": [],
+                    "error": "Workspace directory not found",
+                    "code": "workspace_not_found",
+                },
+                status=404,
+            )
 
     scoped = bool(search_roots)
 

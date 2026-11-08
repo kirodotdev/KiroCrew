@@ -4,7 +4,9 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { SettingsToggle } from '../../components/settings'
 import type { CustomThemeData } from '../../hooks/useTheme'
 import { i18nT } from '../../i18n/t'
+import { getThemeBranding } from '../../themeBranding'
 import {
+  REGISTERED_OVERLAYS_PACK,
   experiencePack,
   readExperience,
   saveExperienceChoice,
@@ -14,7 +16,8 @@ import {
 } from '../../utils/themeConsent'
 
 /**
- * The parts of the ACTIVE Level-2 pack, each on or off on its own. Sounds and
+ * The parts of the ACTIVE Level-2 pack, each on or off on its own, or Overlays
+ * alone for a registered theme whose branding declares overlays. Sounds and
  * Overlays apply as soon as they are toggled. Turning Persona on stores the
  * choice without a grant, so ThemeExperienceLayer's consent dialog opens and
  * shows the persona text; the grant is written only when Save is pressed there,
@@ -30,28 +33,31 @@ export function ThemeExperienceSettings({
   colorTheme: string
   customThemeDataMap: Map<string, CustomThemeData>
 }) {
-  const slug = colorTheme.startsWith('custom-') ? colorTheme.slice('custom-'.length) : ''
-  const data = slug ? customThemeDataMap.get(slug) : undefined
+  const installed = colorTheme.startsWith('custom-')
+  const registered = !installed && !!getThemeBranding(colorTheme)?.overlays?.length
+  const slug = installed ? colorTheme.slice('custom-'.length) : registered ? colorTheme : ''
+  const data = installed ? customThemeDataMap.get(slug) : undefined
   const isL2 = (data?.level ?? 0) >= 2
+  const hasParts = isL2 || registered
   const assets = isL2 ? data?.assets : undefined
   const assetsKey = assets ? JSON.stringify(assets) : ''
   // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on content: the theme list rebuilds `assets` on every catalog change
-  const pack = useMemo(() => experiencePack(assets), [assetsKey])
-  const [state, setState] = useState<ExperienceState | null>(() => (isL2 ? readExperience(slug, pack) : null))
+  const pack = useMemo(() => (registered ? REGISTERED_OVERLAYS_PACK : experiencePack(assets)), [assetsKey, registered])
+  const [state, setState] = useState<ExperienceState | null>(() => (hasParts ? readExperience(slug, pack) : null))
   // The pack whose last toggle could not be stored; cleared by the next stored toggle.
   const [failedSlug, setFailedSlug] = useState<string | null>(null)
 
   useEffect(() => {
-    if (!isL2) {
+    if (!hasParts) {
       setState(null)
       return
     }
     const reread = () => setState(readExperience(slug, pack))
     reread()
     return subscribeExperience(slug, reread)
-  }, [slug, isL2, pack])
+  }, [slug, hasParts, pack])
 
-  if (!isL2 || !state || !(pack.sounds || pack.overlays || pack.persona)) return null
+  if (!hasParts || !state || !(pack.sounds || pack.overlays || pack.persona)) return null
 
   const current: ExperienceChoice = { sounds: state.sounds, overlays: state.overlays, persona: state.persona }
   const store = (next: ExperienceChoice, personaToken: string | null) =>

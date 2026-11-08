@@ -1182,8 +1182,11 @@ tracked files, untracked files, and installed packages:
    --porcelain --untracked-files=normal -- website` empty) — the same check the
    fingerprint is STAMPED behind, re-checked before it is TRUSTED, so an untracked
    `website/` file added between build and skip cannot ride through;
-3. `node_modules` is complete against the lockfile (`npm ls --all` exits 0), which
-   closes the partial-tree residual a bare "populated" check would leave;
+3. `node_modules` is complete against the lockfile (`npm ls --all` exits 0, or
+   its only problems are `invalid` packages their parent declares optional: the
+   nested platform build `npm ci` skips for this host resolves to a hoisted copy
+   of another version), which closes the partial-tree residual a bare
+   "populated" check would leave;
 4. a build-source fingerprint — the git tree id of `website/` stamped beside the
    staged bundle on the last successful build, and only when that build's tree was
    clean — equals the incoming ref's `website/` tree.
@@ -1242,8 +1245,10 @@ absolute. Copies `static/dist` does not serve are swept under the staging lock, 
 the served one by file identity rather than path spelling, and nothing is swept
 while `static/dist` is a link that resolves nowhere. A `static/dist` that is still
 a real directory is renamed aside once when the first stage replaces it with the
-link; a gateway already running then, one whose build routes were resolved from
-that directory at start, answers 404 for the build until it restarts, and the
+link (copied aside and removed instead where an overlay filesystem refuses to
+rename a directory from a lower image layer); a gateway already running then,
+one whose build routes were resolved from that directory at start, answers 404
+for the build until it restarts, and the
 stage log says to restart it. The same holds on every re-stage of an older target
 revision that builds in place: its gateway resolved the copy it started on, which
 the re-stage sweeps, so the stage log says to restart that gateway too. The run script stops at the first non-zero step,
@@ -1778,6 +1783,12 @@ TTL cache), before any launchd/systemd service-definition probe. A cutover
 writes the pointer and never touches the service definition, so the unit's
 `WorkingDirectory` still names the checkout the gateway was installed from.
 Reading the definition first would report that stale checkout as live.
+When neither the pointer nor a service definition names a checkout (a gateway
+started by hand on a host with no installed service), the answer is the
+checkout the gateway is executing (`_running_checkout`). Like any other answer it
+marks the live row and is what `already_live` and the removal guards check, and
+the first Make live records it as the `previous_checkout` that Switch back
+returns to. A packaged install has no such checkout and still resolves to `None`.
 
 ### Request / Response
 

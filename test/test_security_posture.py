@@ -1183,6 +1183,9 @@ class TestRedactionSinkRegistry:
             # the generic scanners cannot know about — strictly more than either
             # scanner alone, so a sink using it is fully covered.
             "redact_mcp_error",
+            # redact_note (notifications/bridge_egress.py) runs redact_exfiltration_urls
+            # THEN redact_credentials on a bridged note's title and body.
+            "redact_note(",
             # _redact_projection_value (eventlog/service.py) recursively runs the
             # exfil scanner THEN the credential scanner over every string in a
             # projection view or event `data`, so a sink using it is fully covered.

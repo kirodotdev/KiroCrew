@@ -30,21 +30,21 @@ const ROSTER_SHOWN_PHONE = { kind: 'shown_by', location: 'members.back', when: '
 const EXPECTED: Record<string, [string, string, string, string, string[], string, string, Placement['requires']]> = {
   // The roster: the picker a guide's "choose the crewmate" step points at.
   'members.roster-list': ['list', 'pages.membersPage.title', 'Bots', 'Bot', ['page.members'], 'content', '/members', []],
-  'members.new': ['button', 'pages.membersPage.add_member', 'New Bot', '新建 Bot', ['page.members'], 'content', '/members', [cond('no_crewmates')]],
+  'members.new': ['button', 'pages.membersPage.add_member', 'New bot', '新建 Bot', ['page.members'], 'content', '/members', [cond('no_crewmates')]],
   'members.new-advanced': ['button', 'pages.membersPage.create_advanced', 'Advanced', '高级', ['page.members'], 'content', '/members', [cond('no_crewmates')]],
   'members.empty.import': ['button', 'pages.membersPage.import_from_file', 'Import from file', '从文件导入', ['page.members'], 'content', '/members', [cond('no_crewmates')]],
   'members.add-menu': ['button', 'pages.membersPage.add_menu', 'Add…', '添加…', ['page.members'], 'toolbar', '/members', [cond('has_crewmates'), ROSTER_SHOWN, ROSTER_SHOWN_PHONE]],
   // Creating once the roster has a crewmate: the header "+" menu's first item, and the switcher list's last.
-  'members.add-menu.new': ['menu-item', 'pages.membersPage.add_member', 'New Bot', '新建 Bot', ['page.members', 'members.add-menu'], 'menu', '/members', [cond('has_crewmates'), ROSTER_SHOWN, ROSTER_SHOWN_PHONE]],
-  'members.switcher.new': ['menu-item', 'pages.membersPage.add_member', 'New Bot', '新建 Bot', ['page.members', 'members.switcher'], 'menu', '/members', [vp('desktop'), cond('crewmate_selected')]],
-  'members.back': ['button', 'pages.membersPage.toggle_roster', 'Toggle Bots', '切换 Bot 列表', ['page.members'], 'header', '/members', [vp('mobile'), cond('crewmate_selected')]],
-  'members.switcher': ['button', 'pages.membersPage.switch_crewmate', 'Switch Bot', '切换 Bot', ['page.members'], 'header', '/members', [vp('desktop'), cond('crewmate_selected')]],
+  'members.add-menu.new': ['menu-item', 'pages.membersPage.add_member', 'New bot', '新建 Bot', ['page.members', 'members.add-menu'], 'menu', '/members', [cond('has_crewmates'), ROSTER_SHOWN, ROSTER_SHOWN_PHONE]],
+  'members.switcher.new': ['menu-item', 'pages.membersPage.add_member', 'New bot', '新建 Bot', ['page.members', 'members.switcher'], 'menu', '/members', [vp('desktop'), cond('crewmate_selected')]],
+  'members.back': ['button', 'pages.membersPage.toggle_roster', 'Toggle bots', '切换 Bot 列表', ['page.members'], 'header', '/members', [vp('mobile'), cond('crewmate_selected')]],
+  'members.switcher': ['button', 'pages.membersPage.switch_crewmate', 'Switch bot', '切换 Bot', ['page.members'], 'header', '/members', [vp('desktop'), cond('crewmate_selected')]],
   'members.add-menu.import': ['menu-item', 'pages.membersPage.import_from_file', 'Import from file', '从文件导入', ['page.members', 'members.add-menu'], 'menu', '/members', [cond('has_crewmates'), ROSTER_SHOWN, ROSTER_SHOWN_PHONE]],
   'members.switcher.import': ['menu-item', 'pages.membersPage.import_from_file', 'Import from file', '从文件导入', ['page.members', 'members.switcher'], 'menu', '/members', [vp('desktop'), cond('crewmate_selected')]],
   'members.switcher.show-roster': ['menu-item', 'pages.membersPage.roster_show', 'Show the full roster', '显示完整 Bot 列表', ['page.members', 'members.switcher'], 'menu', '/members', [vp('desktop'), cond('crewmate_selected')]],
   // Under the switcher chip: one pill per crewmate with an unread message, then a "+N" pill opening the list (#19045).
   'members.switcher.unread': ['button', 'pages.membersPage.unread_message', 'Unread message', '未读消息', ['page.members'], 'header', '/members', [vp('desktop'), cond('crewmate_selected')]],
-  'members.switcher.unread-more': ['button', 'pages.membersPage.switch_crewmate', 'Switch Bot', '切换 Bot', ['page.members'], 'header', '/members', [vp('desktop'), cond('crewmate_selected')]],
+  'members.switcher.unread-more': ['button', 'pages.membersPage.switch_crewmate', 'Switch bot', '切换 Bot', ['page.members'], 'header', '/members', [vp('desktop'), cond('crewmate_selected')]],
   'members.edit': ['button', 'pages.membersPage.profile_card', 'Profile', '资料卡', ['page.members'], 'content', '/members', [cond('crewmate_selected')]],
   // The profile card's Profile tab (the card opens on Sessions): the step before the Settings row.
   'members.profile-tab': ['tab', 'pages.membersPage.profile_tab', 'Profile', '资料', ['page.members'], 'content', '/members', [cond('crewmate_selected'), { kind: 'shown_by', location: 'members.edit', when: 'crewmate_profile_closed' }]],
@@ -58,10 +58,10 @@ const EXPECTED: Record<string, [string, string, string, string, string[], string
   'members.details': ['toggle', 'pages.membersPage.panel_toggle', 'Dashboard & files', '仪表板和文件', ['page.members'], 'header', '/members', [cond('crewmate_selected'), cond('crewmate_panel_not_docked')]],
   // The side panel's Dashboard tab, behind its opener while the panel is closed.
   'members.dashboard-tab': ['tab', 'pages.membersPage.dashboard_tab', 'Dashboard', '仪表板', ['page.members'], 'content', '/members', [cond('crewmate_selected'), { kind: 'shown_by', location: 'members.details', when: 'crewmate_panel_closed' }]],
-  'agents.add': ['button', 'pages.kiroCrewAgentsPage.add_crew_member', 'New Bot', '新建 Bot', ['page.capabilities', 'tab.capabilities.crews'], 'toolbar', '/capabilities?tab=crews', []],
-  'agents.create-first': ['button', 'pages.kiroCrewAgentsPage.create_your_first_crew', 'Create your first Bot', '创建你的第一个 Bot', ['page.capabilities', 'tab.capabilities.crews'], 'content', '/capabilities?tab=crews', [cond('no_crewmates')]],
+  'agents.add': ['button', 'pages.kiroCrewAgentsPage.add_crew_member', 'New bot', '新建 Bot', ['page.capabilities', 'tab.capabilities.crews'], 'toolbar', '/capabilities?tab=crews', []],
+  'agents.create-first': ['button', 'pages.kiroCrewAgentsPage.create_your_first_crew', 'Create your first bot', '创建你的第一个 Bot', ['page.capabilities', 'tab.capabilities.crews'], 'content', '/capabilities?tab=crews', [cond('no_crewmates')]],
   'agents.edit-avatar': ['button', 'components.avatarBuilder.edit_avatar', 'Edit avatar', '编辑头像', ['page.capabilities', 'tab.capabilities.crews', 'agents.section-model'], 'tab', '/capabilities?tab=crews', [cond('crewmate_editor_open')]],
-  'agents.delete': ['button', 'pages.kiroCrewAgentsPage.delete_crew', 'Delete Bot', '删除 Bot', ['page.capabilities', 'tab.capabilities.crews', 'agents.section-danger'], 'tab', '/capabilities?tab=crews', [cond('crewmate_editor_open')]],
+  'agents.delete': ['button', 'pages.kiroCrewAgentsPage.delete_crew', 'Delete bot', '删除 Bot', ['page.capabilities', 'tab.capabilities.crews', 'agents.section-danger'], 'tab', '/capabilities?tab=crews', [cond('crewmate_editor_open')]],
   'agents.crew-list': ['list', 'pages.kiroCrewAgentsPage.agents', 'Agents', '代理', ['page.capabilities', 'tab.capabilities.crews'], 'content', '/capabilities?tab=crews', []],
   'agents.model': ['field', 'pages.kiroCrewAgentsPage.edit_model', 'Edit default model', '编辑默认模型', ['page.capabilities', 'tab.capabilities.crews', 'agents.section-model'], 'tab', '/capabilities?tab=crews', [cond('crewmate_editor_open')]],
   // The editor's section rail rows a guide opens on the way (CrewEditorNextRail).

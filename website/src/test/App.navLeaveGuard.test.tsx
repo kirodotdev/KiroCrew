@@ -39,6 +39,7 @@ vi.mock('../pages/KiroCrewAgentsPage', () => ({ default: () => null }))
 vi.mock('../pages/NotificationsPage', () => ({ default: () => null }))
 vi.mock('../pages/SchedulePage', () => ({ default: () => null }))
 vi.mock('../pages/AppDetailPage', () => ({ default: () => <div data-testid="app-detail-page">AppDetailPage</div> }))
+vi.mock('../pages/SettingsPage', () => ({ default: () => <div data-testid="settings-page">SettingsPage</div> }))
 // The page at risk, with the REAL SidePanelLayout inside it: the pane is mounted
 // conditionally on `?tab=`, which is what makes a dropped query string an
 // unmount rather than a no-op. The draft lives in component-local state, as
@@ -563,6 +564,57 @@ describe('native app-menu navigation leave guard', () => {
     await waitFor(() => expect(nativeHandler).not.toBeNull())
     act(() => { nativeHandler!('/schedule') })
     await waitFor(() => expect(screen.queryByLabelText('draft')).toBeNull())
+  })
+
+  // `kirocrew://remote-crew/add` arrives as the route the desktop resolver
+  // built. Its values go to the add form through the store, never into the
+  // dashboard's own URL, and Remote Crew is the local Crew's page.
+  const addLinkRoute = '/settings/instances?host=me%40devbox.example.com&port=5476&name=Dev%20box'
+
+  it('fills in the Remote Crew add form for an add link, on the local Crew, at the bare page', async () => {
+    const store = createTestStore()
+    store.dispatch(setActiveId('remote-1'))
+    renderWithProviders(
+      <NavigationLeaveGuardProvider><RouterProbe /><App /></NavigationLeaveGuardProvider>,
+      { route: '/capabilities?tab=drafts', store },
+    )
+    await paneReady()
+    await waitFor(() => expect(nativeHandler).not.toBeNull())
+    act(() => { nativeHandler!(addLinkRoute) })
+    expect(store.getState().instances.activeId).toBeNull()
+    expect(store.getState().instances.crewForms.addLink).toEqual({ host: 'me@devbox.example.com', port: '5476', name: 'Dev box' })
+    expect(store.getState().instances.crewForms.addLinkSeq).toBe(1)
+    await waitFor(() => expect(screen.getByTestId('router-location').textContent).toBe('/settings/instances'))
+  })
+
+  it('leaves the add form and the page alone when an add link\'s leave prompt is declined', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const store = createTestStore()
+    renderWithProviders(
+      <NavigationLeaveGuardProvider><RouterProbe /><App /></NavigationLeaveGuardProvider>,
+      { route: '/capabilities?tab=drafts', store },
+    )
+    await paneReady()
+    typeDraft('half-written prompt')
+    await waitFor(() => expect(nativeHandler).not.toBeNull())
+    act(() => { nativeHandler!(addLinkRoute) })
+    expect(confirmSpy).toHaveBeenCalled()
+    expect(store.getState().instances.crewForms).toEqual({ add: null, edit: null })
+    expect(screen.getByTestId('router-location').textContent).toBe('/capabilities?tab=drafts')
+    expect(draftValue()).toBe('half-written prompt')
+  })
+
+  it('treats a plain Remote Crew path from the menu as an ordinary navigation', async () => {
+    const store = createTestStore()
+    renderWithProviders(
+      <NavigationLeaveGuardProvider><RouterProbe /><App /></NavigationLeaveGuardProvider>,
+      { route: '/capabilities?tab=drafts', store },
+    )
+    await paneReady()
+    await waitFor(() => expect(nativeHandler).not.toBeNull())
+    act(() => { nativeHandler!('/settings/instances') })
+    await waitFor(() => expect(screen.getByTestId('router-location').textContent).toBe('/settings/instances'))
+    expect(store.getState().instances.crewForms).toEqual({ add: null, edit: null })
   })
 })
 

@@ -42,7 +42,7 @@ from typing import Any
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import read_local_secret
 from kiro_crew.dashboard.urls import dashboard_socket_path
-from kiro_crew.loopback_http import unix_socket_urlopen
+from kiro_crew.loopback_http import tcp_verified_urlopen, unix_socket_urlopen
 from kiro_crew.mcp_caller import current_caller, current_tool_call_id, resolve_own_identity
 from kiro_crew.mcp_gateway.socketsec import PeerCredResult, check_peer_is_self
 from kiro_crew.mcp_shared import (
@@ -187,26 +187,6 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
     if name != _TOOL:
         return f"Error: Unknown tool: {name}"
 
-    # Explicit unsupported-platform result on Windows. The mediated request is
-    # credential-safe ONLY because both the capability claim and the dispatch ride
-    # an AF_UNIX loopback socket in the owner-only data home, whose answering peer
-    # is attested by SO_PEERCRED (LOCAL_PEERPID) ancestry before any credential
-    # byte is sent. On Windows the dashboard starts no Unix site and that
-    # peer-credential channel does not exist, and no TCP fallback is offered:
-    # sending the X-Internal-Secret + signed session token over a loopback PORT a
-    # co-located lower-privileged account could bind would defeat the whole point.
-    # Gate on IS_WINDOWS, not hasattr(socket, "AF_UNIX"): modern Windows Python
-    # DOES expose AF_UNIX, so the attribute check would pass there and fall through
-    # to a nonexistent Unix site. Refuse EXPLICITLY rather than let
-    # unix_socket_urlopen raise a bare OSError the broad handler flattens.
-    if platform_compat.IS_WINDOWS:
-        return (
-            "Error: custom-secret mediation is not supported on this platform. It "
-            "requires a Unix-domain socket with peer-credential attestation, which "
-            "is unavailable here; refusing rather than send a credential over a "
-            "channel this platform cannot attest."
-        )
-
     session_key = _resolve_session_key()
     if not session_key:
         return "Error: This session could not be identified, so the request was refused."
@@ -305,7 +285,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         # loopback hop a margin beyond that ceiling so a slow-but-valid upstream
         # is cut off by the dispatch's own deadline, never by this outer layer.
         #
-        # Transport: the owner-only dashboard unix socket, with NO TCP fallback.
+        # Transport on POSIX: the owner-only dashboard unix socket, with NO TCP
+        # fallback (Windows, which has no unix socket: see ``_send`` below).
         # This request carries the X-Internal-Secret, the session key, and the
         # signed per-session token — a co-located lower-privileged user who binds
         # the released loopback PORT during a gateway restart would otherwise
@@ -361,6 +342,35 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                     "is your own gateway, restart it to re-publish its identity record."
                 )
 
+        def _verify_tcp_gateway_peer(sock: Any) -> None:
+            # Windows: CPython has no AF_UNIX there and the dashboard binds no Unix
+            # site, so the send rides loopback TCP. The peer on THIS connection must
+            # be the recorded gateway for its port, owned by this user (SID), before
+            # any byte goes out.
+            from kiro_crew.cli_server_peer import (
+                _audit_peer_denied,
+                _connected_peer_verdict,
+                _ConnectedPeerVerdict,
+            )
+
+            if _connected_peer_verdict(sock) is not _ConnectedPeerVerdict.MATCH:
+                # The gateway never sees this refusal; it audits the calls it admits.
+                _audit_peer_denied("mediated_secret", port, "peer is not the recorded gateway")
+                raise PermissionError(
+                    "the dashboard port is not answered by this user's recorded "
+                    "gateway, so the mediated-secret credential was not sent."
+                )
+
+        def _send(r: urllib.request.Request, timeout: float) -> Any:
+            if platform_compat.IS_WINDOWS:
+                return tcp_verified_urlopen(r, timeout, verify_peer=_verify_tcp_gateway_peer)
+            return unix_socket_urlopen(
+                r,
+                timeout=timeout,
+                socket_path=dashboard_socket_path(port),
+                verify_peer=_verify_gateway_peer,
+            )
+
         call_id = current_tool_call_id()
         if not call_id:
             return "Error: This tool call has no approved-call correlation, so the request was refused."
@@ -373,23 +383,13 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             headers=headers,
             method="POST",
         )
-        with unix_socket_urlopen(
-            claim_req,
-            timeout=CLAIM_TIMEOUT_S,
-            socket_path=dashboard_socket_path(port),
-            verify_peer=_verify_gateway_peer,
-        ) as claim_resp:
+        with _send(claim_req, CLAIM_TIMEOUT_S) as claim_resp:
             capability = str(json.loads(claim_resp.read()).get("capability") or "")
         if not capability:
             return "Error: This tool call was not approved for mediated secret use."
         req.add_header("X-Mediated-Secret-Capability", capability)
 
-        with unix_socket_urlopen(
-            req,
-            timeout=REQUEST_TIMEOUT_S,
-            socket_path=dashboard_socket_path(port),
-            verify_peer=_verify_gateway_peer,
-        ) as resp:
+        with _send(req, REQUEST_TIMEOUT_S) as resp:
             payload = json.loads(resp.read())
     except urllib.error.HTTPError as exc:
         # The host endpoint returns a safe, secret-free JSON error for refusals.

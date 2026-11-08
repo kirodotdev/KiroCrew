@@ -27,6 +27,7 @@ These pin the three seams:
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -38,6 +39,7 @@ from kiro_crew.apps.builtins.dev_fleet import sync_runner
 
 PREFLIGHT_LABEL = "Verify dependencies"
 FRONTEND = frozenset({"npm ci", "npm build + stage"})
+INVALID = {"version": "1.33.0", "invalid": '"1.32.0" from x'}
 
 
 def _tree(root: Path, *, populated: bool = True) -> str:
@@ -61,6 +63,7 @@ def _git(
     tree_id: str = "treesha_current",
     rc: int = 0,
     ls_rc: int = 0,
+    ls_out: bytes = b"",
     status_dirty: bool = False,
     boom: Exception | None = None,
 ):
@@ -75,7 +78,9 @@ def _git(
         if boom is not None:
             raise boom
         if "ls" in argv:  # npm ls --all integrity check
-            return subprocess.CompletedProcess(argv, ls_rc, b"", b"missing: x" if ls_rc else b"")
+            # Only --json --long output carries the parents' optionalDependencies.
+            out = ls_out if {"--json", "--long"} <= set(argv) else b""
+            return subprocess.CompletedProcess(argv, ls_rc, out, b"missing: x" if ls_rc else b"")
         if "status" in argv:  # skip-time worktree cleanliness (untracked included)
             out = b"?? website/src/new.tsx\n" if status_dirty else b""
             return subprocess.CompletedProcess(argv, rc, out, b"")
@@ -422,8 +427,40 @@ class TestFrontendTreeComplete:
         monkeypatch.setattr(np.subprocess, "run", _git(ls_rc=0))
         assert np._frontend_tree_complete("/usr/bin/npm", str(tmp_path)) is True
 
-    def test_partial_tree_is_false(self, tmp_path, monkeypatch):
+    def test_unparsable_ls_output_is_false(self, tmp_path, monkeypatch):
         monkeypatch.setattr(np.subprocess, "run", _git(ls_rc=1))
+        assert np._frontend_tree_complete("/usr/bin/npm", str(tmp_path)) is False
+
+    @staticmethod
+    def _ls_json(child: dict, *, optional: bool, code: str = "ELSPROBLEMS") -> bytes:
+        """``npm ls --all --json --long`` failing on one flagged child of ``lightningcss``."""
+        parent: dict = {"version": "1.32.0", "dependencies": {"lightningcss-linux-x64-musl": child}}
+        if optional:
+            parent["optionalDependencies"] = {"lightningcss-linux-x64-musl": "1.32.0"}
+        tree = {"error": {"code": code}, "dependencies": {"lightningcss": parent}}
+        return json.dumps(tree).encode()
+
+    def test_an_invalid_optional_platform_package_is_complete(self, tmp_path, monkeypatch):
+        """npm ci skips the nested musl build on a glibc host, so the name resolves
+        to the hoisted 1.33.0 copy and `npm ls` exits 1 on a full install."""
+        out = self._ls_json(INVALID, optional=True)
+        monkeypatch.setattr(np.subprocess, "run", _git(ls_rc=1, ls_out=out))
+        assert np._frontend_tree_complete("/usr/bin/npm", str(tmp_path)) is True
+
+    @pytest.mark.parametrize(
+        "child, optional, code",
+        [
+            ({"required": "1.32.0", "missing": True}, False, "ELSPROBLEMS"),
+            (INVALID, False, "ELSPROBLEMS"),
+            (INVALID, True, "EJSONPARSE"),
+        ],
+        ids=["missing", "invalid-required", "another-npm-error"],
+    )
+    def test_a_missing_package_invalid_required_one_or_other_error_is_partial(
+        self, tmp_path, monkeypatch, child, optional, code
+    ):
+        out = self._ls_json(child, optional=optional, code=code)
+        monkeypatch.setattr(np.subprocess, "run", _git(ls_rc=1, ls_out=out))
         assert np._frontend_tree_complete("/usr/bin/npm", str(tmp_path)) is False
 
     def test_missing_npm_is_false(self, tmp_path, monkeypatch):

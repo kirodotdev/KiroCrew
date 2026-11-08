@@ -85,6 +85,20 @@ function applyToolOutputToMessages(
   patch(state.slotMessages[safeKey(slot)])
 }
 
+/** Set `meta.done` on every tool row carrying `tid`, in the live list and the
+ *  per-slot cache, as `applyToolOutputToMessages` writes `output`. */
+function markToolRowsDone(state: ChatState, slot: string, tid: string): void {
+  const mark = (msgs: ChatMessage[] | undefined): void => {
+    if (!Array.isArray(msgs)) return
+    for (const m of msgs) {
+      if (m.role === 'tool' && m.meta?.tool_call_id === tid && m.meta.done !== true) m.meta = { ...m.meta, done: true }
+    }
+  }
+  if (slot === state.activeSlot) mark(state.messages)
+  // Optional for the same reason as the status map below.
+  mark(state.slotMessages?.[safeKey(slot)])
+}
+
 /** A tool call's return, as far as surfaces that do not render its tool log see
  *  it: the scrollback copy of a spawn launch or an answered ask, and the status
  *  line moving off the call. Shared by `sseToolResult` and `markToolReturned`. */
@@ -96,7 +110,7 @@ function noteToolReturn(state: ChatState, slot: string, tid: string | undefined,
   // sees nothing until the slot is refetched, since `chatSlotDetail` would
   // be the only source carrying this field — a reload-only artifact. Mirrors
   // the server, which writes the same redacted string to the same field
-  // (chat_runner.py EVENT_TOOL_RESULT), so live and reloaded state agree.
+  // (`_on_tool_result` in chat_turn/tool_results.py), so live and reloaded state agree.
   //
   // Restricted to launch results on purpose. `state.messages` has no entry
   // cap and a single output can reach the server's 1 MB cap, so copying
@@ -128,6 +142,9 @@ function noteToolReturn(state: ChatState, slot: string, tid: string | undefined,
   // (`final: false`) is not a return. Runs before the tool-log lookup below,
   // which returns early for a slot with no log yet.
   if (tid && final !== false && !isUnsafeKey(slot)) {
+    // Record the return on the row itself (the server stores `done` too): a
+    // row with no log entry (a transcript read mid-call, a trimmed log) reads it.
+    markToolRowsDone(state, slot, tid)
     const statusKey = safeKey(slot)
     // Optional: a store built from a partial chat state carries no status map.
     const status = state.slotStatusDetail?.[statusKey]

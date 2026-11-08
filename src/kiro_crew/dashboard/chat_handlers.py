@@ -82,6 +82,7 @@ from kiro_crew.dashboard.chat_api import session_relaunch as _owner_session_rela
 from kiro_crew.dashboard.chat_api import slot_approval as _owner_slot_approval
 from kiro_crew.dashboard.chat_api import slot_create as _owner_slot_create
 from kiro_crew.dashboard.chat_api import slot_detail as _owner_slot_detail
+from kiro_crew.dashboard.chat_api import slot_discard as _owner_slot_discard
 from kiro_crew.dashboard.chat_api import slot_effort as _owner_slot_effort
 from kiro_crew.dashboard.chat_api import slot_guards as _owner_slot_guards
 from kiro_crew.dashboard.chat_api import slot_lifecycle as _owner_slot_lifecycle
@@ -91,6 +92,7 @@ from kiro_crew.dashboard.chat_api import slot_repair as _owner_slot_repair
 from kiro_crew.dashboard.chat_api import slot_settings as _owner_slot_settings
 from kiro_crew.dashboard.chat_api import slot_summary as _owner_slot_summary
 from kiro_crew.dashboard.chat_api import source_links as _owner_source_links
+from kiro_crew.dashboard.chat_api import sse_write as _owner_sse_write
 from kiro_crew.dashboard.chat_api import turn_stop as _owner_turn_stop
 from kiro_crew.dashboard.chat_api.agent_switch import (  # noqa: F401
     CREW_MODE_LOCKED,
@@ -142,7 +144,6 @@ from kiro_crew.dashboard.chat_api.chat_send import (  # noqa: F401
     hold_crew_steer,
     mark_crew_steer,
     steer_is_auto,
-    write_sse_or_abort,
 )
 from kiro_crew.dashboard.chat_api.conductor_close import (  # noqa: F401
     _close_managed,
@@ -278,6 +279,7 @@ from kiro_crew.dashboard.chat_api.slot_detail import (  # noqa: F401
     api_chat_slots,
     api_chat_slots_unrestored,
 )
+from kiro_crew.dashboard.chat_api.slot_discard import api_chat_slot_discard  # noqa: F401
 from kiro_crew.dashboard.chat_api.slot_effort import (  # noqa: F401
     _configured_backend_for_slot,
     _own_models_field,
@@ -306,6 +308,7 @@ from kiro_crew.dashboard.chat_api.slot_lifecycle import (  # noqa: F401
     _restore_slot_nudge_loop,
     _retire_slot_nudge_loop,
     _slot_still_ours,
+    _timed_close_stage,
     api_chat_slot_delete,
     api_chat_slots_cleanup,
     close_slot,
@@ -361,10 +364,13 @@ from kiro_crew.dashboard.chat_api.source_links import (  # noqa: F401
     api_chat_slot_source_link_unlink,
     api_chat_slot_source_links,
 )
+from kiro_crew.dashboard.chat_api.sse_write import write_sse_or_abort  # noqa: F401
 from kiro_crew.dashboard.chat_api.turn_stop import (  # noqa: F401
+    _cancel_cron_run,
     _cancel_target,
     _compaction_in_flight,
     _make_stop_resolver,
+    _may_cancel_cron_run,
     _open_stop_event_card,
     _rearm_stop_event,
     _reject_pending_approvals,
@@ -383,6 +389,7 @@ from kiro_crew.dashboard.chat_delivery import (  # noqa: F401
     STEER_STEERED,
     TURN_ACTOR_META_KEY,
     attachment_meta,
+    knowledge_meta,
     normalize_send_id,
     queue_entry_is_user_origin,
     queue_entry_view,
@@ -454,6 +461,10 @@ from kiro_crew.dashboard.chat_tags import (  # noqa: F401
     validate_folder_tag_ids,
 )
 from kiro_crew.dashboard.chat_title import _maybe_auto_title  # noqa: F401
+from kiro_crew.dashboard.chat_title_fork import (  # noqa: F401
+    fork_title_pending,
+    schedule_fork_title,
+)
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     _MANUAL_CONTINUE_MSG,
     _MANUAL_RESUME_MSG,
@@ -552,8 +563,9 @@ from kiro_crew.dashboard.slot_ownership import (  # noqa: F401
     deny_app_session_control,
     deny_app_slot_access,
     deny_app_slot_session_access,
+    member_thread_grant,
     own_session_key,
-    read_session_grant,
+    read_session_control_grant,
     session_grant,
     slot_not_found,
     transcript_acquisition_reason,
@@ -630,6 +642,7 @@ from kiro_crew.history import (  # noqa: F401
     transcript_stems,
 )
 from kiro_crew.history_projection import TranscriptRevisionChanged  # noqa: F401
+from kiro_crew.hooks import dispatch_session_lane_changed_bulk  # noqa: F401
 from kiro_crew.jsonl_util import OversizedRecord, SplitlinesBoundaryRecord  # noqa: F401
 from kiro_crew.llm_helpers import (  # noqa: F401
     pick_epoch_host,
@@ -1013,7 +1026,7 @@ _SESSION_START_REPEAT_REFUSAL_AT = 2
 #: one above them -- the mirror of ``INJECT_KIND_OPENS_TURN`` in
 #: ``website/src/pages/chat/RecoveryCard.tsx`` (``recovery`` and
 #: ``user_replay`` continue the same turn and are deliberately absent).
-_TURN_OPENING_INJECT_KINDS = frozenset({"cron", "synthesis"})
+_TURN_OPENING_INJECT_KINDS = frozenset({"cron", "synthesis", "workflow"})
 
 
 def _has_conversation(slot: _ChatSlot) -> bool:
@@ -1071,6 +1084,10 @@ _GUARDED_WRITE_WAIT_SECS = 5.0
 #: read this long never produced chips there either. Here only this close waits,
 #: and past the bound it goes on to archive what the window holds.
 _FILE_CHANGES_DRAIN_SECS = 25.0
+
+#: Seconds one stage of a close may take before it logs a warning naming it. The
+#: gateway logs warnings and up, so a slow close otherwise names no step.
+_SLOW_CLOSE_STAGE_SECS = 5.0
 
 
 # Serializes slot SWITCH transactions that share one session, keyed by
@@ -1368,6 +1385,7 @@ _facade_compose(
         _owner_slot_approval,
         _owner_slot_create,
         _owner_slot_detail,
+        _owner_slot_discard,
         _owner_slot_effort,
         _owner_slot_guards,
         _owner_slot_lifecycle,
@@ -1377,6 +1395,7 @@ _facade_compose(
         _owner_slot_settings,
         _owner_slot_summary,
         _owner_source_links,
+        _owner_sse_write,
         _owner_turn_stop,
     ),
 )

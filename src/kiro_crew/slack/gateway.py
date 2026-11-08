@@ -161,7 +161,6 @@ from kiro_crew.dashboard.chat_persistence import (
 from kiro_crew.dashboard.chat_runner import (
     _auto_approve_reason,
     _resolve_channel_target,
-    _retire_sessions_on_identity_change,
     _run_chat,
     _slot_is_trusted,
     _start_next_queued_turn,
@@ -187,6 +186,8 @@ from kiro_crew.dashboard.cron_inject import (
 from kiro_crew.dashboard.handlers import MAX_PROMPT_BYTES
 from kiro_crew.dashboard.handlers.autonudge import (
     _redact_monitor_value,
+    _scrub_serialized_field,
+    _withhold_serialized_field,
     compose_nudge_body,
     render_nudge_message,
 )
@@ -414,6 +415,7 @@ from kiro_crew.platform.update_governance import (
 )
 from kiro_crew.pre_exec_stops import run_pre_exec_stops
 from kiro_crew.providers.base import LLMEvent
+from kiro_crew.recovery.ladder import L4_GATEWAYD, LADDER
 from kiro_crew.safety_override import flush_breadcrumb_writes, safety_override
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
@@ -808,6 +810,11 @@ class GatewayOrchestrator:
     _mandatory_update_deferred_key: str | None
     _wheel_update_noticed: set[str]
     _mcp_gateway_manager: GatewayManager | None
+    # A manager whose start failed, held while ``_mcp_gateway_start_retry``
+    # starts it again (gateway_runtime/mcp_broker.py). Defaulted on the class
+    # so the ``__new__`` fixtures that never run ``__init__`` read "no retry".
+    _mcp_gateway_pending: GatewayManager | None = None
+    _mcp_gateway_start_retry: asyncio.Task[None] | None = None
     _mcp_resolve_prefetch: asyncio.Task[None] | None
     _mcp_target_env: dict[str, str]
     _mcp_overlay_refresh_lock: asyncio.Lock | None = None
@@ -1002,6 +1009,8 @@ class GatewayOrchestrator:
     _parent_tab = _subagent_injection._parent_tab
     _route_completion = _subagent_injection._route_completion
     _reset_cron_parent_when_idle = _subagent_injection._reset_cron_parent_when_idle
+    _route_cron_parent_to_tab = _subagent_injection._route_cron_parent_to_tab
+    _drop_cron_injection = _subagent_injection._drop_cron_injection
 
     @staticmethod
     def _notif_meta(parent_key: str | None) -> dict[str, str] | None:
@@ -1074,6 +1083,9 @@ class GatewayOrchestrator:
     # gateway_runtime/mcp_broker.py
     _schedule_mcp_launch_approval_persist = _mcp_broker._schedule_mcp_launch_approval_persist
     _init_mcp_gateway = _mcp_broker._init_mcp_gateway
+    _mark_mcp_broker_ready = _mcp_broker._mark_mcp_broker_ready
+    _mcp_gateway_start_retry_delay = _mcp_broker._mcp_gateway_start_retry_delay
+    _retry_mcp_gateway_start = _mcp_broker._retry_mcp_gateway_start
 
     #: Floor on the gap between timed pre-resolve passes. ``refresh_hours = 0``
     #: legitimately means "always stale" for the freshness check, but it must not

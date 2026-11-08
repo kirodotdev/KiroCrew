@@ -38,6 +38,7 @@ from kiro_crew.embeddings import (
     _platform_libs_dirname,
     get_shared_embedder,
     model_file_present,
+    ollama_backend_selected,
 )
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.loop_lock import LoopBoundLock
@@ -830,8 +831,13 @@ def _collect_system_metrics() -> dict[str, object]:
     # loads; the check is api_memory_embedding_status's, so both surfaces agree.
     try:
         embedder = get_shared_embedder()
-        runtime_failed = _load_llama_class() is None and _platform_libs_dirname() is not None
-        usable = model_file_present() or embedder.is_ready()
+        if ollama_backend_selected():
+            # An Ollama server makes the vectors; the vendored runtime and the
+            # GGUF file are not in use, so only the server probe counts.
+            runtime_failed, usable = False, embedder.is_ready()
+        else:
+            runtime_failed = _load_llama_class() is None and _platform_libs_dirname() is not None
+            usable = model_file_present() or embedder.is_ready()
         data["ollama_running"] = usable and not runtime_failed
         data["ollama_remote"] = False
         data["embedding_model_loaded"] = embedder.is_ready()

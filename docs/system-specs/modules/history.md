@@ -919,7 +919,11 @@ Per-thread JSONL files at `~/.kiro/crew/sessions/{safe_key}.jsonl`. First line i
   owns the transcript, so a line deleted and recreated under another owner
   refuses with the app's uniform 404, and the rollback puts the marker back only
   on a line that app owns. A delete in another process is not visible here; the save's delete-won guard
-  below still keeps that case from rewriting the file.
+  below still keeps that case from rewriting the file. A chat send that would mint
+  a new slot on that key (`POST /api/chat`), and a named create of that key
+  (`POST /api/chat/slots`), refuse the same way, with a retryable
+  `delete_in_flight` (409): a message sent to the new slot would otherwise land
+  in the transcript the delete unlinks.
 
 ### Session search index writer
 
@@ -1689,10 +1693,12 @@ no longer destroy older turns.
   `_disk_meta_created_at`: the two hydrate sites
   (`channel_slots.py`, `metadata_codec.py`) and the committed save
   (`save_transaction.py`). The write target can later DRIFT to a different key —
-  a cron-born slot whose `linked_session_key` lapses falls back to the
-  `dashboard:<slot>` spelling, a legitimately-existing file B with its own
-  `created_at`. Comparing B's identity against the observation from file A would
-  read "different file" as "deleted and recreated" and skip every save of a live
+  a slot linked only after it observed its file (a reused slot a cron or workflow
+  injection binds, a hooked revive) resolves another file B with its own
+  `created_at`. (A History resume of a cron transcript binds its own `cron:` key
+  in `metadata_codec.slot_args`, so it does not drift.) Comparing B's identity
+  against the observation from file A would read "different file" as "deleted and
+  recreated" and skip every save of a live
   session. So when the keys differ the witnesses do NOT compare the target: they
   stat the OBSERVED file A instead (`_observed_file_deleted`, shared by
   `delete_won` and `session_was_deleted`). A still present with the same identity

@@ -24,11 +24,12 @@ Two properties are pinned:
 The largest group is the ``ops_mission_control_api`` MCP tool. It is the app's only
 credentialed agent path: a GET/POST dispatcher over an allowlist of the app's
 ``/api/apps/ops-mission-control`` routes, with a query, a JSON body, a per-operation
-channel deny and the internal-secret admission of exactly those routes. The App Kit
-seam for a built-in's agent tool (``apps.builtin_agent_tools``) carries only a single
-POST route under the app proxy, so moving this tool there would need that seam
-widened first. Until then the tool, its validation schema, its admitted paths, its
-channel deny row and its title stay core rows, unchanged for users.
+channel deny and the internal-secret admission of exactly those routes. The seam it
+moves onto is the manifest ``agentTools`` block (``apps.app_agent_tools``), where the
+app serves each call from its own routes and the core only lists and forwards it; the
+dispatcher over the allowlist, and the channel deny, then become the app's own route.
+Until the app serves that route, the tool, its validation schema, its admitted paths,
+its channel deny row and its title stay core rows, unchanged for users.
 
 The scans are the shared ones in ``test/core_app_independence.py``. The dashboard
 half is ``website/src/apps/ops-mission-control/opsMissionControlBoundary.test.ts``.

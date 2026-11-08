@@ -112,7 +112,6 @@ class _Fire:
             gw_mod, "_await_cron_fire_time_gate", AsyncMock(return_value=(None, False))
         )
         monkeypatch.setattr(gw_mod, "_pre_create_cron_slot", AsyncMock())
-        monkeypatch.setattr(gw_mod, "_retire_sessions_on_identity_change", AsyncMock())
         monkeypatch.setattr(gw_mod, "publish_turn_identity", AsyncMock())
         monkeypatch.setattr(gw_mod, "persist_token_record_async", AsyncMock())
         monkeypatch.setattr(gw_mod, "inject_cron_result_to_dashboard", MagicMock())
@@ -265,6 +264,19 @@ async def test_an_idle_key_is_still_reset_at_the_end_of_the_run(fire: _Fire) -> 
     fire.gw.sessions.reset.assert_awaited_once_with(
         "cron:lj1", skip_if_busy=True, skip_if_injecting=True
     )
+
+
+@pytest.mark.asyncio
+async def test_the_run_pushes_its_tab_when_its_hold_starts_and_ends(fire: _Fire) -> None:
+    # The job's tab reads this lease as running. With surface_channel_sessions off
+    # no reconcile pass pushes the start, and a reset that took the lease away
+    # absorbs the release the release observer would have pushed on.
+    fire.gw.dashboard_state.push_slots_update.side_effect = lambda: fire.calls.append("push")
+
+    await fire.fire(_make_llm_job())
+
+    assert fire.names()[:3] == ["register", "acquire", "push"]
+    assert fire.names()[-2:] == ["clear", "push"]
 
 
 @pytest.mark.asyncio

@@ -266,4 +266,25 @@ describe('hooks table — row actions', () => {
     expect(row.queryByRole('button', { name: 'Delete?' })).toBeNull()
     expect(screen.getByText(/gateway said no/)).toBeTruthy()
   })
+
+  it('offers a working switch on a lane hook', async () => {
+    // The inverse of a refusal this page used to carry: while nothing fired
+    // `SessionLaneChanged` the store rejected arming it on create, update AND
+    // toggle, so the switch was disabled and a visible line said why. The
+    // dashboard's tag writers fire it now, so it is an ordinary event and the
+    // switch is live -- asserted rather than assumed, because a stale `disabled`
+    // would leave the one event this page exists to author unarmable from the UI.
+    hooksPayload = {
+      hooks: [{ ...HOOK, event: 'SessionLaneChanged', enabled: false }],
+    }
+    renderPage()
+    const row = await findRow()
+
+    const toggle = row.getByRole('button', { name: /Enable hook/ }) as HTMLButtonElement
+    expect(toggle.disabled).toBe(false)
+    expect(toggle.className).toContain('cursor-pointer')
+    expect(toggle.className).not.toContain('opacity-60')
+    // And it is no longer marked dormant: something fires it.
+    expect(row.queryByText('not fired yet')).toBeNull()
+  })
 })

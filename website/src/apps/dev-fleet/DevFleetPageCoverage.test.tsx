@@ -1116,7 +1116,11 @@ describe('DevFleetPage make live', () => {
     renderPage()
     const banner = await screen.findByTestId('make-live-undo-banner')
     expect(banner).toHaveTextContent('The dashboard is now using “wt-live”.')
-    fireEvent.click(within(banner).getByRole('button', { name: 'Switch back to main' }))
+    const undo = within(banner).getByRole('button', { name: 'Switch back to main' })
+    // At rest it must not be the stock transparent Btn, which disappears on the ok tint.
+    expect(undo).toHaveClass('bg-bg-elevated', 'border-border-strong')
+    expect(undo).not.toHaveClass('bg-transparent')
+    fireEvent.click(undo)
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText(/The dashboard will keep using its current version/)).toBeInTheDocument()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Switch back to main' }))

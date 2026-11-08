@@ -16,7 +16,7 @@
  * Backend contract: see kiro_crew/apps/builtins/workflows/server.py and the run
  * event schema in docs/system-specs/modules/workflows.md.
  */
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Workflow as WorkflowIcon, Play, FileCode, ListTree } from 'lucide-react'
 import { isAppNotEnabledError, toApiError } from '../../api/apiError'
@@ -133,8 +133,11 @@ export default function WorkflowsPage() {
   // validateMutation before runMutation starts, so gating only on
   // runMutation.isPending leaves a window where a fast double-click fires two
   // concurrent validate+run sequences (duplicate runs). Include the pending
-  // validation so the button is disabled for the whole gesture.
+  // validation so the button is busy for the whole gesture.
   const running = runMutation.isPending || validateMutation.isPending
+  // `isPending` only flips on the next render, so a second press in the same
+  // tick would still read false. The press claims this ref first.
+  const runClaim = useRef(false)
   // While the app is off the gateway refuses every call to its backend with
   // `app_not_enabled`. That is a setting, not a failure, so it shows as one
   // notice in place of each call's error. The examples refusal from opening the
@@ -159,11 +162,18 @@ export default function WorkflowsPage() {
   }, [validateMutation, runMutation, source])
 
   const doRun = useCallback(async () => {
-    const v = await validate()
-    if (!v || !v.ok) return // E1: invalid script (or an unreachable validator) blocks the run
-    runMutation.reset()
-    runMutation.mutate(source)
-  }, [validate, runMutation, source])
+    // Inert while a Validate or run is pending, as the disabled button was.
+    if (running || runClaim.current) return
+    runClaim.current = true
+    try {
+      const v = await validate()
+      if (!v || !v.ok) return // E1: invalid script (or an unreachable validator) blocks the run
+      runMutation.reset()
+      await runMutation.mutateAsync(source).catch(() => null)
+    } finally {
+      runClaim.current = false
+    }
+  }, [validate, runMutation, source, running])
 
   // The run view is driven by the events the synchronous /run returned.
   // Phase-tree folding happens inside <WorkflowRunTree>; here we only need the
@@ -214,10 +224,15 @@ export default function WorkflowsPage() {
             aria-label={i18nT('apps.workflows.workflowsPage.workflow_source')}
           />
           <div className="flex items-center gap-2">
+            {/* `aria-disabled` while running, not `disabled`: the press that
+                started the run holds focus here, and a disabled button would
+                drop it to <body>. doRun's claim keeps a second press inert. */}
             <button
-              onClick={doRun}
-              disabled={running}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-[13px] font-medium rounded bg-accent text-accent-fg disabled:opacity-50"
+              type="button"
+              onClick={() => { void doRun() }}
+              aria-disabled={running}
+              aria-busy={running}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-[13px] font-medium rounded bg-accent text-accent-fg aria-disabled:opacity-50 aria-disabled:cursor-not-allowed"
             >
               <Play size={14} /> {running ? i18nT('apps.workflows.workflowsPage.running') : i18nT('apps.workflows.workflowsPage.run')}
             </button>

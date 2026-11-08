@@ -48,6 +48,7 @@ from kiro_crew.dashboard.session_transfer_layers import (
     _forget_layer_b_join,
     _join_layer_b,
     _resolve_layer_b_sid,
+    _slot_runs_kas,
     _unlink_layer_b_files,
     _write_layer_b_files,
 )
@@ -60,6 +61,7 @@ from kiro_crew.dashboard.session_transfer_staging import (
 from kiro_crew.dashboard.state import MAX_LIVE_SLOTS, DashboardState
 from kiro_crew.dashboard.token_auth import effective_request_app
 from kiro_crew.history import mint_row_mid, monotonic_transcript_ts
+from kiro_crew.instances.constants import SESSION_BUNDLE_CONTEXT_KEYS
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -288,23 +290,26 @@ def _validate_bundle(body: Any) -> tuple[dict[str, Any], web.Response | None]:
     }
 
     # Layer B is optional: absent on a v1 bundle, or on a session that never had
-    # a kiro-cli context. When present it must be well-formed — the same
+    # a model context. When present it must be well-formed — the same
     # untrusted-input stance as messages — but it is not size-capped here: the
     # body was already streamed to disk under the free-space headroom and admitted
-    # against available memory before it reached this validator.
-    layer_b = body.get("layer_b")
-    if layer_b is not None:
+    # against available memory before it reached this validator. A KAS session
+    # (``layer_b_kas``) has the same shape and is carried on as ``layer_b`` marked
+    # ``kas``; a sender ships one key or the other.
+    for key in SESSION_BUNDLE_CONTEXT_KEYS:
+        layer_b = body.get(key)
+        if layer_b is None:
+            continue
         if not isinstance(layer_b, dict):
-            return {}, _reject("layer_b must be an object", "transfer_layer_b_not_object")
+            return {}, _reject(f"{key} must be an object", "transfer_layer_b_not_object")
         env = layer_b.get("envelope")
         events = layer_b.get("events")
         if not isinstance(env, dict):
-            return {}, _reject(
-                "layer_b.envelope must be an object", "transfer_layer_b_bad_envelope"
-            )
+            return {}, _reject(f"{key}.envelope must be an object", "transfer_layer_b_bad_envelope")
         if not isinstance(events, str):
-            return {}, _reject("layer_b.events must be a string", "transfer_layer_b_bad_events")
-        validated["layer_b"] = {"envelope": env, "events": events}
+            return {}, _reject(f"{key}.events must be a string", "transfer_layer_b_bad_events")
+        validated["layer_b"] = {"envelope": env, "events": events, "kas": key == "layer_b_kas"}
+        break
 
     return validated, None
 
@@ -587,7 +592,13 @@ async def _install_arrived_bundle(
             # Files in a thread (blocking IO), join on the loop (the live map's
             # whole-file write is unsynchronised against concurrent session
             # starts). See _write_layer_b_files / _join_layer_b.
-            written_sid = await asyncio.to_thread(_write_layer_b_files, layer_b, slot.agent)
+            # A KAS context lands only on a slot that starts on KAS; on any other
+            # backend it imports transcript-only, with its tab marked.
+            written_sid = (
+                await asyncio.to_thread(_write_layer_b_files, layer_b, slot.agent)
+                if not layer_b.get("kas") or await asyncio.to_thread(_slot_runs_kas, sm_key)
+                else None
+            )
             # On disk now; the text is the largest thing an arrival holds and
             # nothing below reads it.
             layer_b = bundle["layer_b"] = {"envelope": layer_b.get("envelope")}

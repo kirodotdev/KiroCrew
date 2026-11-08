@@ -360,6 +360,30 @@ async def test_make_live_omits_unusable_previous_checkout(monkeypatch, tmp_path)
 
 @pytest.mark.asyncio
 @_POSIX_ONLY
+async def test_make_live_from_a_hand_started_gateway_records_its_checkout(monkeypatch, tmp_path):
+    """No pointer and no unit to read: the checkout the gateway executes is the
+    previous checkout, so the first cutover still offers Switch back."""
+    target = _mk_make_live_wt(tmp_path / "target", venv=True, dist=True)
+    running = _mk_make_live_wt(tmp_path / "running", venv=True, dist=True)
+    ptr_dir = tmp_path / "ptr"
+    resolve_live = live_mod._live_worktree_path
+    _stub_make_live(monkeypatch, target, unit_status="no_user_unit", pointer_dir=ptr_dir)
+    monkeypatch.setattr(live_mod, "_live_worktree_path", resolve_live)
+    monkeypatch.setattr(live_mod, "_LIVE_CHECK_AT", 0.0)
+    monkeypatch.setattr(live_mod, "_LIVE_WORKTREE", None)
+    monkeypatch.setattr(live_mod, "_LIVE_VERIFIED", True)
+    monkeypatch.setattr(live_mod, "_running_checkout", lambda: running.resolve())
+
+    res = await mod._make_live(str(target))
+
+    assert res["ok"] is True, res
+    data = json.loads((ptr_dir / "live_target.json").read_text())
+    assert Path(data["checkout"]).resolve() == target.resolve()
+    assert data.get("previous_checkout") == str(running.resolve())
+
+
+@pytest.mark.asyncio
+@_POSIX_ONLY
 async def test_undo_make_live_clears_one_level_history(monkeypatch, tmp_path):
     """Undo reuses the cutover transaction but consumes, rather than flips,
     the previous checkout so the inverse does not become an implicit redo."""

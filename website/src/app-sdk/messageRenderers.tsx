@@ -35,6 +35,7 @@ import SubagentCompletionCard from '../pages/chat/SubagentCompletionCard'
 import NudgeCard from '../pages/chat/NudgeCard'
 import ElicitationCard from '../pages/chat/ElicitationCard'
 import NoticeCard from '../pages/chat/NoticeCard'
+import SpecHooksRunNowhereNotice, { isSpecHooksRunNowhereNotice, specHooksRunNowhereDismissed } from '../pages/chat/SpecHooksNotice'
 import { SystemNoticeRow, isSystemNoticeRow } from '../pages/chat/CompactionCard'
 import { replyShowsFooter } from '../pages/chat/replyFooter'
 import { toolRailColor } from '../utils/toolRailColor'
@@ -219,7 +220,7 @@ export const ToolCallPill = memo(function ToolCallPill({ message, running, onFil
   const copyResetTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null)
   React.useEffect(() => () => { if (copyResetTimer.current) clearTimeout(copyResetTimer.current) }, [])
   // A finished call is NOT re-roled: the backend writes the result onto the 🔧
-  // row's own `meta.output` (chat_runner's EVENT_TOOL_RESULT handler; '' for a
+  // row's own `meta.output` (`_on_tool_result` in dashboard/chat_turn/tool_results.py; '' for a
   // terminal frame with no renderable output), so the role alone left every
   // completed call in a polled transcript on the loader. Same rule as the
   // store-connected ToolCallLine: a result arrived, or the session is idle and
@@ -289,7 +290,8 @@ export const ToolCallPill = memo(function ToolCallPill({ message, running, onFil
   // gets copied is exactly what the panel shows, not the portion the 160px box
   // happens to have scrolled into view.
   // The backend persists the call's `input` and its `output` on the tool row's
-  // meta (`_tool_meta` / the tool-result handler in chat_runner.py), and the
+  // meta (`_tool_meta` in chat_turn/tool_rows.py / `_on_tool_result` in
+  // chat_turn/tool_results.py), and the
   // embed's transcript response carries them. `message.content` is only the
   // "🔧 title" line, so when either payload is present the expanded row renders
   // the main chat's own `ToolDetails` (Input/Output tabs) instead of repeating
@@ -789,6 +791,17 @@ export const defaultMessageRenderers: readonly MessageRenderer[] = [
     roles: ['*'],
     match: m => m.meta?.kind === 'warm_task_brief_claim',
     render: () => null,
+  },
+  {
+    // The notice that a backend runs none of the agent spec's hooks, with its
+    // Dismiss link. Shape-matched, so a host claiming the notice role does not
+    // take the link away; once dismissed, the row draws nothing anywhere.
+    id: 'spec_hooks_run_nowhere',
+    roles: ['*'],
+    match: isSpecHooksRunNowhereNotice,
+    render: (m, ctx) => specHooksRunNowhereDismissed()
+      ? null
+      : ctx.row(<SpecHooksRunNowhereNotice content={m.content} askAgent={ctx.handOff !== false} />),
   },
   {
     id: 'notice',

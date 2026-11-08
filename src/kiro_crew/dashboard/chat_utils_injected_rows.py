@@ -216,6 +216,15 @@ EMPTY_TURN_NOTICE_KIND = "empty_turn"
 #: notice of any kind (the "crewmate chat draws messages only" decision record).
 SPEC_HOOKS_NOTICE_KIND = "spec_hooks"
 
+#: ``meta.spec_hooks_notice`` of the one :data:`SPEC_HOOKS_NOTICE_KIND` row that
+#: says nothing runs the agent spec's hooks on this backend. The dashboard offers
+#: a Dismiss link on this row alone and hides it by this value, so dismissing it
+#: hides no other notice of the kind (``website/src/pages/chat/SpecHooksNotice.tsx``).
+#: A row that names a ``preToolUse`` hook does not carry it, because such a hook
+#: is there to refuse calls. It changes only what the dashboard draws: which
+#: hooks run is decided elsewhere.
+SPEC_HOOKS_RUN_NOWHERE_NOTICE = "run_nowhere"
+
 #: ``meta.kind`` of the session-start notice that says Crew's tools are off in
 #: this session because a settings file Crew does not govern holds its path.
 #: Sessions draws it; crewmate chat drops it (``crewmateBubbles.isCrewmateChatRow``)
@@ -343,6 +352,12 @@ MCP_APP_MESSAGE_KIND = "mcp_app_message"
 #: runner-authored text into user-authored, persisted history).
 AUTOMATION_NOTICE_KIND = "automation_notice"
 
+#: The gateway's follow-up prompt after a chat-launched workflow's result lands
+#: (``server_runtime/workflow_startup``), asking the agent to answer the request
+#: that started the run. Runner-authored like the kinds above, so it drains as an
+#: ``inject`` row (``injectKind: workflow``), never the person's bubble.
+WORKFLOW_FOLLOWUP_KIND = "workflow_followup"
+
 #: Provenance banner wrapped around every app-originated message. Structural
 #: classification is by the queue entry's ``kind`` tag (unforgeable, set at
 #: enqueue time); the banner exists for the MODEL and the transcript reader,
@@ -361,6 +376,7 @@ _SYSTEM_INJECTION_KINDS = SUBAGENT_DELIVERY_KINDS | frozenset(
         MCP_APP_MESSAGE_KIND,
         AUTOMATION_NOTICE_KIND,
         FALSE_TOOL_BLOCKER_REPLAY_KIND,
+        WORKFLOW_FOLLOWUP_KIND,
     )
 )
 
@@ -435,12 +451,13 @@ def is_synthetic_payload_item(item: dict) -> bool:
     An MCP-App message entry (``MCP_APP_MESSAGE_KIND``) is synthetic by the same
     asymmetry: its text is app-authored (server-authored), so mirroring it to a
     linked channel as the human's own words would attribute machine speech to a
-    person.
+    person. A workflow follow-up (``WORKFLOW_FOLLOWUP_KIND``) is the gateway's own
+    text, so it is synthetic too.
     """
     payload = item.get("payload")
     if payload:
         return payload == RecoveryPayload.CONTINUATION
-    if item.get("kind") == MCP_APP_MESSAGE_KIND:
+    if item.get("kind") in (MCP_APP_MESSAGE_KIND, WORKFLOW_FOLLOWUP_KIND):
         return True
     return is_synthetic_recovery_item(item)
 

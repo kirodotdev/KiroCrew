@@ -63,6 +63,8 @@ export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch, send
         session_key?: string
         rss_mb: number; peak_rss_mb: number; cpu_cores: number
         procs: number | null; mcp: number | null
+        /** Credits the live run has burned so far; null while none. Absent from an older gateway. */
+        credits?: number | null
         started_at: number; shared: boolean; pid: number | null; sampled: boolean
       }[]
       totals: {
@@ -77,6 +79,28 @@ export function createSessionsEndpoints({ get, post, del, j, jfetch: fetch, send
          */
         lineage_over_cap: boolean
         lineage_cap: number
+        /**
+         * Everything the product runs on this host, by part, so the page's total
+         * is comparable with the OS's own figure for the app. `rss_mb` above
+         * stays the sessions' own total. Null when the breakdown could not be
+         * taken; absent from an older gateway.
+         */
+        breakdown?: {
+          total_mb: number
+          host_pct: number | null
+          /** True when some part could not be measured, so the total leaves it out. */
+          partial: boolean
+          categories: {
+            /** `sessions`, `warm_pool`, `other_agents`, `mcp_gateway`, `gateway`, `gateway_helpers`, `desktop`. */
+            id: string
+            /** null when this part cannot be measured on this host. */
+            mb: number | null
+            /** null when processes cannot be counted on this host. */
+            procs: number | null
+            /** The largest executables in this part, by base name. */
+            top: { name: string; procs: number; mb: number }[]
+          }[]
+        } | null
       }
       history: { t: number; mb: number }[]
     }>,

@@ -276,7 +276,10 @@ def _install_dashboard_middlewares(
     if dashboard_url:
         _has_token_auth = any(getattr(mw, "_is_token_auth", False) for mw in app.middlewares)
         if _has_token_auth:
-            app["allowed_origins"] = build_allowed_origins(
+            # Joined to the set already seeded, never in place of it: under --port
+            # auto the seeded set also names the served port, and this rebuild
+            # names only the requested one, so replacing it would drop those.
+            app["allowed_origins"] = app.get("allowed_origins", set()) | build_allowed_origins(
                 port, local_only, configured_host, dashboard_url, tailnet_host=tailnet_host
             )
             logger.info(

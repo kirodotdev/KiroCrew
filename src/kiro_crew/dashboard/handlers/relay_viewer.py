@@ -20,8 +20,10 @@ logged or put in an error. Every answer is ``Cache-Control: no-store``.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
-from typing import TYPE_CHECKING, Any, Optional
+import time
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional, TypeVar
 
 from aiohttp import web
 
@@ -39,11 +41,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 OFF_CODE = "RELAY_VIEWER_OFF"
+#: The window's sign-in differs from the vault's (an account switch). A stop code.
+SIGN_IN_CHANGED = "SIGN_IN_CHANGED"
+_HEX = frozenset("0123456789abcdef")
 _NO_STORE = {"Cache-Control": "no-store"}
 #: The client's typed codes (``relay_viewer.cps``), spelled out so this module
 #: needs no import of it at load time.
 _STATUS = {
     "SIGNED_OUT": 409,
+    "SIGN_IN_CHANGED": 409,
     "NOT_SET_UP": 409,
     "INVALID_REQUEST": 400,
     "THROTTLED": 429,
@@ -51,6 +57,13 @@ _STATUS = {
     "UNREACHABLE": 502,
     "BAD_ANSWER": 502,
 }  # every other code (the access refusals and CREW_OFFLINE) is 403
+#: A CPS 401 forces a sign-in refresh at most once per identity in this window.
+FORCE_COOLDOWN_SECONDS = 300.0
+_FORCED_AT: dict[str, float] = {}  # identity -> time.monotonic() of its last forced refresh
+#: identity -> the lock a 401 handler holds across its re-read and forced refresh, so a
+#: second 401 on the same sign-in waits for that refresh instead of reporting signed out.
+_FORCE_LOCKS: dict[str, asyncio.Lock] = {}
+_T = TypeVar("_T")
 
 
 def _ok(body: dict[str, Any]) -> web.Response:
@@ -94,29 +107,101 @@ async def _settings() -> Optional[tuple[str, str]]:
     )
 
 
-async def _bearer(ref: str) -> str:
-    """The credential CPS is called with. Raises :class:`cps.CpsRefused`."""
+def _may_force(identity: str) -> bool:
+    """One forced refresh per sign-in identity per process every cooldown, recorded here."""
+    now = time.monotonic()
+    last = _FORCED_AT.get(identity)
+    if last is not None and now - last < FORCE_COOLDOWN_SECONDS:
+        return False
+    _FORCED_AT[identity] = now
+    return True
+
+
+async def _bearer(ref: str, rejected: str = "") -> tuple[str, str]:
+    """``(credential, token_type)`` CPS is called with. Raises :class:`cps.CpsRefused`.
+
+    *token_type* is ``EXTERNAL_IDP`` for an external IdP sign-in, else empty (the
+    test credential and every other sign-in send no ``TokenType``).
+
+    *rejected* is a sign-in CPS just answered 401. The vault is read again, and if it
+    still holds that sign-in it is refreshed, at most once per cooldown. Inside the
+    cooldown the re-read is answered as is, so the caller sees the same sign-in. A
+    second 401 on the same sign-in waits for a refresh in flight and gets its result.
+    """
     from kiro_crew.relay_viewer import cps
 
     if ref:
         from kiro_crew.relay_client.lease import LeaseCredentialError, read_lease_credential
 
         try:
-            return await asyncio.to_thread(read_lease_credential, ref)
+            return await asyncio.to_thread(read_lease_credential, ref), ""
         except LeaseCredentialError:
             raise cps.CpsRefused(cps.NOT_SET_UP, "the relay viewer credential can't be read")
     from kiro_crew.auth.bridge import default_token_store
     from kiro_crew.auth.provider import KasAuthProvider, NotAuthenticated
     from kiro_crew.auth.refresh import RefreshBlocked, RefreshRejected
 
+    provider = KasAuthProvider(default_token_store(), allow_env_api_key=False)
     try:
-        token = await KasAuthProvider(default_token_store(), allow_env_api_key=False).current()
+        token = await provider.current()
+        if rejected and token.access_token == rejected:
+            lock = _FORCE_LOCKS.get(token.identity)
+            if lock is None:
+                lock = _FORCE_LOCKS[token.identity] = asyncio.Lock()
+            # Held across the re-read and the refresh only, never a CPS call.
+            async with lock:
+                token = await provider.current()
+                if token.access_token == rejected and _may_force(token.identity):
+                    logger.info("relay viewer: CPS refused the sign-in; refreshing it once")
+                    token = await provider.current(rejected_access_token=rejected)
     except (NotAuthenticated, RefreshRejected, RefreshBlocked):
         raise cps.CpsRefused(cps.SIGNED_OUT, "sign in to Kiro to see your remote Crews")
     except Exception as exc:  # noqa: BLE001 - a transient refresh failure; type only, no message
         logger.info("relay viewer: sign-in refresh failed (%s)", type(exc).__name__)
         raise cps.CpsRefused(cps.UNREACHABLE, "your Kiro sign-in couldn't be refreshed")
-    return token.access_token
+    return token.access_token, ("EXTERNAL_IDP" if token.auth_method == "external_idp" else "")
+
+
+async def _with_sign_in(ref: str, call: Callable[[str, str], Awaitable[_T]]) -> _T:
+    """``call(bearer, token_type)``, sent again once when CPS answers it 401.
+
+    Only a 401 from a CPS call does this, once per request: the sign-in is read again
+    (refreshed if CPS refused the stored one, see :func:`_bearer`) and *call* resent
+    when it changed. An unchanged sign-in, or a second 401, stays ``SIGNED_OUT``. The
+    test credential is never refreshed, so its 401 is final.
+    """
+    from kiro_crew.relay_viewer import cps
+
+    bearer, token_type = await _bearer(ref)
+    try:
+        return await call(bearer, token_type)
+    except cps.CpsRefused as exc:
+        if exc.status != 401 or ref:
+            raise
+        refused = exc
+    fresh, token_type = await _bearer(ref, rejected=bearer)
+    if fresh == bearer:
+        raise refused
+    return await call(fresh, token_type)
+
+
+async def _sign_in_marker(ref: str) -> Optional[str]:
+    """A short, non-secret marker naming the Kiro sign-in, or ``None``.
+
+    The desktop app closes its relay Crew windows when it changes (an account
+    switch). Built only from the vault's identity fingerprint (allowlisted account
+    claims plus the sign-in generation, no token or secret), under a fixed prefix
+    so it can't be matched against that fingerprint. ``None`` with the test
+    credential or an empty fingerprint. Never logged.
+    """
+    if ref:
+        return None
+    from kiro_crew.auth.bridge import vault_identity_fingerprint
+
+    fingerprint = await asyncio.to_thread(vault_identity_fingerprint)
+    if not fingerprint:
+        return None
+    return hashlib.sha256(b"relay-viewer-sign-in\n" + fingerprint.encode()).hexdigest()[:16]
 
 
 def _entry(crew: cps.CrewEndpoint) -> dict[str, str]:
@@ -146,7 +231,12 @@ async def api_relay_viewer_crews(request: web.Request) -> web.Response:
         return denied
     cps_url, ref = settings
     try:
-        crews = await cps.list_crew_endpoints(cps_url, await _bearer(ref))
+        crews = await _with_sign_in(
+            ref,
+            lambda bearer, token_type: cps.list_crew_endpoints(
+                cps_url, bearer, token_type=token_type
+            ),
+        )
     except cps.CpsRefused as exc:
         logger.info("relay viewer: crews -> %s", exc.code)
         return _refused(exc)
@@ -209,22 +299,76 @@ async def api_relay_viewer_token(request: web.Request) -> web.Response:
     endpoint_id = body.get("endpointId") if isinstance(body, dict) else None
     if not isinstance(endpoint_id, str) or not ENDPOINT_ID_RE.match(endpoint_id):
         return _refused(cps.CpsRefused(cps.INVALID_REQUEST, "not a Crew endpoint ID"))
+    # The sign-in marker the window was opened under; none on a first open.
+    expected = body.get("signInMarker")
+    if expected is not None and not (
+        isinstance(expected, str) and len(expected) == 16 and set(expected) <= _HEX
+    ):
+        return _refused(cps.CpsRefused(cps.INVALID_REQUEST, "not a sign-in marker"))
     cps_url, ref = settings
-    try:
-        bearer = await _bearer(ref)
+
+    async def _list_then_mint(
+        bearer: str, token_type: str
+    ) -> tuple[cps.CrewEndpoint, cps.CrewAccessToken]:
         # Listed again on each call, so the Crew must still be granted and its
         # URL is the one CPS gives now.
         crew = next(
             (
                 c
-                for c in await cps.list_crew_endpoints(cps_url, bearer)
+                for c in await cps.list_crew_endpoints(cps_url, bearer, token_type=token_type)
                 if c.endpoint_id == endpoint_id
             ),
             None,
         )
         if crew is None:
             raise cps.CpsRefused(cps.CREW_ACCESS_NOT_GRANTED, "this Crew isn't in your list")
-        grant = await cps.create_crew_access_token(cps_url, bearer, endpoint_id)
+        grant = await cps.create_crew_access_token(
+            cps_url, bearer, endpoint_id, token_type=token_type
+        )
+        return crew, grant
+
+    # The marker is read before and after the whole sign-in and mint (the 401
+    # resend included). Every sign-in writes a new generation, so a switch at any
+    # point in between changes it, and a grant minted under an account the marker
+    # can't name is never sent. A window's own marker is checked before CPS is
+    # called, so a switch to an account without this Crew is SIGN_IN_CHANGED, not
+    # CREW_ACCESS_NOT_GRANTED.
+    def _changed() -> cps.CpsRefused:
+        return cps.CpsRefused(
+            SIGN_IN_CHANGED, "your Kiro sign-in changed since this Crew window opened"
+        )
+
+    def _straddled() -> cps.CpsRefused:
+        return cps.CpsRefused(
+            cps.UNREACHABLE, "your Kiro sign-in changed while this Crew was opening, try again"
+        )
+
+    before = await _sign_in_marker(ref)
+    try:
+        # (a) An empty read can't tell, so it skips this (b): a sign-out then
+        # answers SIGNED_OUT from the bearer read.
+        if expected and before is not None and before != expected:
+            raise _changed()
+        try:
+            crew, grant = await _with_sign_in(ref, _list_then_mint)
+        except cps.CpsRefused as exc:
+            # (c) A switch that landed after the first read, refused by the new
+            # account's CPS answer.
+            if expected and exc.code != cps.SIGNED_OUT:
+                now = await _sign_in_marker(ref)
+                if now is not None and now != expected:
+                    raise _changed() from None
+            raise
+        marker = await _sign_in_marker(ref)
+        # (d) A window's renewal needs its own marker back; a first open needs
+        # the two reads to agree.
+        if expected:
+            if marker is None:
+                raise _straddled()
+            if marker != expected:
+                raise _changed()
+        elif marker != before:
+            raise _straddled()
     except cps.CpsRefused as exc:
         logger.info("relay viewer: mint %s -> %s", endpoint_id, exc.code)
         _audit(request, "denied", f"{endpoint_id} {exc.code}")
@@ -239,5 +383,6 @@ async def api_relay_viewer_token(request: web.Request) -> web.Response:
             "serverDate": grant.server_date,
             "crewUrl": crew.crew_url,
             "name": crew.name,
+            "signInMarker": marker,
         }
     )

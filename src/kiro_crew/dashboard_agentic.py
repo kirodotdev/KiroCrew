@@ -1042,9 +1042,11 @@ SUGGESTIONS_STATE: str = (
     "sees."
 )
 SUGGESTIONS_LINE: str = (
-    SUGGESTIONS_STATE + " Your progress belongs on a page of your own, not in chat: when "
-    "you have work to report, build your page with the dashboard skill "
-    "(dashboard_save, then dashboard_apply) instead of posting it here."
+    SUGGESTIONS_STATE + " Your progress belongs on a page of your own, not in chat: "
+    "when you have work to report, build your page with the dashboard skill "
+    "(dashboard_save, then dashboard_apply) instead of posting it here. Other "
+    "pictures (a comparison, a flow, a before/after, a cause chain) still get drawn "
+    "as widgets, per Inline Widgets."
 )
 
 
@@ -1415,9 +1417,10 @@ BOARD_TEMPLATES: Final[frozenset[str]] = frozenset({"goal-board", "work-kanban"}
 
 #: The [DASHBOARD] line a root session on one of :data:`BOARD_TEMPLATES` gets.
 BOARD_IN_PANEL_LINE: Final[str] = (
-    "That page IS the task board, in the side panel. Do not write a task board, "
-    "a task table or a task-dashboard artifact in your reply: give only what needs "
-    "the person, then one line on what changed and what is next."
+    "That page IS the task board, in the side panel. Do not redraw the board or a "
+    "per-task status list in your reply. Other pictures (a comparison, a flow, a "
+    "before/after, a cause chain) still get drawn as widgets, per Inline Widgets. "
+    "Give what needs the person, then one line on what changed and what is next."
 )
 
 

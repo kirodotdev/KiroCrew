@@ -194,6 +194,54 @@ async def _remove_goal_check_ins(
         return None
 
 
+async def _destroy_member_thread_sessions(
+    sessions: Any, name: str, cfg: KiroCrewConfig
+) -> list[str] | None:
+    """Destroy a deleted crewmate's pinned-thread sessions. Never raises.
+
+    The thread is keyed ``dashboard:member-<slug>`` or, on a private store,
+    ``dashboard:member-<slug>.memory-<store>`` in ``session_map.json``, and nothing
+    else clears that entry: a Fresh start keeps the key and member threads are not
+    listed where a session can be deleted. ``sessions.destroy`` ends a live process
+    for the key and deletes its entry. The slug is resolved from *cfg*, as the goal
+    check-ins are, and a slug another live crew still derives keeps its entries.
+    The V1 key and the current store's key are named outright, so an entry a Fresh
+    start left without a session ID goes too; an earlier store generation that still
+    maps a session is matched on the exact ``.memory-`` boundary, which a sibling
+    slug cannot share.
+
+    Returns the keys destroyed, or ``None`` when the removal failed.
+    """
+    try:
+        from kiro_crew.members import (
+            MEMORY_STORE_SLOT_SUFFIX,
+            member_slug,
+            member_thread_session_alias,
+        )
+
+        slug = member_slug(name, cfg)
+        if await asyncio.to_thread(_member_slug_is_claimed, slug):
+            return []
+        smap = sessions._session_map
+        keys = [member_thread_session_alias(slug)]
+        store = cfg.agents[name].memory_store
+        if store and store != "default":
+            keys.append(member_thread_session_alias(slug, store))
+        prefix = keys[0] + MEMORY_STORE_SLOT_SUFFIX
+        keys += sorted(
+            k for k in smap.mapped_sids_by_key() if k.startswith(prefix) and k not in keys
+        )
+        held = [key for key in keys if smap.has_hint(key)]
+        for key in held:
+            await sessions.destroy(key)
+        return held
+    except Exception:
+        logger.warning(
+            "crew delete: could not remove the thread sessions of %r", name, exc_info=True
+        )
+        return None
+
+
 def _reclaim_deleted_member_dashboard_lock(name: str, cfg: KiroCrewConfig) -> None:
     """Remove the dashboard structure lock of a member the roster does not hold.
 
@@ -318,22 +366,29 @@ def _prune_private_copy_outcome(crew: str, bound_template: str) -> str:
 
 
 async def _remove_member_leftovers(
-    name: str, cfg: KiroCrewConfig, bound_template: str, crons: Any, actor: str
+    name: str,
+    cfg: KiroCrewConfig,
+    bound_template: str,
+    crons: Any,
+    actor: str,
+    sessions: Any = None,
 ) -> list[tuple[str, str, str]]:
     """Remove what a deleted crewmate leaves outside its config record. Never raises.
 
     The one teardown both deletes run once the record is gone --
     ``DELETE /api/agents/{name}`` and ``kirocrew agent delete``: the avatar, the
-    goal check-in schedules (skipped when *crons* is ``None``), the git worktrees
-    its workers ran in, and its private template copy. *cfg* is the config
+    goal check-in schedules (skipped when *crons* is ``None``), its pinned
+    thread's sessions (skipped when *sessions*, the gateway's session manager,
+    is ``None``: only the process that owns the map may rewrite it), the git
+    worktrees its workers ran in, and its private template copy. *cfg* is the config
     captured while the record was still in it and *bound_template* the binding
     read inside the delete's critical section, as each step documents.
 
     Every step runs whatever the one before it did. Returns one
     ``(outcome, kind, detail)`` per thing touched: *outcome* is ``"removed"``,
     ``"kept"`` (a worktree :func:`remove_crewmate_worktrees` keeps on purpose) or
-    ``"failed"``; *kind* is ``"avatar"``, ``"goal check-in"``, ``"worktree"`` or
-    ``"private template copy"``; *detail* names the item, empty for a failure.
+    ``"failed"``; *kind* is ``"avatar"``, ``"goal check-in"``, ``"thread session"``,
+    ``"worktree"`` or ``"private template copy"``; *detail* names the item, empty for a failure.
     """
     report: list[tuple[str, str, str]] = []
 
@@ -356,6 +411,11 @@ async def _remove_member_leftovers(
         if jobs is None:
             report.append(("failed", "goal check-in", ""))
         report.extend(("removed", "goal check-in", job) for job in jobs or ())
+    if sessions is not None:
+        keys = await _destroy_member_thread_sessions(sessions, name, cfg)
+        if keys is None:
+            report.append(("failed", "thread session", ""))
+        report.extend(("removed", "thread session", key) for key in keys or ())
     # One with uncommitted changes is kept; its branches and the repositories'
     # own checkouts are never touched.
     # Worktrees sit under the slug, so a slug another live crew still derives
@@ -559,7 +619,12 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
         # Best-effort: no step blocks the crew's removal.
         state = request.app.get("state")
         leftovers = await _remove_member_leftovers(
-            name, cfg, bound_template, getattr(state, "crons", None), "dashboard"
+            name,
+            cfg,
+            bound_template,
+            getattr(state, "crons", None),
+            "dashboard",
+            getattr(state, "sessions", None),
         )
         if ("removed", "private template copy", bound_template) in leftovers:
             clear_list_agents_cache()

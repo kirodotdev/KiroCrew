@@ -154,7 +154,7 @@ def test_a_run_key_resolves_to_its_own_tab():
     run_key = f"cron:{JOB_ID}:11111111"
     set_dashboard_surfaced({run_key})
     assert dashboard_slot_key(run_key) == f"cron-{JOB_ID}-11111111"
-    # Reopened from history, the run's tab is named by its transcript stem.
+    # A run tab named by its transcript stem resolves by its published name.
     set_dashboard_surfaced({run_key}, {run_key: f"cron_{JOB_ID}_11111111"})
     assert dashboard_slot_key(run_key) == f"cron_{JOB_ID}_11111111"
     # Only the job's tab is open: a run key still resolves to it.

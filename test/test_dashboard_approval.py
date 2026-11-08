@@ -756,6 +756,29 @@ class TestPreToolUseHookBlockRecovery:
         assert all(secret not in c.get("tool_name", "") for c in blocked), blocked
 
 
+class TestPreToolUseFiresOncePerCall:
+    """A call the gate passed to the approval card had its PreToolUse fire there."""
+
+    @pytest.mark.asyncio
+    async def test_a_gated_call_approved_on_the_card_fires_once(self, tmp_path) -> None:
+        hook_store = _make_hook_store()
+        state, client = _make_state(
+            tmp_path, context_builder=_context_builder(), hook_store=hook_store
+        )
+        slot = _make_slot()
+
+        await _drive_hook_blocked_turn(state, client, slot, approve_prompt=True)
+
+        pre_fires = [
+            call
+            for call in hook_store.fire.await_args_list
+            if call.args[0] == HOOK_EVENT_PRE_TOOL_USE
+        ]
+        assert len(pre_fires) == 1, pre_fires
+        client.approve_tool.assert_called_once()
+        client.reject_tool.assert_not_called()
+
+
 # ── Deny-row title redaction (all permission paths) ──
 
 

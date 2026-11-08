@@ -263,6 +263,7 @@ def build_status(
                 ),
                 "original_input": run.original_input[:2000],
                 "source": run.source,
+                "agent": run.agent,
                 "task_details": [
                     {
                         "index": t.index,

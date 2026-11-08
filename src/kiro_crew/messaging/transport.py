@@ -24,12 +24,19 @@ DM_TARGET_PREFIX = "user:"
 
 @dataclass(frozen=True)
 class ConfiguredChannelTarget:
-    """A user-configured destination exposed to the dashboard."""
+    """A user-configured destination exposed to the dashboard.
+
+    ``learned`` marks a destination the transport added from inbound traffic rather
+    than from anything the user configured (a WeCom peer who messaged the bot under
+    ``wecom.allow_all_users``). It may still be offered and sent to, but it never
+    names the channel's owner: :func:`sole_direct_target` skips it.
+    """
 
     target_id: str
     label: str
     available: bool = True
     unavailable_reason: str = ""
+    learned: bool = False
 
     def to_dict(self, channel_type: str) -> dict[str, Any]:
         return {
@@ -50,8 +57,9 @@ def sole_direct_target(targets: Iterable[Any]) -> str:
     the operator — so an owner can only be inferred, and this refuses to infer one
     from an ambiguous list: a target is returned only when the channel advertises
     exactly one available ``user:`` target. Unavailable targets (WeCom may only
-    reply to an inbound message) and thread or room targets (a wider audience than
-    a DM) are not candidates.
+    reply to an inbound message), thread or room targets (a wider audience than
+    a DM) and ``learned`` targets (someone who merely messaged the bot) are not
+    candidates.
 
     Shared by the proactive owner DM (``send_message``'s channel ``session``) and
     by session control's owner-DM audience predicate, so the two cannot disagree
@@ -64,6 +72,7 @@ def sole_direct_target(targets: Iterable[Any]) -> str:
         for target in targets
         if str(getattr(target, "target_id", "") or "").startswith(DM_TARGET_PREFIX)
         and getattr(target, "available", False)
+        and not getattr(target, "learned", False)
     ]
     return direct[0] if len(direct) == 1 else ""
 

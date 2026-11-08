@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Lock, MonitorCog, Blocks, Check, RadioTower, Bell, Volume2, ListMusic, Music } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsSelect } from '../../components/settings'
 import { SettingsSubNav, type SubNavItem } from '../../components/SettingsSubNav'
@@ -12,18 +12,20 @@ import type { NotificationChannel } from '../../types'
 import {
   SOUND_PRESETS, SOUND_CATEGORIES, type SoundPreset, type SoundChoice, type SoundCategory, type SoundSettings, type ToneStep,
   type CustomTones, type CustomFiles, type CustomFileMeta, type StoredFileMeta, validateCustomTone, validateCustomFile, allCustomSounds,
-  loadSoundSettings, saveSoundSettings, playPreset, presetForKind, customSoundId, fileSoundId, userSoundName,
+  loadSoundSettings, saveSoundSettings, playPreset, presetForKind, customSoundId, fileSoundId, userSoundName, isSoundMuted,
 } from '../../hooks/useNotificationSound'
 import { putSoundFile, getSoundFile, deleteSoundFile, newSoundFileKey } from '../../hooks/customSoundFiles'
 import { CustomSoundsSection, type UndoResult } from './CustomSoundsSection'
 import { PushSection } from './NotificationsPushSection'
 import { AppSessionMuteSection } from './AppSessionMuteSection'
+import { DeliverToControl, type BridgePatch } from './NotificationsBridgeRoute'
 import { saveChatCompleteNotify, useChatCompleteNotify } from '../../hooks/chatCompleteNotify'
 import { loadBannerEnabled, saveBannerEnabled } from '../../hooks/notificationBanner'
 import { loadUnreadOnAttention, saveUnreadOnAttention } from '../../hooks/unreadOnAttention'
 import { useNotificationPermission } from '../../hooks/useNotificationPermission'
 
 import { i18nT } from '../../i18n/t'
+import { fmtTime } from '../../i18n/format'
 const PRESET_OPTIONS: SoundPreset[] = ['none', ...SOUND_PRESETS]
 
 /** localStorage key the sound settings persist under. Mirrors the private
@@ -161,6 +163,30 @@ function priorityLabel(priority: string): string {
   return Object.hasOwn(PRIORITY_LABEL_KEYS, priority) ? i18nT(PRIORITY_LABEL_KEYS[priority]) : priority
 }
 
+/** Timed-mute choices; while one runs the select also shows `MUTED_NOW`. */
+const MUTE_CHOICES = ['off', '1h', '2h', 'morning'] as const
+type MuteChoice = typeof MUTE_CHOICES[number]
+const MUTED_NOW = 'muted'
+const MORNING_HOUR = 8
+
+/** When a mute chosen at `now` ends: one or two hours later, or the next 8:00. */
+function muteEnd(choice: Exclude<MuteChoice, 'off'>, now: number): number {
+  if (choice !== 'morning') return now + (choice === '1h' ? 1 : 2) * 3_600_000
+  const at = new Date(now)
+  at.setHours(MORNING_HOUR, 0, 0, 0)
+  if (at.getTime() <= now) at.setDate(at.getDate() + 1)
+  return at.getTime()
+}
+
+const muteLabel = (choice: MuteChoice, now: number): string => {
+  switch (choice) {
+    case 'off': return i18nT('pages.settings.notificationsPanel.mute_off')
+    case '1h': return i18nT('pages.settings.notificationsPanel.mute_for_1h')
+    case '2h': return i18nT('pages.settings.notificationsPanel.mute_for_2h')
+    case 'morning': return i18nT('pages.settings.notificationsPanel.mute_until', { time: fmtTime(muteEnd('morning', now)) })
+  }
+}
+
 /** Shared style for the sound-preview buttons: the Sound card's "Test
  *  notification" button and the per-category "Test" buttons must stay
  *  visually identical, so both compose from this one string. */
@@ -212,15 +238,22 @@ function channelLabel(c: NotificationChannel): string {
   return c.channel.startsWith(`${c.source}.`) ? c.channel.slice(c.source.length + 1) : c.channel
 }
 
-type ChannelsData = { channels?: NotificationChannel[] }
-type ChannelPatch = { muted?: boolean; priority?: string | null }
+/** `bridge_transports`: the chat apps the bridge has a sink for, the only ones a
+ *  route may newly name. Absent from a gateway that predates it: nothing is offered. */
+type ChannelsData = { channels?: NotificationChannel[]; bridge_transports?: string[] }
+type ChannelPatch = { muted?: boolean; priority?: string | null } & BridgePatch
+type ChannelField = 'muted' | 'priority' | 'deliver_to' | 'deliver_min_priority'
 const CHANNELS_KEY = ['notification-channels'] as const
+const CHANNEL_PATCH_KEY = ['notification-channel-patch'] as const
 
-/** The stored settings fields a channel patch writes. */
-function channelPatchFields(patch: ChannelPatch): ('muted' | 'priority')[] {
-  const fields: ('muted' | 'priority')[] = []
+/** The stored settings fields a channel patch writes. An emptied route also
+ *  drops the floor: the backend clears both together. */
+function channelPatchFields(patch: ChannelPatch): ChannelField[] {
+  const fields: ChannelField[] = []
   if (patch.muted !== undefined) fields.push('muted')
   if ('priority' in patch) fields.push('priority')
+  if (patch.deliver_to !== undefined) fields.push('deliver_to')
+  if (patch.deliver_min_priority !== undefined || patch.deliver_to?.length === 0) fields.push('deliver_min_priority')
   return fields
 }
 
@@ -234,6 +267,14 @@ function ChannelsSection({ patch }: { patch: (channel: string, settings: Channel
     queryFn: api.notificationChannels,
   })
   const channels = channelsQuery.data?.channels
+  const bridgeTransports = channelsQuery.data?.bridge_transports
+  // Channels with a route save still in flight (its refetch included: onSettled
+  // awaits it). A route is written whole, so a later save the server handled
+  // first would be undone by the earlier one; the row holds new picks until then.
+  const routeSaving = new Set(useMutationState({
+    filters: { mutationKey: CHANNEL_PATCH_KEY, status: 'pending' },
+    select: m => m.state.variables as { channel: string; settings: ChannelPatch } | undefined,
+  }).filter(v => v && (v.settings.deliver_to !== undefined || v.settings.deliver_min_priority !== undefined)).map(v => v!.channel))
 
   if (channelsQuery.isError) {
     return (
@@ -326,6 +367,15 @@ function ChannelsSection({ patch }: { patch: (channel: string, settings: Channel
                     </div>
                   </>
                 )}
+                <DeliverToControl
+                  channel={c.channel}
+                  name={channelLabel(c)}
+                  deliverTo={c.settings.deliver_to}
+                  floor={c.settings.deliver_min_priority}
+                  deliverable={bridgeTransports}
+                  saving={routeSaving.has(c.channel)}
+                  patch={patch}
+                />
               </div>
             )
           })}
@@ -461,6 +511,15 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
   const update = (partial: Partial<SoundSettings>) => {
     applySetting(current => ({ ...current, ...partial }))
   }
+
+  // Re-render when a mute runs out, so the row reads Off again by itself.
+  const [, setMuteExpired] = useState(0)
+  useEffect(() => {
+    const left = (settings.mutedUntil ?? 0) - Date.now()
+    if (left <= 0) return
+    const timer = window.setTimeout(() => setMuteExpired(n => n + 1), left)
+    return () => window.clearTimeout(timer)
+  }, [settings.mutedUntil])
 
   const setCategoryPreset = (cat: SoundCategory, preset: SoundChoice): boolean =>
     applyCategoryEdit(current => ({ ...current, perCategory: { ...current.perCategory, [cat]: preset } }))
@@ -610,6 +669,8 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
   }
 
   const fallback = settings.perCategory.all ?? 'chime'
+  const now = Date.now()
+  const muted = isSoundMuted(settings, now)
 
   // The channel save lives here, not in ChannelsSection: the rail unmounts the
   // Sources pane on switch, so an in-pane failure notice would vanish silently
@@ -624,6 +685,7 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
   const persistedRef = useRef(new Map<string, { value: unknown; pending: number }>())
   const fieldKey = (channel: string, k: string) => JSON.stringify([channel, k])
   const patchMut = useMutation({
+    mutationKey: CHANNEL_PATCH_KEY,
     mutationFn: ({ channel, settings }: { channel: string; settings: ChannelPatch }) =>
       api.updateNotificationChannelSettings(channel, settings),
     // Optimistic update; the PUT is authoritative — a failure rolls back the
@@ -634,6 +696,11 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
       const applied = { ...before }
       if (settings.muted !== undefined) { if (settings.muted) applied.muted = true; else delete applied.muted }
       if ('priority' in settings) { if (settings.priority) applied.priority = settings.priority; else delete applied.priority }
+      if (settings.deliver_to !== undefined) {
+        if (settings.deliver_to.length) applied.deliver_to = settings.deliver_to
+        else { delete applied.deliver_to; delete applied.deliver_min_priority }
+      }
+      if (settings.deliver_min_priority !== undefined) applied.deliver_min_priority = settings.deliver_min_priority
       qc.setQueryData<ChannelsData>(CHANNELS_KEY, prev => prev && {
         ...prev,
         channels: prev.channels?.map(c => {
@@ -671,7 +738,9 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
           if (c.channel !== channel) return c
           const next = { ...c.settings }
           for (const k of ctx.touched) {
-            if (next[k] !== ctx.applied[k]) continue
+            // By value: the cache holds its own copy of a route array
+            // (setQueryData's structural sharing), never `applied`'s reference.
+            if (JSON.stringify(next[k]) !== JSON.stringify(ctx.applied[k])) continue
             const persisted = persistedRef.current.get(fieldKey(channel, k))?.value
             if (persisted === undefined) delete next[k]
             else Object.assign(next, { [k]: persisted })
@@ -783,6 +852,21 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
             label={i18nT('pages.settings.notificationsPanel.play_sound_on_new_notifications')}
             checked={settings.enabled}
             onChange={v => update({ enabled: v })}
+          />
+          <SettingsSelect
+            label={i18nT('pages.settings.notificationsPanel.mute_sounds')}
+            hint={i18nT('pages.settings.notificationsPanel.mute_sounds_description')}
+            value={muted ? MUTED_NOW : 'off'}
+            options={[...(muted ? [MUTED_NOW] : []), ...MUTE_CHOICES]}
+            optionLabels={[
+              ...(muted ? [i18nT('pages.settings.notificationsPanel.muted_until', { time: fmtTime(settings.mutedUntil) })] : []),
+              ...MUTE_CHOICES.map(c => muteLabel(c, now)),
+            ]}
+            onChange={v => {
+              if (v === 'off') update({ mutedUntil: undefined })
+              else update({ mutedUntil: muteEnd(v as Exclude<MuteChoice, 'off'>, Date.now()) })
+            }}
+            disabled={!settings.enabled}
           />
           <div className="flex flex-col gap-1.5 py-1.5" data-setting-label={i18nT('pages.settings.notificationsPanel.volume')}>
             {/* Slider is correctly associated via htmlFor+id (a range input can't be nested); label-has-for's nesting requirement is a false positive here. */}

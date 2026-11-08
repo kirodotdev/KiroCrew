@@ -39,6 +39,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew import crewmate_stage
+from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.owner_only_files import mkdirs_owner_only
 
 logger = logging.getLogger(__name__)
@@ -293,7 +294,7 @@ async def _set_avatar(key: str, ext: str, blob: bytes) -> str:
         tmp = staged.with_suffix(f".{ext}.tmp-{uuid.uuid4().hex[:8]}")
         try:
             tmp.write_bytes(blob)
-            os.replace(tmp, staged)
+            replace_with_retry(tmp, staged)
         finally:
             tmp.unlink(missing_ok=True)
 

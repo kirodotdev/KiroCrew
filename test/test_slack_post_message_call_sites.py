@@ -70,6 +70,11 @@ BASELINE: dict[str, tuple[int, str]] = {
         "send_message tool: text plus a plain fallback when Slack rejects the button form",
     ),
     "dashboard/server_runtime/owner_notices.py": (1, "owner DM notice"),
+    "notifications/bridge_slack.py": (
+        1,
+        "bridged notification to the owner DM: redacted by the dispatcher, every field"
+        " escaped by render_slack_text",
+    ),
     "shared_crew/turn_gate.py": (1, "fixed capacity note for a message fair admission refused"),
     "slack/allowlist.py": (1, "access-request DM to an allowlist approver"),
     "slack/code_channels/routing.py": (
@@ -98,7 +103,7 @@ BASELINE: dict[str, tuple[int, str]] = {
     ),
     "slack/gateway_runtime/subagent_wiring.py": (1, "owner DM with a subagent notice"),
     "slack/handler_runtime/commands.py": (
-        77,
+        78,
         "slash and text command replies: fixed status and help text, the"
         " channel-agent link refusal, and the !channel config-save refusal",
     ),

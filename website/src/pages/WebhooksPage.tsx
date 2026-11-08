@@ -622,7 +622,7 @@ export default function WebhooksPage() {
               onClick={() => select({ kind: 'token', id: token.id })}
               dot={<Dot className={token.enabled !== false ? 'bg-ok' : 'bg-muted'} />}
               title={token.label}
-              subtitle={`${i18nT('pages.channelPage.agent')}: ${token.agent || '—'}`}
+              subtitle={i18nT('pages.webhooksPage.token_agent', { agent: token.agent || '—' })}
               age={usedAgo(token.last_used_at)}
               testId={`webhook-row-token-${token.id}`}
             />
@@ -788,7 +788,7 @@ export default function WebhooksPage() {
                 onClick={() => { setRevealed(null); setDismissArmed(false) }}
                 data-testid="webhook-reveal-dismiss-confirm"
               >
-                <X size={13} /> {i18nT('pages.webhooksPage.confirm_hide')} {i18nT('pages.webhooksPage.permanently')}
+                <X size={13} /> {i18nT('pages.webhooksPage.confirm_hide_permanently')}
               </Btn>
             )
             : (
@@ -869,7 +869,7 @@ export default function WebhooksPage() {
           <div className="min-w-0">
             <div className="text-[14px] font-semibold text-text-strong truncate">{selectedToken.label}</div>
             <div className="text-[12px] text-muted truncate">
-              {i18nT('pages.channelPage.agent')}: {selectedToken.agent || '—'}
+              {i18nT('pages.webhooksPage.token_agent', { agent: selectedToken.agent || '—' })}
             </div>
           </div>
           <Badge variant={selectedToken.enabled !== false ? 'ok' : 'muted'} className="ml-auto shrink-0">
@@ -1041,7 +1041,7 @@ export default function WebhooksPage() {
           {FRESHNESS[selectedContext.freshness].label()}
         </Badge>}
       >
-        {FRESHNESS[selectedContext.freshness].effect()} {i18nT('pages.webhooksPage.context_goes_stale_after_1_hour_and_expires_afte')}
+        {i18nT('pages.webhooksPage.context_freshness_note', { effect: FRESHNESS[selectedContext.freshness].effect() })}
       </Banner>
 
       <Section
@@ -1072,7 +1072,7 @@ export default function WebhooksPage() {
               <span className="text-muted">{FRESHNESS[selectedContext.freshness].effect()}</span>
             </span>
           )],
-          [i18nT('pages.webhooksPage.stored_size'), `${fmtNumber(selectedContext.context_chars)} chars`],
+          [i18nT('pages.webhooksPage.stored_size'), i18nT('pages.webhooksPage.stored_chars', { count: selectedContext.context_chars, n: fmtNumber(selectedContext.context_chars) })],
         ]}
         />
         {confirmDelete === selectedContext.hook_id && (
@@ -1084,7 +1084,7 @@ export default function WebhooksPage() {
 
       <Section
         title={i18nT('pages.webhooksPage.stored_context_summary')}
-        right={<Badge variant="muted">{fmtNumber(selectedContext.context_chars)} {i18nT('pages.webhooksPage.chars')}</Badge>}
+        right={<Badge variant="muted">{i18nT('pages.webhooksPage.stored_chars', { count: selectedContext.context_chars, n: fmtNumber(selectedContext.context_chars) })}</Badge>}
       >
         {selectedContext.context_summary
           ? (

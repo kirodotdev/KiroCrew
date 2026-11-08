@@ -584,6 +584,9 @@ class SessionManager:
     _has_allocation_reservation = _claims._has_allocation_reservation
     _spawn_in_flight = _claims._spawn_in_flight
     try_acquire = _claims.try_acquire
+    is_retiring = _claims.is_retiring
+    run_identity_check = _claims.run_identity_check
+    _acquire_after_identity_check = _claims._acquire_after_identity_check
     capability_runtime_view = _claims.capability_runtime_view
     active_providers = _claims.active_providers
     any_active_turn = _claims.any_active_turn
@@ -603,6 +606,7 @@ class SessionManager:
     ending_key = _claims.ending_key
     allocation_requested_model = _claims.allocation_requested_model
     fresh_start_unclaimed = _claims.fresh_start_unclaimed
+    rearm_first_turn = _claims.rearm_first_turn
     record_effort_override = _claims.record_effort_override
     record_success = _claims.record_success
     record_failure = _claims.record_failure
@@ -705,6 +709,8 @@ class SessionManager:
     consume_needs_reinjection = _turn_context.consume_needs_reinjection
     provider_switch_replay_pending = _turn_context.provider_switch_replay_pending
     mark_provider_switch_replay = _turn_context.mark_provider_switch_replay
+    provider_switch_replay_delivered = _turn_context.provider_switch_replay_delivered
+    note_provider_switch_replay_delivered = _turn_context.note_provider_switch_replay_delivered
     consume_provider_switch_replay = _turn_context.consume_provider_switch_replay
     first_turn_history_owed_pending = _turn_context.first_turn_history_owed_pending
     unlanded_marker_pending = _turn_context.unlanded_marker_pending
@@ -777,6 +783,7 @@ class SessionManager:
     remove = _teardown.remove
     retire_kiro_identity_sessions = _teardown.retire_kiro_identity_sessions
     flag_identity_stamp_mismatches = _teardown.flag_identity_stamp_mismatches
+    holds_kiro_process_of_unknown_account = _teardown.holds_kiro_process_of_unknown_account
     _retire_kiro_subagent_runtimes = _teardown._retire_kiro_subagent_runtimes
     _retire_kiro_bg_runtime = _teardown._retire_kiro_bg_runtime
     remove_if_unclaimed = _teardown.remove_if_unclaimed
@@ -865,6 +872,14 @@ class SessionManager:
         # different account than the live one even when no read ever observed
         # the interim (see ``flag_identity_stamp_mismatches``).
         self.spawn_identity_reader: "Callable[[], Awaitable[str]] | None" = None
+        # Installed by the dashboard next to ``spawn_identity_reader``: the Kiro
+        # account check (``chat_runner._retire_sessions_on_identity_change``, as
+        # its unattended caller) that ``get_or_create``, ``open_task_session`` and
+        # ``try_acquire`` await before they hand out a session, so no acquire path
+        # can skip it.
+        # None means no identity store to check against -- CLI entry points and
+        # tests -- and acquires run unchecked, as they did before it existed.
+        self.identity_check_before_acquire: "Callable[[], Awaitable[None]] | None" = None
         # Installed by the gateway once it owns this manager (set_injection_probe);
         # None means "no gateway, so no completion injection can be in flight".
         self._injection_probe: "Callable[[str], bool] | None" = None
@@ -918,7 +933,8 @@ class SessionManager:
         self.on_stuck_turn: Callable[[str, float], None] | None = None
         # Fired after a turn lease is released (``release``), with the folded
         # key. Also a seam: the dashboard uses it to land a model pick at a
-        # channel turn's end, which no dashboard turn boundary sees.
+        # channel turn's end, which no dashboard turn boundary sees, and to push
+        # the row of a tab linked to that session.
         self.on_session_released: Callable[[str], None] | None = None
 
         self._compaction = CompactionCoordinator(

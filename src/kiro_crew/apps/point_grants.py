@@ -18,6 +18,12 @@ uses: ``api``, ``events`` and every registered family a manifest declares.
 :func:`point_grant_families` lists the registered families, in registration order.
 The points shipped in this package register at the bottom of this module, so the
 registry is complete once it is imported.
+
+``register_permission_grants(families, entries)``
+    The same, for a grant a manifest declares in ``permissions`` rather than in
+    ``contributes`` (``permissions.workerAutoApprove``): ``entries`` maps the
+    manifest's ``permissions`` (parsed or a raw dict). Its families are staged and
+    approved exactly like a point's, and :func:`point_grant_families` lists them too.
 """
 
 from __future__ import annotations
@@ -29,20 +35,32 @@ from typing import Any
 EntriesFn = Callable[[Any], dict[str, list[str]]]
 
 _REGISTRY: list[tuple[tuple[str, ...], EntriesFn]] = []
+#: ``permissions`` -> ``{family: entries}`` for one permission's families.
+_PERMISSION_REGISTRY: list[tuple[tuple[str, ...], EntriesFn]] = []
 
 
-def register_point_grants(families: tuple[str, ...], entries: EntriesFn) -> None:
-    """Register one point's grant families and how a manifest declares them."""
+def _refuse_clash(families: tuple[str, ...]) -> None:
     taken = set(point_grant_families())
     clash = [f for f in families if f in taken or f in ("api", "events")]
     if clash:
         raise ValueError(f"grant families already registered: {clash}")
+
+
+def register_point_grants(families: tuple[str, ...], entries: EntriesFn) -> None:
+    """Register one point's grant families and how a manifest declares them."""
+    _refuse_clash(families)
     _REGISTRY.append((tuple(families), entries))
 
 
+def register_permission_grants(families: tuple[str, ...], entries: EntriesFn) -> None:
+    """Register one permission's grant families, read from the manifest's ``permissions``."""
+    _refuse_clash(families)
+    _PERMISSION_REGISTRY.append((tuple(families), entries))
+
+
 def point_grant_families() -> tuple[str, ...]:
-    """Every registered point family, in registration order."""
-    return tuple(f for families, _ in _REGISTRY for f in families)
+    """Every registered point family, then every permission family, in registration order."""
+    return tuple(f for families, _ in (*_REGISTRY, *_PERMISSION_REGISTRY) for f in families)
 
 
 def grant_source(manifest: Any) -> dict[str, list[str]] | None:
@@ -59,11 +77,13 @@ def grant_source(manifest: Any) -> dict[str, list[str]] | None:
         perms = perms if isinstance(perms, dict) else {}
         api = perms.get("api")
         events = perms.get("events")
+        permissions_view: Any = perms
     else:
         perms_obj = getattr(manifest, "permissions", None)
         contributes = getattr(manifest, "contributes", None)
         api = getattr(perms_obj, "api", None)
         events = getattr(perms_obj, "events", None)
+        permissions_view = perms_obj
     out: dict[str, list[str]] = {
         "api": [e for e in api if isinstance(e, str) and e] if isinstance(api, list) else [],
         "events": (
@@ -72,6 +92,10 @@ def grant_source(manifest: Any) -> dict[str, list[str]] | None:
     }
     for families, entries in _REGISTRY:
         declared = entries(contributes)
+        for family in families:
+            out[family] = list(declared.get(family, []))
+    for families, entries in _PERMISSION_REGISTRY:
+        declared = entries(permissions_view)
         for family in families:
             out[family] = list(declared.get(family, []))
     return out
@@ -110,10 +134,18 @@ from kiro_crew.apps.selection_action_grants import (  # noqa: E402
 
 register_point_grants(SELECTION_ACTION_GRANT_FAMILIES, selection_action_grant_entries)
 
+from kiro_crew.apps.worker_auto_approve import (  # noqa: E402
+    WORKER_AUTO_APPROVE_GRANT_FAMILIES,
+    worker_auto_approve_grant_entries,
+)
+
+register_permission_grants(WORKER_AUTO_APPROVE_GRANT_FAMILIES, worker_auto_approve_grant_entries)
+
 
 __all__ = [
     "EntriesFn",
     "grant_source",
     "point_grant_families",
+    "register_permission_grants",
     "register_point_grants",
 ]

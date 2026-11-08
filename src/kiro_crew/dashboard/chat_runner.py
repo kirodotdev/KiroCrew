@@ -128,6 +128,7 @@ from kiro_crew.dashboard.chat_title import title_then_refresh
 from kiro_crew.dashboard.chat_turn.account_identity import (
     _mark_kiro_signed_out,
     _retire_sessions_on_identity_change,
+    install_acquire_identity_check,
 )
 from kiro_crew.dashboard.chat_turn.acp_recovery import (  # noqa: F401
     _binding_rebuild_allowed,
@@ -202,6 +203,7 @@ from kiro_crew.dashboard.chat_turn.queue_drain import (  # noqa: F401
     _start_next_queued_turn,
     drain_idle_parent_queue_for_stall,
     idle_slot_admits_drain,
+    read_tab_notices,
     subagents_hold_user_messages,
 )
 from kiro_crew.dashboard.chat_turn.recipient import (  # noqa: F401
@@ -304,6 +306,7 @@ from kiro_crew.dashboard.chat_turn.turn_reply_seams import _flush_thinking_strea
 from kiro_crew.dashboard.chat_turn.turn_spec_hooks import _turn_stop_hook
 from kiro_crew.dashboard.chat_turn.turn_stats import (  # noqa: F401
     _MAX_MODEL_ID_LEN,
+    _broadcast_live_context,
     _context_usage_payload,
     _emit_ttft_metric,
     _on_complete,
@@ -1088,6 +1091,9 @@ async def _run_chat(
         async for event in event_stream:
             if _timed:
                 turn_timing.mark("first_event")
+            # A usage_update moves the counts without an event of its own, so
+            # each event is the chance to show it while the turn runs.
+            _broadcast_live_context(turn)
             if turn._agent_cancel_owed:
                 await _send_owed_agent_cancel(turn, client, event)
             if _ask_the_owed_cancel_answered(turn, event):
@@ -1182,6 +1188,7 @@ async def _run_chat(
             elif event.kind == EVENT_THINKING_CHUNK:
                 await _on_thinking_chunk(turn, event)
             elif event.kind == EVENT_TOOL_CALL:
+                await _release_held_text(turn, before_tool=True)
                 await _on_tool_call(turn, event)
             elif event.kind == EVENT_TOOL_CALL_UPDATE:
                 await _on_tool_call_update(turn, event)

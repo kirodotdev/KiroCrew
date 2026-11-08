@@ -227,7 +227,7 @@ export function assemblePromptContent(data: PromptFormData): string {
 /** The filename stem the server will actually save a new prompt under.
  *
  *  Mirrors the create handler's own sanitizer in
- *  `src/kiro_crew/dashboard/handlers/prompts.py`:
+ *  `src/kiro_crew/dashboard/handlers/prompts_authoring.py`:
  *
  *      safe_name = re.sub(r"[^a-z0-9\-]", "-", raw_name.lower()).strip("-")
  *

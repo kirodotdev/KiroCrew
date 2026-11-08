@@ -152,6 +152,20 @@ describe('recordUse', () => {
     expect(map.fresh).toEqual({ count: 1, last: now })
   })
 
+  it('keeps the row just used when every stored row outscores a first use', () => {
+    // A first use scores 1. With the store full of rows used twice, the new row
+    // ranked last and was the one dropped, so it could never be remembered.
+    const now = 10_000_000_000
+    const current: UsageMap = {}
+    for (let i = 0; i < 300; i++) current[`twice-${i}`] = { count: 2, last: now }
+    const once = recordUse('new-command', now, current)
+    expect(Object.keys(once).length).toBe(300)
+    expect(once['new-command']).toEqual({ count: 1, last: now })
+    // And it keeps building on the next use instead of starting over.
+    const again = recordUse('new-command', now, once)
+    expect(again['new-command']).toEqual({ count: 2, last: now })
+  })
+
   it('leaves the store untouched at exactly the cap', () => {
     const now = 10_000_000_000
     const current: UsageMap = {}

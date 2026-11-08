@@ -38,7 +38,6 @@ def home(monkeypatch, tmp_path):
     # specs make the revision unprovable (the boot window), so the window is closed
     # here; every edit below changes a spec's size, which metadata alone pins.
     monkeypatch.setattr(dir_revision, "_AGENTS_DIR_RACY_WINDOW_NS", 0)
-    monkeypatch.setattr(agent_catalog, "_REFRESH_GATE", agent_catalog._RefreshGate())
     scans: list[Path] = []
     real_scan = loader._scan_materialized_index
 

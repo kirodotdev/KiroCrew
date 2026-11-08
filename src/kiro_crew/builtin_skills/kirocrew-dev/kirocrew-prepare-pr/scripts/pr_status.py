@@ -115,6 +115,8 @@ _review_contract = _verdict._review_contract
 # way to fail (PATH, interpreter, quoting) for information it already has the
 # code for, and the exit-code contract belongs to green_age.py's own CLI.
 _green_age = _load_sibling("green_age.py", "_prepare_pr_green_age")
+# argv[0] resolution and the batch-launcher guard every runner below applies.
+_tool_argv = _load_sibling("_tool_argv.py", "_prepare_pr_status_tool_argv")
 REVIEWED_STAMP_RE = _review_contract.REVIEWED_STAMP_RE
 BLOCK_MERGE_RE = _review_contract.BLOCK_MERGE_RE
 DEFAULT_MARKER_AUTHORS = _review_contract.DEFAULT_MARKER_AUTHORS
@@ -366,8 +368,11 @@ def positional_args(argv):
 
 
 def run(args):
+    argv, refused = _tool_argv.resolve(args)
+    if refused:
+        return refused
     try:
-        p = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        p = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8", errors="replace")
         return p.returncode, p.stdout.strip(), p.stderr.strip()
     except OSError as exc:
         return 127, "", "{}: {}".format(args[0], exc)
@@ -1062,9 +1067,12 @@ _GATE_TOTAL_BUDGET_SECS = 45
 
 def bounded_run(args, timeout=_GATE_CALL_TIMEOUT_SECS):
     """``run`` with a per-call wall-clock bound; 124 and a reason on timeout."""
+    argv, refused = _tool_argv.resolve(args)
+    if refused:
+        return refused
     try:
         p = subprocess.run(
-            args,
+            argv,
             capture_output=True,
             text=True,
             encoding="utf-8",

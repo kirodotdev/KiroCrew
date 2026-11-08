@@ -1143,20 +1143,34 @@ async def _turn_settle_debts(turn: _ChatTurn) -> None:
     # whose fresh native transcript is durable enough to replace the prior
     # full-history SID. Exceptions, hard cancellation, synthetic completion,
     # recovery returns and unlanded terminals re-arm the lease; close_all then
-    # sees provider_switch_replay and preserves the old SID on restart.
+    # sees provider_switch_replay and preserves the old SID on restart. A re-arm
+    # whose turn kept its prompt (the first-turn history rule below) notes the
+    # replay delivered, so the next prompt does not send it again. A slash
+    # command's native answer never commits the SID, and neither does a turn
+    # admitted on a delivered lease whose process was respawned before its prompt
+    # went out: that conversation never got the replay, so the next turn sends it.
     if _replay_accepted_this_turn:
         try:
+            _replay_reached = (
+                turn._replay_admitted_incarnation is None
+                or turn._replay_admitted_incarnation == turn.client.context_incarnation
+            )
             _replay_landed = (
                 turn._turn_landed
                 and turn._stop_reason == STOP_REASON_END_TURN
                 and not _terminal_synthetic
                 and not turn._had_empty_response_verdict
+                and not turn.is_slash
+                and _replay_reached
             )
-            if _replay_landed:
-                if not state.sessions.commit_provider_switch_replay_sid(session_key):
-                    state.sessions.mark_provider_switch_replay(session_key)
-            else:
+            if not (
+                _replay_landed and state.sessions.commit_provider_switch_replay_sid(session_key)
+            ):
                 state.sessions.mark_provider_switch_replay(session_key)
+                if _replay_reached and _kiro_cli_kept_the_prompt(turn):
+                    state.sessions.note_provider_switch_replay_delivered(
+                        session_key, turn.client.context_incarnation
+                    )
         except Exception:
             logger.debug("settling replay SID failed", exc_info=True)
             try:

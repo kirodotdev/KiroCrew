@@ -76,7 +76,14 @@ const PAUSED_STATUS_KEY: Record<string, string> = {
   approval_stalled: 'components.autoNudgePopover.paused_approval_stalled',
   structural_terminal: 'components.autoNudgePopover.paused_last_cycle_failed',
   session_start_failures: 'components.autoNudgePopover.paused_last_cycle_failed',
+  interrupted_cycle: 'components.autoNudgePopover.paused_interrupted_cycle',
+  claim_unsaved: 'components.autoNudgePopover.paused_claim_unsaved',
 }
+
+/** The paused reasons whose line says the last cycle could not run, or that its
+ *  progress could not be saved. That is a failure, so it renders through
+ *  `ErrorNotice` instead of the status line. */
+const FAILED_CYCLE_REASONS = new Set(['structural_terminal', 'session_start_failures', 'claim_unsaved'])
 
 /** The three editable fields, as every write of the form sends them. */
 type LoopFields = { message: string; idle_secs: number; max_cycles: number }
@@ -390,6 +397,8 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
    *  person. Its controls stay as running (Nudge now still fires a turn), but its
    *  status reads in the warn tone, because the next move is the user's. */
   const waitingOnPerson = runsNow && loop?.waiting_on_person === true
+  /** A paused loop whose stop is a failure (`FAILED_CYCLE_REASONS`): its status is an error. */
+  const failedCycle = !!loop && !loop.active && FAILED_CYCLE_REASONS.has(loop.stopped_reason ?? '')
   const pauseName = i18nT('components.autoNudgePopover.pause_loop')
   /** The fire control names what THIS press does: with no loop it creates and
    *  starts the loop (no fire); on a loop it fires now, resuming first when the
@@ -753,7 +762,11 @@ export default function AutoNudgePopover({ slotKey, loop, open, onOpenChange, on
             <X size={14} />
           </button>
         </div>
-        {loop && (
+        {failedCycle && (
+          /* No hand-off: the popover holds the unsaved goal message, idle and max-cycle inputs. */
+          <ErrorNotice className="mb-2" testId="auto-nudge-status" message={statusText} />
+        )}
+        {loop && !failedCycle && (
           /* Boxed in the state's tone (ok while running, info once finished, warn
              while paused) so the state reads before the form does -- except while
              writes are disabled, where a green box beside the capability note would

@@ -11,10 +11,12 @@ This module provides:
    to directly (faulthandler needs a stable fd for process lifetime).
 2. Rotation: keeps last N dumps, removes oldest on startup.
 3. Newest-dump detection for doctor/startup surfacing.
+4. A clean-exit marker an orderly shutdown leaves beside its dump, so a
+   header-only dump tells a clean exit from a gateway that died some other way.
 
 Dump directory: ``<data home>/logs/crash-dumps/`` (data home = ``config_dir()``,
 i.e. ``~/.kiro/crew`` or ``$KIROCREW_HOME``)
-Filename pattern: ``loopstall-<ISO timestamp>.txt``
+Filename pattern: ``loopstall-<ISO timestamp>.txt``, marker ``<that name>.clean``
 
 **fd lifetime guarantee:**
 
@@ -33,6 +35,8 @@ while guaranteeing the underlying fd is never closed until the process exits.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import functools
 import logging
 import os
@@ -57,6 +61,13 @@ _DEFAULT_MAX_DUMPS = 10
 _DUMP_DIR_NAME = "crash-dumps"
 DUMP_PREFIX = "loopstall-"
 DUMP_SUFFIX = ".txt"
+#: Appended to a dump's name for its empty clean-exit marker. The result does
+#: not end in ``DUMP_SUFFIX``, so no dump listing or body reader ever sees it.
+CLEAN_EXIT_SUFFIX = ".clean"
+#: Written into a dump's first header line by a build that leaves the clean-exit marker. A
+#: header-only dump without it predates the marker, so a missing marker says nothing about
+#: how that gateway ended and it reads as the clean exit earlier builds took it for.
+_CLEAN_EXIT_AWARE_TOKEN = "[orderly exit leaves .clean]"
 
 # Module-level reference to the open dump file — kept alive for process lifetime
 # because faulthandler requires the fd to remain valid.
@@ -195,7 +206,8 @@ def _read_dump_head(dump_path: Path) -> tuple[str, bool]:
     Returns ``(text, truncated)`` — ``truncated`` is computed on BYTES before
     decoding (multibyte characters shrink the decoded length, so a character
     count cannot detect the cut). Opens with ``O_NOFOLLOW`` (symlink ->
-    ``ELOOP``) and verifies the fd is a regular file, so a ``loopstall-*.txt``
+    ``ELOOP``) and ``O_NONBLOCK`` (a FIFO's open returns instead of waiting for
+    a writer) and verifies the fd is a regular file, so a ``loopstall-*.txt``
     symlinked at ``/dev/zero`` (or a FIFO) cannot pull an unbounded read into
     the startup sweep. Raises ``OSError`` on refusal or read failure — callers
     already treat that as "leave the file alone".
@@ -213,7 +225,12 @@ _DUMP_READ_MAX_BYTES = 4 * 1024 * 1024
 def _read_dump_bytes(dump_path: Path, max_bytes: int) -> tuple[str, bool]:
     """``(text, truncated)`` for at most *max_bytes* of a REGULAR dump file;
     see :func:`_read_dump_head` for the refusals."""
-    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NONBLOCK", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_BINARY", 0)
+    )
     fd = os.open(str(dump_path), flags)
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
@@ -241,16 +258,40 @@ def _read_dump_lines(dump_path: Path) -> list[str]:
 def _is_header_only(dump_path: Path) -> bool:
     """True iff *dump_path* contains only the startup header (no thread stacks).
 
-    A header-only dump means that gateway session never wedged — the file was
+    A header-only dump means faulthandler never fired into it — the file was
     pre-created at startup (faulthandler needs a stable fd for the process
-    lifetime) and faulthandler never fired into it.  Raises ``OSError`` through
-    to the caller on read failure so callers can choose their own conservative
-    fallback.
+    lifetime). It does NOT say the session ended cleanly: that is
+    :func:`_exited_cleanly`.  Raises ``OSError`` through to the caller on read
+    failure so callers can choose their own conservative fallback.
     """
     content, truncated = _read_dump_head(dump_path)
     if truncated:
         return False  # far larger than any header — has stack content
     return len(content.splitlines()) <= _HEADER_LINES
+
+
+def _clean_exit_marker(dump_path: Path) -> Path:
+    return dump_path.with_name(dump_path.name + CLEAN_EXIT_SUFFIX)
+
+
+def _exited_cleanly(dump_path: Path) -> bool:
+    """True iff the gateway that wrote *dump_path* left its clean-exit marker, or predates it.
+
+    See :func:`record_clean_exit`. A header without ``_CLEAN_EXIT_AWARE_TOKEN``
+    comes from a build that never left the marker. Raises ``OSError`` when the
+    header cannot be read.
+    """
+    if os.path.lexists(_clean_exit_marker(dump_path)):
+        return True
+    return _CLEAN_EXIT_AWARE_TOKEN not in _read_dump_head(dump_path)[0]
+
+
+def _unlink_clean_exit_marker(dump_path: Path) -> None:
+    """Remove *dump_path*'s marker once the dump itself is gone."""
+    try:
+        _clean_exit_marker(dump_path).unlink(missing_ok=True)
+    except OSError:
+        logger.debug("could not remove clean-exit marker of %s", dump_path, exc_info=True)
 
 
 @functools.lru_cache(maxsize=1)
@@ -467,7 +508,7 @@ def sweep_stale_dumps(
     *,
     is_pid_alive: Callable[[int], bool] = pid_exists,
 ) -> int:
-    """Remove header-only dumps left behind by dead gateway sessions.
+    """Remove header-only dumps left behind by cleanly exited gateway sessions.
 
     Every gateway startup pre-creates a dump file so faulthandler has a stable
     fd; a session that exits without ever wedging leaves that file behind as a
@@ -485,12 +526,17 @@ def sweep_stale_dumps(
       namespace, cannot be liveness-checked locally and is left alone), and
     * that PID is confirmed no longer alive (a live PID means a concurrently
       running gateway on this data home still owns the file — e.g. an
-      isolated pod or an overlapping restart — so it is left alone).
+      isolated pod or an overlapping restart — so it is left alone), and
+    * its owner left the clean-exit marker (:func:`record_clean_exit`), or its
+      header predates the marker (:func:`_exited_cleanly`). A dead owner
+      without one ended some other way, and its header is the only trace
+      of that death: it is kept for ``kirocrew doctor``
+      (:func:`unexplained_exits`) and left to rotation.
 
     Unreadable files, headers without a PID line, and headers whose PID
     belongs to a foreign PID domain are all left alone (conservative:
-    rotation will reap them eventually).  Returns the number of files
-    removed.
+    rotation will reap them eventually).  A swept dump's marker goes with it.
+    Returns the number of dumps removed.
     """
     removed = 0
     for path in _list_dumps(dumps_dir):
@@ -504,6 +550,8 @@ def sweep_stale_dumps(
         try:
             if not _is_header_only(path):
                 continue
+            if not _exited_cleanly(path):
+                continue
         except OSError:
             continue
         try:
@@ -511,6 +559,8 @@ def sweep_stale_dumps(
             removed += 1
         except OSError:
             logger.debug("could not sweep stale dump %s", path, exc_info=True)
+            continue
+        _unlink_clean_exit_marker(path)
     if removed:
         logger.info("swept %d stale header-only crash dump(s) from prior sessions", removed)
     return removed
@@ -525,9 +575,11 @@ def rotate_dumps(
     """Remove dumps if count exceeds max_dumps.  Returns number removed.
 
     Header-only dumps (no stack content — the session never wedged) are
-    sacrificed first, oldest-first; dumps with real stacks are only removed
-    once no header-only candidates remain.  This keeps genuine stall evidence
-    alive as long as possible when empty startup files share the directory.
+    sacrificed first, oldest-first: clean exits and unattributable files, then
+    the unexplained exits (:func:`unexplained_exits`); dumps with real stacks
+    are only removed once no header-only candidates remain.  This keeps genuine
+    stall evidence alive as long as possible when empty startup files share the
+    directory. A victim's clean-exit marker goes with it.
 
     A dump whose ``# PID:`` owner is this process, or is confirmed alive in
     this PID domain, is never a victim: faulthandler holds that file's fd for
@@ -547,10 +599,12 @@ def rotate_dumps(
 
     def _sacrifice_order(dumps: list[Path]) -> list[Path]:
         header_only: list[Path] = []
+        unexplained: list[Path] = []
         unreadable: list[Path] = []
         stacked: list[Path] = []
         for p in dumps:
-            if _owner_alive(p, is_pid_alive) is True:
+            alive = _owner_alive(p, is_pid_alive)
+            if alive is True:
                 continue  # a live session still owns this fd — never a victim
             if _owner_foreign(p):
                 # A foreign-domain owner (another host/namespace sharing the
@@ -560,13 +614,18 @@ def rotate_dumps(
                 # inode. Its own gateway's rotation reaps it in its domain.
                 continue
             try:
-                (header_only if _is_header_only(p) else stacked).append(p)
+                if not _is_header_only(p):
+                    stacked.append(p)
+                elif alive is False and not _exited_cleanly(p):
+                    unexplained.append(p)
+                else:
+                    header_only.append(p)
             except OSError:
                 # Unreadable is ambiguous: junk (symlink, wrong type) or real
                 # evidence behind a transient read error. Sacrifice it after
                 # known header-only files but before confirmed stack evidence.
                 unreadable.append(p)
-        return header_only + unreadable + stacked
+        return header_only + unexplained + unreadable + stacked
 
     victims = _sacrifice_order(dumps)
     # Compute the excess ONCE and attempt exactly that many victims (keep
@@ -581,7 +640,8 @@ def rotate_dumps(
             victim.unlink()
             removed += 1
         except OSError:
-            pass
+            continue
+        _unlink_clean_exit_marker(victim)
     return removed
 
 
@@ -613,6 +673,7 @@ def open_dump_file(dumps_dir: Path | None = None) -> DumpFile:
     else:
         flags |= os.O_CLOEXEC
     fd = os.open(str(path), flags, 0o600)  # a dump holds stacks and paths: owner-only
+    _unlink_clean_exit_marker(path)  # this session has not exited, whatever the name held
 
     f = DumpFile(fd, path)
     # Write a header so the file is identifiable even before a dump fires.
@@ -623,12 +684,93 @@ def open_dump_file(dumps_dir: Path | None = None) -> DumpFile:
     # plain PID liveness).
     start_id = _pid_start_id(os.getpid())
     start_tok = f" start={start_id}" if start_id is not None else ""
-    f.write(f"# KiroCrew loop-stall crash dump — opened {ts}\n")
+    f.write(
+        f"# KiroCrew loop-stall crash dump — opened {ts} {_CLEAN_EXIT_AWARE_TOKEN}\n"  # brand-ok
+    )
     f.write(f"# PID: {os.getpid()} @ {_pid_domain()}{start_tok}\n")
     f.write("# If thread stacks appear below, the event loop wedged and faulthandler fired.\n")
     f.write("\n")
     _active_dump_file = f
     return f
+
+
+#: Bumped by :func:`withdraw_clean_exit`. A marker write records the value it was
+#: started under and leaves no marker once it moved, so a write that outlived its
+#: caller's bound cannot vouch for an exit that was withdrawn meanwhile.
+_withdrawals = 0
+
+
+def record_clean_exit(withdrawals: int | None = None) -> None:
+    """Mark the dump :func:`open_dump_file` opened as ending in an orderly shutdown.
+
+    Creates an empty ``<dump name>.clean`` beside it and never touches the
+    dump's own bytes, so every reader that slices the body after the header
+    sees what it always saw. Reached through :func:`mark_clean_exit` as the last
+    step of each orderly exit and just before an in-place restart's exec, which
+    skips that exit. Earlier would vouch for a teardown that can still wedge
+    and be killed.
+
+    With *withdrawals* (the :data:`_withdrawals` value when the write was asked
+    for), nothing is left once a withdrawal happened since: checked before the
+    create and again after it, so a withdrawal on either side of it wins.
+
+    ``O_EXCL`` creates the name or fails, and never follows a link planted
+    there. Never raises: a missing marker reads as an unexplained exit, the
+    answer that keeps the evidence.
+    """
+    dump = _active_dump_file
+    if dump is None or (withdrawals is not None and withdrawals != _withdrawals):
+        return
+    marker = _clean_exit_marker(dump.path)
+    try:
+        os.close(os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+    except OSError:
+        logger.debug("could not record clean-exit marker %s", marker, exc_info=True)
+        return
+    if withdrawals is not None and withdrawals != _withdrawals:
+        _unlink_clean_exit_marker(dump.path)
+
+
+def withdraw_clean_exit() -> None:
+    """Remove the marker :func:`record_clean_exit` left, when the exit it vouched for failed."""
+    global _withdrawals
+    _withdrawals += 1  # first, so a write still in flight sees it after its create
+    if _active_dump_file is not None:
+        _unlink_clean_exit_marker(_active_dump_file.path)
+
+
+async def mark_clean_exit() -> None:
+    """Run :func:`record_clean_exit` off the loop, bounded at 1 s.
+
+    On an exit or restart path a stalled data home must hold neither the loop
+    nor the exit. Raises only a cancellation, and withdraws the mark first: a
+    cancelled caller never reaches the exit the mark would vouch for.
+    """
+    try:
+        await _off_loop_bounded(record_clean_exit, _withdrawals)
+    except asyncio.CancelledError:
+        await unmark_clean_exit()
+        raise
+
+
+async def unmark_clean_exit() -> None:
+    """Withdraw the marker when the exit :func:`mark_clean_exit` vouched for did not happen.
+
+    The bump itself is on the caller's thread, before anything is awaited, so a
+    write already in flight cannot outlast it. Never raises.
+    """
+    global _withdrawals
+    _withdrawals += 1
+    await _off_loop_bounded(withdraw_clean_exit)
+
+
+#: How long an exit or restart waits on one marker write or removal.
+MARKER_STEP_BOUND_SECS = 1.0
+
+
+async def _off_loop_bounded(step: Callable[..., None], *args: int) -> None:
+    with contextlib.suppress(asyncio.TimeoutError):
+        await asyncio.wait_for(asyncio.to_thread(step, *args), timeout=MARKER_STEP_BOUND_SECS)
 
 
 def newest_dump(dumps_dir: Path | None = None) -> Path | None:
@@ -640,8 +782,10 @@ def newest_dump(dumps_dir: Path | None = None) -> Path | None:
 def newest_dump_with_stacks(dumps_dir: Path | None = None) -> Path | None:
     """Return the newest dump that actually contains thread stacks (not just the header).
 
-    A dump file that only has the 4-line header means the gateway exited cleanly
-    without ever wedging.  We only surface dumps that have real content.
+    A dump file that only has the 4-line header has no stacks to replay: its
+    gateway either exited cleanly or died some other way, which
+    :func:`unexplained_exits` tells apart for ``kirocrew doctor``.  Startup
+    replay and cautious boot only surface dumps that have real content.
     """
     dumps = _list_dumps(dumps_dir)
     for path in reversed(dumps):
@@ -669,6 +813,31 @@ def dumps_with_stacks(dumps_dir: Path | None = None) -> int:
         except OSError:
             continue
     return total
+
+
+def unexplained_exits(
+    dumps_dir: Path | None = None,
+    *,
+    is_pid_alive: Callable[[int], bool] = pid_exists,
+) -> list[Path]:
+    """Header-only dumps whose owner is confirmed dead with no clean-exit marker, oldest first.
+
+    Each is a gateway that ended with neither an orderly shutdown nor a stall
+    dump: killed or crashed without the stall alarm firing.
+    :func:`sweep_stale_dumps` keeps them, because the header is the only trace
+    that gateway was running. A live, foreign-domain or unattributable owner is
+    not one, as for the sweep.
+    """
+    found = []
+    for path in _list_dumps(dumps_dir):
+        if _owner_alive(path, is_pid_alive) is not False:
+            continue
+        try:
+            if _is_header_only(path) and not _exited_cleanly(path):
+                found.append(path)
+        except OSError:
+            continue
+    return found
 
 
 def dump_superseded(dump_path: Path, dumps_dir: Path | None = None) -> bool:
@@ -757,10 +926,35 @@ def dump_age_seconds(dump_path: Path) -> float:
     return max(0.0, time.time() - dump_path.stat().st_mtime)
 
 
-#: Matches a faulthandler per-thread stack header, e.g.
-#: ``Thread 0x00007f72c082b640 (most recent call first):`` or
-#: ``Current thread 0x... (most recent call first):``.
-_THREAD_HEADER_RE = re.compile(r"^(?:Current thread|Thread) 0x[0-9a-fA-F]+")
+#: The most threads, and frames per thread, faulthandler lists in one dump
+#: (CPython's ``MAX_NTHREADS`` and ``MAX_FRAME_DEPTH``). Past the thread limit
+#: it writes ``...`` and stops; it lists the newest thread first, so the oldest
+#: (the main thread, where the event loop runs) is the one it leaves out.
+FAULTHANDLER_MAX_THREADS = 100
+FAULTHANDLER_MAX_FRAMES = 100
+
+#: Header of the block the loop watchdog writes for the event-loop thread
+#: before the alarm's dump, so the dump holds that stack however many threads
+#: there are (``loop_watchdog.LoopStallWatchdog._write_loop_stack``).
+LOOP_THREAD_HEADER = "Loop thread"
+
+#: The line a reader shows in place of the wedged thread when faulthandler cut
+#: the dump at its thread limit and the loop thread's own block is absent.
+LOOP_THREAD_MISSING_NOTE = (
+    f"(the event-loop thread is not in this dump: faulthandler lists only the newest "
+    f"{FAULTHANDLER_MAX_THREADS} threads)"
+)
+
+#: How a per-thread stack header starts, e.g.
+#: ``Thread 0x00007f72c082b640 (most recent call first):``,
+#: ``Current thread 0x... (most recent call first):`` or the watchdog's
+#: ``Loop thread 0x... (most recent call first):``.
+_THREAD_HEADER_PREFIXES = ("Current thread 0x", "Thread 0x", f"{LOOP_THREAD_HEADER} 0x")
+
+
+def _is_thread_header(line: str) -> bool:
+    """True when *line* opens a thread's block: a known prefix and a hex ident."""
+    return line.startswith(_THREAD_HEADER_PREFIXES) and _block_ident([line]) is not None
 
 
 def _split_stack_content(stack_lines: list[str]) -> tuple[list[str], list[list[str]]]:
@@ -776,7 +970,7 @@ def _split_stack_content(stack_lines: list[str]) -> tuple[list[str], list[list[s
     blocks: list[list[str]] = []
     current: list[str] | None = None
     for ln in stack_lines:
-        if _THREAD_HEADER_RE.match(ln.strip()):
+        if _is_thread_header(ln.strip()):
             current = [ln]
             blocks.append(current)
         elif current is None:
@@ -789,23 +983,57 @@ def _split_stack_content(stack_lines: list[str]) -> tuple[list[str], list[list[s
 def _wedged_thread_block(blocks: list[list[str]]) -> list[str] | None:
     """Return the stack block of the thread the event loop wedged on.
 
-    ``faulthandler.dump_traceback_later`` (what the loop watchdog arms) fires
-    from an internal C thread, so no block carries the ``Current thread``
-    marker — and CPython dumps Python threads newest-first, which puts the
-    MAIN thread (where the gateway's asyncio loop runs) LAST in the file.
-    The blocks at the top are typically idle thread-pool workers parked in
+    In order: faulthandler's block (``Current thread`` or ``Thread``) for the
+    same thread as the watchdog's ``Loop thread`` block; the ``Loop thread``
+    block; a
+    ``Current thread`` marker (dumps taken synchronously from Python mark the
+    dumping thread); otherwise the last block, because CPython dumps threads newest-first and
+    the MAIN thread, where the gateway's asyncio loop runs, comes LAST.  The
+    blocks at the top are typically idle thread-pool workers parked in
     ``Queue.get``, useless for diagnosing the stall.
 
-    Prefer an explicit ``Current thread`` marker when one exists (dumps taken
-    synchronously from Python mark the dumping thread); otherwise take the
-    last block.
+    ``None`` when the dump ends in faulthandler's ``...``: it stopped at
+    :data:`FAULTHANDLER_MAX_THREADS` threads, so the last block is the 100th
+    newest thread, not the main thread, and naming it would point at the
+    wrong stack.
     """
     if not blocks:
         return None
-    for block in blocks:
-        if block[0].lstrip().startswith("Current thread"):
-            return block
+    loop = next((b for b in blocks if b[0].lstrip().startswith(LOOP_THREAD_HEADER)), None)
+    current = next((b for b in blocks if b[0].lstrip().startswith("Current thread")), None)
+    if loop is not None:
+        # faulthandler's own stack of that thread, taken when the dump fired, is
+        # newer than the watchdog's. Its label is ``Current thread`` on the
+        # alarm path and ``Thread`` on faulthandler's timer path.
+        ident = _block_ident(loop)
+        fatal = next((b for b in blocks if b is not loop and _block_ident(b) == ident), None)
+        return fatal if fatal is not None else loop
+    if current is not None:
+        return current
+    if _cut_at_thread_limit(blocks):
+        return None
     return blocks[-1]
+
+
+def _block_ident(block: list[str]) -> int | None:
+    """The thread ident a ``<kind> thread 0x...`` or ``Thread 0x...`` header names."""
+    for word in block[0].split():
+        if word.startswith("0x"):
+            try:
+                return int(word, 16)
+            except ValueError:
+                return None
+    return None
+
+
+def _cut_at_thread_limit(blocks: list[list[str]]) -> bool:
+    """True when faulthandler stopped listing threads (its trailing ``...``).
+
+    Only the unindented marker: faulthandler ends a thread whose stack runs
+    past its frame limit with an indented ``  ...`` inside that thread's block,
+    and that dump still lists every thread.
+    """
+    return bool(blocks) and blocks[-1][-1].rstrip() == "..."
 
 
 def dump_first_stack_lines(dump_path: Path, max_lines: int = 5) -> list[str]:
@@ -829,6 +1057,8 @@ def dump_first_stack_lines(dump_path: Path, max_lines: int = 5) -> list[str]:
     preamble, blocks = _split_stack_content(stack_lines)
     wedged = _wedged_thread_block(blocks)
     if wedged is None:
+        if _cut_at_thread_limit(blocks):
+            return (preamble + [LOOP_THREAD_MISSING_NOTE])[:max_lines]
         return stack_lines[:max_lines]
     return (preamble + wedged)[:max_lines]
 
@@ -934,6 +1164,8 @@ def dump_replay_lines(
     if wedged is not None:
         others = [ln for block in blocks if block is not wedged for ln in block]
         stack_lines = preamble + wedged + others
+    elif _cut_at_thread_limit(blocks):
+        stack_lines = [LOOP_THREAD_MISSING_NOTE, *stack_lines]
     result: list[str] = []
     total = 0
     for ln in stack_lines:

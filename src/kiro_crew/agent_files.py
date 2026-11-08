@@ -29,10 +29,9 @@ PIPELINE_CONDUCTOR_AGENT_FILENAME = "kirocrew-pipeline-conductor.json"
 LEDGER_CONDUCTOR_AGENT_FILENAME = "kirocrew-ledger-conductor.json"
 SECURITY_CONDUCTOR_AGENT_FILENAME = "kirocrew-security-conductor.json"
 WORKER_AGENT_FILENAME = "kirocrew-worker.json"
-# The mate conductor: the agent a crewmate's own chat runs on. Derived from the
-# default template (same prompt, tools and mcpServers), so it behaves like
-# `kirocrew.json` under its own name. It does not read or write
-# `~/.kiro/mates/agents/` (docs/request-for-change/rfc-mate-owned-agent-config.md).
+# The mate conductor: the agent a crewmate's own chat runs on, derived from the
+# default template and written to ``~/.kiro/mates/agents/``. Unlike the mate
+# worker, no crewmate's own file is layered onto it.
 MATE_CONDUCTOR_AGENT_FILENAME = "kirocrew-mate-conductor.json"
 # The mate worker: the agent a crewmate's worker sessions run on (the session a
 # crewmate's own chat opens with ``session_create``). Source-defined like the
@@ -102,11 +101,7 @@ KIROCREW_DEFAULT_AGENT_NAMES = frozenset(
 
 
 def is_kirocrew_default_agent(agent: object) -> bool:
-    """Whether *agent* is one of :data:`KIROCREW_DEFAULT_AGENT_NAMES`.
-
-    Every ``is_custom`` check in ``context.py`` and ``context_assembly/`` reads
-    this instead of repeating the name literal.
-    """
+    """Whether *agent* is one of :data:`KIROCREW_DEFAULT_AGENT_NAMES`."""
     return agent in KIROCREW_DEFAULT_AGENT_NAMES
 
 

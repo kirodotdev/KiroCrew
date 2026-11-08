@@ -23,6 +23,12 @@ export interface InstallStreamResult {
    * consent modal to open at all.
    */
   code?: string
+  /**
+   * On an `app_trust_local_only` refusal: the repository this update installs
+   * from, as the server normalized it. The update route takes it back as consent
+   * proof (`updateApp(name, 'registry:' + name, trustRepository)`).
+   */
+  trustRepository?: string
   needsClientInstall?: boolean
   clientInstall?: { shell?: string; postInstall?: string }
 }
@@ -94,7 +100,13 @@ export function createAppsEndpoints({ get, post, put, del, j, jApps, jfetch: fet
     getAppManifest: (name: string) => fetch('/api/apps/' + encodeURIComponent(name) + '/manifest').then(j),
     installApp: (source: string) => post('/api/apps/install', { source }).then(j),
     // grantsConsent names the staged entries the owner was shown; only those are approved.
-    enableApp: (name: string, sessionApprovalConsent = false, grantsConsent?: { api: string[]; events: string[]; linkPreviewHosts?: string[]; linkPreviewTextPatterns?: string[]; linkPreviewFullUrl?: string[]; messageActions?: string[]; linkOpenHosts?: string[]; linkOpenFullUrl?: string[]; composerActions?: string[]; selectionActions?: string[] }) => post('/api/apps/' + encodeURIComponent(name) + '/enable', grantsConsent ? { sessionApprovalConsent, grantsConsent } : { sessionApprovalConsent }).then(j),
+    enableApp: (name: string, sessionApprovalConsent = false, grantsConsent?: { api: string[]; events: string[]; linkPreviewHosts?: string[]; linkPreviewTextPatterns?: string[]; linkPreviewFullUrl?: string[]; messageActions?: string[]; linkOpenHosts?: string[]; linkOpenFullUrl?: string[]; composerActions?: string[]; selectionActions?: string[]; workerAutoApprove?: string[] }, memberThreadsConsent = false) => post('/api/apps/' + encodeURIComponent(name) + '/enable', {
+      sessionApprovalConsent,
+      // Only a consent whose disclosure named member threads says so; the
+      // server refuses a consent that omits a scope the live manifest declares.
+      ...(sessionApprovalConsent && memberThreadsConsent ? { memberThreadsConsent: true } : {}),
+      ...(grantsConsent ? { grantsConsent } : {}),
+    }).then(j),
     disableApp: (name: string) => post('/api/apps/' + encodeURIComponent(name) + '/disable').then(j),
     openApp: (name: string) => post('/api/apps/' + encodeURIComponent(name) + '/open').then(j),
     uninstallApp: (name: string, keepData = true, keepDependencies?: boolean, keepSpecific?: string[]) =>
@@ -113,13 +125,19 @@ export function createAppsEndpoints({ get, post, put, del, j, jApps, jfetch: fet
           userInstalled: { id: string; type: string; reason: string }[]
         }
       }>,
-    updateApp: (name: string, source?: string) => post('/api/apps/' + encodeURIComponent(name) + '/update', source ? { source } : {}).then(j),
+    // `trustRepository` is the consent proof from an `app_trust_local_only`
+    // refusal, sent with `source: registry:<name>` to switch the app's local-only
+    // grant to that repository for this update (the server puts it back on failure).
+    updateApp: (name: string, source?: string, trustRepository?: string) => post(
+      '/api/apps/' + encodeURIComponent(name) + '/update',
+      { ...(source ? { source } : {}), ...(trustRepository ? { trustRepository } : {}) },
+    ).then(j),
     migrateCleanup: (name: string) => del('/api/apps/' + encodeURIComponent(name) + '/migrate-cleanup').then(j),
     // apps is intentionally `any[]`: each page (AppsPage/MigrationPage/AppDetailPage)
     // narrows it to its own local RegistryApp shape at the call site. Typing it as
     // unknown[] here would break those structural assignments across files.
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    listRegistry: () => fetch('/api/apps/registry').then(j) as Promise<{ apps: any[]; serverPlatform: { os: string; arch: string }; categoryOrder?: string[]; editorialSections?: unknown[] }>,
+    listRegistry: () => fetch('/api/apps/registry').then(j) as Promise<{ apps: any[]; catalogUnavailable?: boolean; serverPlatform: { os: string; arch: string }; categoryOrder?: string[]; editorialSections?: unknown[] }>,
     listRegistries: () => fetch('/api/apps/registries').then(j) as Promise<{ registries: ExternalRegistryRow[]; pinned?: ExternalRegistryRow[] }>,
     updateRegistries: (registries: { name: string; repo: string; branch: string; trust?: string }[]) => put('/api/apps/registries', { registries }).then(j) as Promise<{ ok: boolean; registries: ExternalRegistryRow[]; newlyTrustedHosts: string[] }>,
     // Drops the server's on-disk caches of the published documents (catalog /

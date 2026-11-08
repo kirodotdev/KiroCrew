@@ -22,7 +22,9 @@ import pytest
 from cli_commands_coverage_helpers import _FakeResponse, _http_error, _ns
 
 from kiro_crew import cli_commands as cc
+from kiro_crew.apps.hook_reconcile import POLL_INTERVAL_SECS as HOOK_POLL_SECS
 from kiro_crew.cron import CronSchedule
+from kiro_crew.cron_service.schedule import _TIMER_POLL_SECS as CRON_POLL_SECS
 
 
 class _IncompleteResponse(_FakeResponse):
@@ -636,6 +638,7 @@ class TestAppCli:
             ) as local_register,
             patch("kiro_crew.cli_commands._register_app_crons_to_scheduler"),
             patch("kiro_crew.cli_commands._warn_hooks_need_restart"),
+            patch("kiro_crew.cli_commands._app_declares_backend", return_value=True),
         ):
             cc._handle_app(_ns(app_action="enable", name="demo"))
 
@@ -647,7 +650,24 @@ class TestAppCli:
         assert "✅ Recorded demo as enabled." in out
         assert "No running gateway was reached" in out
         assert "next gateway start" in out
-        assert "apply it live from the dashboard" in out
+        assert "picks up the app's crons and hooks within a minute" in out
+        assert "restart the gateway to start it now" in out
+
+    def test_file_only_message_skips_the_restart_for_an_app_without_a_backend(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """An app with no backend process has nothing a restart would start."""
+        with patch("kiro_crew.cli_commands._app_declares_backend", return_value=False):
+            cc._print_file_only_app_result("demo", enabled=True)
+
+        out = capsys.readouterr().out
+        assert "picks up the app's crons and hooks within a minute." in out
+        assert "restart" not in out
+        assert "backend process" not in out
+
+    def test_file_only_message_minute_covers_both_gateway_polls(self) -> None:
+        """Both gateway polls behind the message's "within a minute" run at least once a minute."""
+        assert max(CRON_POLL_SECS, HOOK_POLL_SECS) <= 60
 
     def test_missing_local_secret_keeps_enable_file_only_behavior(
         self, capsys: pytest.CaptureFixture[str]
@@ -1148,6 +1168,7 @@ class TestAppCli:
         out = capsys.readouterr().out
         assert "✅ Recorded demo as disabled." in out
         assert "No running gateway was reached" in out
+        assert "drops the app's crons and hooks within a minute" in out
 
     def test_disable_flips_the_flag_before_deregistering(self) -> None:
         """Order is a security control, not cosmetics.

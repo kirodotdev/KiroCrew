@@ -136,6 +136,17 @@ def damaged_database_remedy(path: object, error: BaseException) -> str:
     )
 
 
+def global_memory_remedy(path: object) -> str:
+    """The advice for a Global memory failure that is not a damaged ``memory.db``.
+
+    This runs after the restore pass, which reports its own failures and skips
+    the store, so the cause is never a pending restore and the default advice
+    would send the user looking for one. *path* is what the failing step opened.
+    """
+    where = f" ({path})" if path else ""
+    return f"Global memory{where} could not be prepared. Fix that error, then restart the gateway."
+
+
 def require_memory_prepared() -> None:
     """Admit a maintenance pass only; each data access still checks its store."""
     with _lock:

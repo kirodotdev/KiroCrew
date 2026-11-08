@@ -311,13 +311,19 @@ export default function AppPopoutFrame({ route }: {
  * steps this window back to the app.
  *
  * Reached only by a navigation from outside the frame's subtree, which the
- * pinned navigator never sees: the shell's soft navigator (`appShell.tsx`,
- * `installSoftNavigate`), through which a hook-free "Ask the agent" control
- * sends this window to /chat. The app subtree has already been replaced by
- * the time this renders, so it remounts after the step back; exits from the
- * app itself never come this way. Nor does a hard exit (`hardNavigate`, which
- * a hard `sendErrorToChat` also uses): it reaches `handOffToMain` directly
- * through `installHardExit`, with no navigation in this window.
+ * pinned navigator never sees, such as the desktop app's native menu entries
+ * (`subscribeNativeNavigate` in `appShell.tsx`). The app subtree has already
+ * been replaced by the time this renders, so it remounts after the step back;
+ * exits from the app itself never come this way. Nor does a hard exit
+ * (`hardNavigate`, which the shell also installs as this window's soft
+ * navigator, so every `sendErrorToChat` takes it): it reaches `handOffToMain`
+ * directly through `installHardExit`, with no navigation in this window.
+ *
+ * A POP is never handed off. It is this document's first location, a deep
+ * link that names something other than the pinned app (`/apps/foo/extra`, a
+ * differently cased route), or a step through this window's history onto an
+ * entry whose exit was handed off when it was pushed. Nobody asked to leave
+ * now, so the window only settles back on the app.
  *
  * Stepping back is a history `-1` after a PUSH (so the step restores the app's
  * sub-path as it was), and a `replace` to the app's route otherwise: after a
@@ -337,7 +343,7 @@ function AppPopoutHandoff({ route }: { route: string }) {
   useEffect(() => {
     if (handled.current === location.key) return
     handled.current = location.key
-    handOffToMain(store, location.pathname, location.search)
+    if (navigationType !== 'POP') handOffToMain(store, location.pathname, location.search)
     if (navigationType === 'PUSH') navigate(-1)
     else navigate(route, { replace: true })
   }, [location.key, location.pathname, location.search, navigationType, navigate, store, route])
@@ -345,14 +351,15 @@ function AppPopoutHandoff({ route }: { route: string }) {
 }
 
 /**
- * Installs this window's hard exit: a hard "Ask the agent" (the boundary card
- * of a crashed app, `AskAgentButton … hard`) and any other `hardNavigate`
- * hand their destination to the main window the way the frame's other exits
- * do, instead of loading it here and turning the pop-out into a second
- * dashboard. Rendered by App.tsx beside the frame's routes, above the route
- * boundary, so a crash of the frame itself does not take the sink with it.
- * `handOffToMain` drains the prompt `sendErrorToChat` staged in this window's
- * sessionStorage.
+ * Installs this window's hard exit: every "Ask the agent" (a hard one from
+ * the boundary card of a crashed app, `AskAgentButton … hard`, and a soft one,
+ * which the shell routes through `hardNavigate` in this window) and any other
+ * `hardNavigate` hand their destination to the main window the way the
+ * frame's other exits do, instead of loading it here and turning the pop-out
+ * into a second dashboard. Rendered by App.tsx beside the frame's routes,
+ * above the route boundary, so a crash of the frame itself does not take the
+ * sink with it. `handOffToMain` drains the prompt `sendErrorToChat` staged in
+ * this window's sessionStorage.
  */
 export function AppPopoutHardExit() {
   const store = useAppStore()

@@ -57,6 +57,7 @@ from kiro_crew.apps.hooks_integration import (
 )
 from kiro_crew.apps.lifecycle_scripts import run_lifecycle_script
 from kiro_crew.apps.manifest import lifecycle_timeout_seconds
+from kiro_crew.apps.worker_auto_approve import revoke_app as revoke_worker_auto_approve
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.security import redact
 
@@ -573,7 +574,11 @@ async def notify_app_disabled(app: str) -> None:
 
     Never raises: the teardown has to complete whether or not the app could stand
     its workers down, for the same reason every other step here pushes through.
+
+    The app's worker auto-approve grants end FIRST, before its own hook runs, so a
+    hook that fails or stalls cannot keep one alive (``worker_auto_approve``).
     """
+    revoke_worker_auto_approve(app)
     hook = _APP_DISABLE_HOOKS.get(app)
     if hook is None:
         return

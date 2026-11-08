@@ -618,6 +618,33 @@ class TestAdvertisedModelCache:
         assert mr.refresh_advertised_models("claude_code", []) is False
         assert mr.advertised_models("claude_code") == ["a"]
 
+    def test_full_read_between_shrinks_cancels_the_held_shrink(self, monkeypatch):
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": ["opus", "haiku"]})
+        mr.refresh_advertised_models("claude_code", ["haiku"], confirm_shrink=True)
+        mr.refresh_advertised_models("claude_code", ["opus", "haiku"], confirm_shrink=True)
+        assert mr.refresh_advertised_models("claude_code", ["haiku"], confirm_shrink=True) is False
+        assert mr.advertised_models("claude_code") == ["opus", "haiku"]
+
+    def test_held_shrink_keeps_cached_labels_and_takes_the_reads_new_ids(self, monkeypatch):
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"claude_code": ["opus", "haiku"]})
+        monkeypatch.setattr(mr, "_ADVERTISED_META", {"claude_code": {"opus": {"name": "Opus"}}})
+        rows = [{"modelId": "haiku", "name": "Haiku"}, {"modelId": "fable", "name": "Fable"}]
+        changed = mr.refresh_advertised_models(
+            "claude_code", ["haiku", "fable"], rows=rows, confirm_shrink=True
+        )
+        assert changed is True
+        assert mr.advertised_models("claude_code") == ["opus", "haiku", "fable"]
+        names = {
+            r["model_name"]: r["display_name"] for r in mr.advertised_model_rows("claude_code")
+        }
+        assert names == {"opus": "Opus", "haiku": "Haiku", "fable": "Fable"}
+
+    def test_unfiltered_catalog_refresh_still_replaces_on_shrink(self, monkeypatch):
+        # The kiro --list-models catalog is unfiltered: a row it drops is gone.
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {"acp": ["a", "b"]})
+        assert mr.refresh_advertised_models("acp", ["a"]) is True
+        assert mr.advertised_models("acp") == ["a"]
+
     def test_refresh_refuses_an_over_long_id_and_says_so_once(self, monkeypatch, caplog):
         # The id is REFUSED, not truncated: a truncated id names a different
         # model, or none. The rest of the list is retained, and the overflow is

@@ -643,7 +643,7 @@ describe('ChatPane native question card (#10634) — steer while the turn is liv
 
   function seedNativeCard(store: ReturnType<typeof nativeStore>, slot: string) {
     // The native card shape: a server `card_id` plus the `native` mark
-    // (chat_runner.py posts it through post_question_card(native=True)).
+    // (chat_turn/native_cards.py posts it through post_question_card(native=True)).
     act(() => {
       store.dispatch(setQuestionCard({
         slot,

@@ -429,6 +429,20 @@ async def _live_worktree_path(*, fresh: bool = False) -> str | None:
     if resolved is not None:
         _LIVE_WORKTREE, _LIVE_VERIFIED = resolved, verified
         return _LIVE_WORKTREE
+    found = await _service_live_worktree()
+    if found is None:
+        # A gateway started by hand has no pointer and no service definition, but
+        # the code it executes still names its checkout.
+        running = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), _running_checkout
+        )
+        found = None if running is None else str(running)
+    _LIVE_WORKTREE, _LIVE_VERIFIED = found, True
+    return _LIVE_WORKTREE
+
+
+async def _service_live_worktree() -> str | None:
+    """The checkout the launchd agent or the systemd user unit names, or None."""
 
     def _service_manager() -> str | None:
         # ``shutil.which`` stats every PATH entry, so a stalled PATH mount would
@@ -447,13 +461,10 @@ async def _live_worktree_path(*, fresh: bool = False) -> str | None:
         # the agent's ProgramArguments symlink currently points at. Reading the
         # link is authoritative, needs no service query, and reflects a make-live
         # swap immediately.
-        launchd_path = await asyncio.get_running_loop().run_in_executor(
+        return await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(), _launchd_live_worktree
         )
-        _LIVE_WORKTREE, _LIVE_VERIFIED = launchd_path, True
-        return _LIVE_WORKTREE
     if manager != "systemd":
-        _LIVE_WORKTREE, _LIVE_VERIFIED = None, True
         return None
     # Prefer WorkingDirectory: make-live always writes it alongside ExecStart,
     # and the baseline unit sets it too. ``--value`` prints the bare path with
@@ -498,9 +509,7 @@ async def _live_worktree_path(*, fresh: bool = False) -> str | None:
         except OSError:
             return None
 
-    normalised = await asyncio.get_running_loop().run_in_executor(subprocess_executor(), _normalise)
-    _LIVE_WORKTREE, _LIVE_VERIFIED = normalised, True
-    return _LIVE_WORKTREE
+    return await asyncio.get_running_loop().run_in_executor(subprocess_executor(), _normalise)
 
 
 # --- gateway service detection + restart ---

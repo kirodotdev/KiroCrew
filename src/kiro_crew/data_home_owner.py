@@ -75,12 +75,26 @@ def fix_command(home: Path) -> str:
     own filesystem, and never a non-directory with a second hard link: a link
     planted from inside the home to a root-owned file would otherwise hand that
     file to this account. ``chown -h`` changes a symlink itself, never its target.
+
+    ``find -P`` never follows a symlink while it walks, and ``-execdir`` runs each
+    ``chown`` from inside the entry's own directory on ``./<name>``, never on the
+    full path. Something that can write the home can swap a directory for a
+    symlink after the walk entered it; a full-path ``chown`` would then follow
+    that symlink to a system path, while ``./<name>`` resolves in the directory
+    find already holds. ``\\;`` rather than ``+``: BSD ``find`` does not batch
+    ``-execdir``. GNU ``find`` refuses ``-execdir`` while ``PATH`` holds a
+    relative entry; ``sudo``'s ``secure_path`` gives it an absolute one.
+
+    shortcut: ``-links 1`` is tested during the walk, so a file swapped for a hard
+    link to a root-owned file before its ``chown`` is still re-owned where the
+    kernel lets that link be made (Linux's ``fs.protected_hardlinks`` forbids it,
+    macOS does not). An fd-relative repair command would close that gap.
     """
     quoted = shlex.quote(str(home.resolve()))
     user = shlex.quote(_account_name(os.geteuid()))
     return (
-        f"sudo find {quoted} -xdev ! -user {user} \\( -type d -o -links 1 \\) "
-        f"-exec chown -h {user} {{}} + && chmod -R u+rwX {quoted}"
+        f"sudo find -P {quoted} -xdev ! -user {user} \\( -type d -o -links 1 \\) "
+        f"-execdir chown -h {user} {{}} \\; && chmod -R u+rwX {quoted}"
     )
 
 

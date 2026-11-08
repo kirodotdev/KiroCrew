@@ -101,6 +101,8 @@ class TestSubagentSlackInjection:
     async def test_cron_injection_timeout(self):
         """Cron injection timeout → notifies failure."""
         orch, mock_sm = self._setup()
+        # The cron run's live session: a completion continues it (``is_new`` False).
+        orch.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), False, False))
         on_done = mock_sm.call_args[1]["on_done"]
         orch.subagent_mgr.running = []
 

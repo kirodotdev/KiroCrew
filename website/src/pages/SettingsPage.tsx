@@ -236,6 +236,10 @@ export default function SettingsPage() {
   // `=== true` is required, not cosmetic: the gateway sends null for a check that
   // never ran or failed, and a truthiness test would keep that dark while a
   // `!== false` test would light it on no evidence.
+  // Every `kirocrew://remote-crew/add` link remounts Remote Crew, so a panel
+  // already on screen comes back on its first tab with the newest link's values
+  // in its add form.
+  const crewAddLinkSeq = useAppSelector(s => s.instances.crewForms?.addLinkSeq ?? 0)
   const gatewayUpdateAvailable = useAppSelector(s => s.dashboard.status?.update_available)
   const desktopUpdateAvailable = useAppSelector(s => s.dashboard.desktopUpdateAvailable)
   const updateAvailable = gatewayUpdateAvailable === true || desktopUpdateAvailable
@@ -328,7 +332,7 @@ export default function SettingsPage() {
         )}
         {tab === 'computer-use' && <GuideTrustRootRegion><ComputerUsePanel /></GuideTrustRootRegion>}
         {tab === 'webhooks' && <WebhooksPanel />}
-        {tab === 'instances' && <RemoteCrewPanel />}
+        {tab === 'instances' && <RemoteCrewPanel key={crewAddLinkSeq} />}
         {tab === 'people' && sharedCrewPreview && <PeoplePanel />}
         {tab === 'privacy' && <PrivacyPanel />}
         {tab === 'security' && <GuideTrustRootRegion><SecurityPanel basePath={SETTINGS_BASE_PATH} /></GuideTrustRootRegion>}

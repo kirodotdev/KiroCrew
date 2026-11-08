@@ -187,6 +187,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "channels.allowed-user-ids-feishu",
+    "label": "Allowed user IDs (Feishu)",
+    "labelKey": "pages.settings.botChannelPanel.allowed_user_ids",
+    "labelSuffix": "Feishu",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "feishu"
+    }
+  },
+  {
     "id": "channels.allowed-user-ids-telegram",
     "label": "Allowed user IDs (Telegram)",
     "labelKey": "pages.settings.botChannelPanel.allowed_user_ids",
@@ -370,6 +382,30 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "channels.feishu-app-id",
+    "labelKey": "pages.settings.feishuPanel.app_id_label",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "feishu"
+    },
+    "label": "Feishu app ID",
+    "description": "The App ID from your custom app’s Credentials page in the Feishu developer console."
+  },
+  {
+    "id": "channels.feishu-app-secret",
+    "labelKey": "pages.settings.feishuPanel.app_secret_label",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "feishu"
+    },
+    "label": "Feishu app secret",
+    "description": "The App Secret shown next to the App ID on the same Credentials page."
+  },
+  {
     "id": "channels.file-sessions-in-a-folder-discord",
     "label": "File sessions in a folder (Discord)",
     "labelKey": "pages.settings.botChannelPanel.file_sessions_in_folder",
@@ -379,6 +415,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "params": {
       "channel": "discord"
+    }
+  },
+  {
+    "id": "channels.file-sessions-in-a-folder-feishu",
+    "label": "File sessions in a folder (Feishu)",
+    "labelKey": "pages.settings.botChannelPanel.file_sessions_in_folder",
+    "labelSuffix": "Feishu",
+    "tab": "channels",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "channel": "feishu"
     }
   },
   {
@@ -488,6 +536,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "params": {
       "channel": "discord"
+    }
+  },
+  {
+    "id": "channels.folder-name-feishu",
+    "label": "Folder name (Feishu)",
+    "labelKey": "pages.settings.botChannelPanel.session_folder_name",
+    "labelSuffix": "Feishu",
+    "hint": "Created for you when you save these settings, if it does not exist yet.",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "feishu"
     }
   },
   {
@@ -772,6 +833,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1,
     "params": {
       "channel": "discord"
+    }
+  },
+  {
+    "id": "channels.soft-context-threshold-feishu",
+    "label": "Soft context threshold % (Feishu)",
+    "labelKey": "pages.settings.botChannelPanel.soft_context_threshold",
+    "labelSuffix": "Feishu",
+    "tab": "channels",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "channel": "feishu"
     }
   },
   {
@@ -1586,6 +1659,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.show-optimize-prompt",
+    "label": "Show Optimize Prompt",
+    "labelKey": "pages.settings.chatPanel.show_optimize_prompt",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "composer"
+    }
+  },
+  {
     "id": "chat.show-pasted-text-in-full",
     "label": "Show Pasted Text in Full",
     "labelKey": "pages.settings.chatPanel.show_pasted_text_in_full",
@@ -2100,10 +2184,10 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   },
   {
     "id": "developer.bot-sessions-on-the-bot-s-profile",
-    "label": "Bot sessions on the Bot's profile",
+    "label": "Bot sessions on the bot's profile",
     "labelKey": "pages.developer.featurePreviewsTab.mate_sessions",
-    "description": "Moves a Bot's chats to its Sessions tab.",
-    "hint": "Moves the chats a Bot opens out of your Sessions list, Recents and grid, onto that Bot's Sessions tab. The Bot's own chat stays where it is, and History and search still find every chat.",
+    "description": "Moves a bot's chats to its Sessions tab.",
+    "hint": "Moves the chats a bot opens out of your Sessions list, Recents and grid, onto that bot's Sessions tab. The bot's own chat stays where it is, and History and search still find every chat.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1,
@@ -2189,6 +2273,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "developer.github-sign-in-by-kiro-crew",
+    "label": "GitHub sign-in by Kiro Crew",
+    "labelKey": "pages.developer.featurePreviewsTab.crew_oauth",
+    "description": "Lets Kiro Agent chats use your GitHub profile, orgs and public repos. Turn it on, then connect GitHub in Customize > Connections.",
+    "hint": "Kiro Crew signs in to GitHub itself. Disconnect GitHub on Connections to remove access.",
+    "tab": "developer",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "feature-previews"
+    }
+  },
+  {
     "id": "developer.jev-api-key",
     "label": "Jev API key",
     "labelKey": "pages.developer.featurePreviewsTab.decisions_api_key_label",
@@ -2228,9 +2325,9 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
   },
   {
     "id": "developer.reply-threads-on-bot-chat-messages",
-    "label": "Reply threads on Bot chat messages",
+    "label": "Reply threads on bot chat messages",
     "labelKey": "pages.settings.crewmatesSection.reply_threads",
-    "hint": "Let any message in a Bot's chat carry its own reply thread, opened in the side panel while the chat stays visible. Off, the Reply in thread control is not offered and existing threads are hidden, not deleted.",
+    "hint": "Let any message in a bot's chat carry its own reply thread, opened in the side panel while the chat stays visible. Off, the Reply in thread control is not offered and existing threads are hidden, not deleted.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1,
@@ -2779,6 +2876,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "notifications.mute-sounds",
+    "label": "Mute sounds",
+    "labelKey": "pages.settings.notificationsPanel.mute_sounds",
+    "hint": "Silences notification sounds for a while, then turns them back on by itself. Notifications still arrive.",
+    "tab": "notifications",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "sound"
+    }
+  },
+  {
     "id": "notifications.notify-me-even-when-kiro-crew-is-closed",
     "label": "Notify me even when Kiro Crew is closed",
     "labelKey": "pages.settings.notificationsPanel.push_toggle_label",
@@ -3156,8 +3265,8 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "skills.require-approval-before-generated-skills-go-live",
     "label": "Require approval before generated skills go live",
     "labelKey": "pages.settings.skillsPanel.require_approval_before_generated_skills_go_live",
-    "description": "Off lets skills without scripts go live without your approval.",
-    "hint": "Keep every auto-generated candidate in the pending queue until you approve it. Turning this off lets prose-only skills publish automatically; skills that bundle scripts always require approval regardless.",
+    "description": "Off lets new skills without scripts go live without your approval.",
+    "hint": "Keep every auto-generated candidate in the pending queue until you approve it. Turning this off lets new prose-only skills publish automatically; skills that bundle scripts, and any update to an existing skill, always require approval, unless skills.auto_refine_on_deviation is on.",
     "tab": "skills",
     "type": "toggle",
     "occurrence": 1,

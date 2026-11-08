@@ -129,17 +129,19 @@ class _FakeReq:
 
 
 def _fake_reconfigure(mgr, keep_intent=True):
-    """Mirror SshTunnelManager.reconfigure on a stub: teardown then persist.
+    """Mirror SshTunnelManager.reconfigure on a stub: teardown (unless
+    ``needs_teardown`` says no) then persist.
 
     The real method holds the manager lock across both steps; a stub cannot model
     the lock, so it models the ORDER, which is what the handler depends on.
     """
 
-    async def reconfigure(instance_id, apply):
-        try:
-            await mgr.disconnect(instance_id, keep_intent=keep_intent)
-        except Exception:
-            pass  # the real method logs and persists anyway
+    async def reconfigure(instance_id, apply, needs_teardown=None):
+        if needs_teardown is None or needs_teardown():
+            try:
+                await mgr.disconnect(instance_id, keep_intent=keep_intent)
+            except Exception:
+                pass  # a stub models the order, not the real method's abort
         return apply()
 
     return reconfigure

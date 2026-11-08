@@ -30,6 +30,7 @@ import { AppModelsSection } from './AppModelsSection'
 import { FollowDefaultModelAction } from './FollowDefaultModelAction'
 import { KiroHarnessFallbackNote } from './KiroHarnessFallbackNote'
 import { DefaultSessionFolderSetting } from './DefaultSessionFolderSetting'
+import { FeatureTipsList } from './FeatureTipsList'
 import { usePlainDiff } from '../../hooks/usePlainDiff'
 import { useDiffSplit } from '../../hooks/useDiffSplit'
 import { EFFORT_LEVELS } from '../../lib/effort'
@@ -926,7 +927,8 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
           <SettingsToggle label={i18nT('pages.settings.chatPanel.arrow_key_prompt_history')} hint={i18nT('pages.settings.chatPanel.arrow_key_prompt_history_desc')} checked={chatCfg.arrowKeyPromptHistory} onChange={v => setChat('arrowKeyPromptHistory', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.spellcheck_input')} hint={i18nT('pages.settings.chatPanel.spellcheck_input_desc')} checked={chatCfg.spellcheck} onChange={v => setChat('spellcheck', v)} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.inline_markdown_input')} hint={i18nT('pages.settings.chatPanel.inline_markdown_input_desc')} checked={chatCfg.inlineMarkdown} onChange={v => setChat('inlineMarkdown', v)} />
-          <SettingsToggle label={i18nT('pages.settings.chatPanel.optimize_before_sending')} hint={i18nT('pages.settings.chatPanel.optimize_before_sending_desc', { chord: platformShortcut('Cmd+Z') })} checked={chatCfg.optimizeBeforeSend} onChange={v => setChat('optimizeBeforeSend', v)} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.show_optimize_prompt')} hint={i18nT('pages.settings.chatPanel.show_optimize_prompt_desc', { chord: platformShortcut('Cmd+Shift+Enter') })} checked={chatCfg.showOptimizePrompt} onChange={v => setChat('showOptimizePrompt', v)} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.optimize_before_sending')} hint={i18nT('pages.settings.chatPanel.optimize_before_sending_desc', { chord: platformShortcut('Cmd+Z') })} checked={chatCfg.optimizeBeforeSend} onChange={v => setChat('optimizeBeforeSend', v)} disabled={!chatCfg.showOptimizePrompt} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.show_pasted_text_in_full')} description={i18nT('pages.settings.chatPanel.show_pasted_text_in_full_desc_summary')} hint={i18nT('pages.settings.chatPanel.show_pasted_text_in_full_desc', { chord: platformShortcut('Cmd+Shift+V') })} checked={chatCfg.showFullPastes} onChange={v => setChat('showFullPastes', v)} />
           <SettingsButtonGroup label={i18nT('pages.settings.chatPanel.follow_up_bar_layout')} hint={i18nT('pages.settings.chatPanel.multiline_wraps_suggestions_onto_multiple_rows_s')} value={chatCfg.followUpLayout} options={[{ value: "multiline", label: i18nT('pages.settings.chatPanel.multiline') }, { value: "scroll", label: i18nT('pages.settings.chatPanel.single_line') }]} onChange={v => setChat('followUpLayout', v as ChatConfig['followUpLayout'])} />
           <SettingsInput
@@ -1031,6 +1033,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
 
         case 'discovery':
           return (
+        <>
         <SettingsCard>
           <SettingsToggle label={i18nT('pages.settings.chatPanel.feature_tips')} description={tipsConfigOff ? i18nT('pages.settings.chatPanel.disabled_by_instance_config_tips_enabled_false') : undefined} hint={i18nT('pages.settings.chatPanel.show_occasional_feature_discovery_tips_above_the')} checked={!!tipsQ.data && tipsQ.data.enabled_config && !shownOptedOut} onChange={v => tipsMut.mutate(v)} disabled={tipsConfigOff || tipsQ.isLoading || tipsQ.isError} />
           {/* A failed status read used to only grey the toggle out, which is
@@ -1095,6 +1098,8 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
             }
           />
         </SettingsCard>
+        <FeatureTipsList />
+        </>
           )
 
         case 'sessions':
