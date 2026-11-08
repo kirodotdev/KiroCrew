@@ -1912,7 +1912,13 @@ The owners, lowest layer first:
   member slot transitions.
 - `state_parts/slots_push.py` — when dashboard state reaches websocket clients, and
   how: the slots broadcast and its pacing, the serving loop, slot / lineage / removal
-  patches, card and progress pushes, `_broadcast` and the websocket fan-out.
+  patches, card and progress pushes, `_broadcast` and the websocket fan-out. A
+  `suspend_slots_push` block's exit flush logs a failing slots broadcast instead
+  of raising it: the block's change is already made, so its caller's answer (a
+  slot create's 200, say) is the one it gets when the trailing timer carries the
+  failure. A committed resume or import publishes its final push through such a
+  block. A direct `push_slots_update()` on a leading edge still raises, which is
+  what source-link unlink's `broadcast_failed` audit and its retry read.
 - `state_parts/slot_list_hold.py` — the partial slot-list hold after a restart: the
   `slotsPartial` label and its deadline, the held keys and the channel hold, bound onto
   `DashboardState` one method per line.
