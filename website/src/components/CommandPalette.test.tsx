@@ -88,7 +88,7 @@ const H = vi.hoisted(() => {
   // direct hooks. Mock them with stable, empty-search providers
   // so the modal renders without React-Query / Router (matching the P0 mocks).
   const knowledgeProvider = { id: 'knowledge', label: 'Knowledge', icon: null, search: vi.fn(() => []) }
-  const skillsProvider = { id: 'skills', label: 'Skills', icon: null, search: vi.fn(() => []) }
+  const skillsProvider = { id: 'skills', label: 'Skills', icon: null, search: vi.fn(() => []), scope: '' }
   const promptsProvider = { id: 'prompts', label: 'Prompts', icon: null, search: vi.fn(() => []) }
   const artifactsProvider = { id: 'artifacts', label: 'Artifacts', icon: null, search: vi.fn(() => []) }
   const recentsProvider = { id: 'recents', label: 'Recent', icon: null, search: vi.fn(async () => [recentResult]) }
@@ -713,6 +713,22 @@ describe('CommandPalette — keyboard & activation', () => {
 
     expect(await screen.findByPlaceholderText('Search skills…')).toBeInTheDocument()
     expect(screen.getByRole('textbox', { name: 'Search everywhere' })).toHaveValue('sla')
+  })
+
+  it('re-runs the Skills search when the provider scope moves to another chat', async () => {
+    try {
+      const { rerender } = render(<CommandPalette open onClose={vi.fn()} />, { wrapper })
+      await screen.findByText('Recent Session')
+      fireEvent.change(screen.getByRole('textbox', { name: 'Search everywhere' }), { target: { value: '$' } })
+      await screen.findByPlaceholderText('Search skills…')
+      await waitFor(() => expect(H.skillsProvider.search).toHaveBeenCalled())
+      const before = H.skillsProvider.search.mock.calls.length
+      H.skillsProvider.scope = 'scope-test-chat-b'
+      rerender(<CommandPalette open onClose={vi.fn()} />)
+      await waitFor(() => expect(H.skillsProvider.search.mock.calls.length).toBeGreaterThan(before))
+    } finally {
+      H.skillsProvider.scope = ''
+    }
   })
 
   it('Backspace on an empty scoped query pops the scope chip', async () => {
