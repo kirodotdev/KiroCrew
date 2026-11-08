@@ -1286,12 +1286,18 @@ async def run_with_recall_deadline(awaitable: Awaitable[_T]) -> _T:
 class EmbedAdmissionTimeout(asyncio.TimeoutError):
     """The memory-admission semaphore did not free a slot within a caller's deadline.
 
-    Raised by :func:`acquire_embed_admission` when a caller that must bound its wait
-    (the dashboard pre-prompt build) could not enter the embed pool in time, so the
-    caller can surface a visible error instead of waiting unbounded. Subclasses
-    :class:`asyncio.TimeoutError` so a caller that only handles timeouts still
-    catches it.
+    Raised by :func:`acquire_embed_admission` and a bounded :func:`run_in_embed_pool`
+    when a pre-prompt build a person is waiting on (the dashboard's, a chat channel's)
+    could not enter the embed pool in time, so the caller can surface its message, a
+    retryable reply, instead of waiting unbounded. Subclasses
+    :class:`asyncio.TimeoutError` so a caller that only handles timeouts catches it.
     """
+
+
+#: How long a chat-channel turn waits to ENTER the pool for its prompt build.
+TURN_BUILD_ADMISSION_TIMEOUT_SECS = 60.0
+#: :class:`EmbedAdmissionTimeout`'s message, which a chat surface shows as is.
+_ADMISSION_BUSY = "Memory is busy, so this message could not be prepared. Try again in a moment."
 
 
 def _loop_admission(
@@ -1379,15 +1385,11 @@ async def acquire_embed_admission(timeout: float) -> _AdmissionSlot:
     leaves nothing to restore. ``release`` is synchronous, so a caller can settle
     the slot from a suspension-free cleanup path.
     """
-    loop = asyncio.get_running_loop()
-    sem = _memory_admission(loop)
-    started = loop.time()
+    sem = _memory_admission(asyncio.get_running_loop())
     try:
         await asyncio.wait_for(sem.acquire(), timeout=timeout)
     except asyncio.TimeoutError as exc:
-        raise EmbedAdmissionTimeout(
-            f"memory pool admission not granted within {loop.time() - started:.2f}s"
-        ) from exc
+        raise EmbedAdmissionTimeout(_ADMISSION_BUSY) from exc
     return _AdmissionSlot(sem)
 
 
@@ -1396,6 +1398,7 @@ async def run_in_embed_pool(
     /,
     *args: Any,
     _admission_held: _AdmissionSlot | None = None,
+    _admission_timeout: float | None = None,
     **kwargs: Any,
 ) -> _T:
     """Offload bounded memory work, waiting without rejecting ordinary prompts.
@@ -1404,17 +1407,13 @@ async def run_in_embed_pool(
     cancelled caller releases a slot only when its underlying thread actually
     finishes (or the queued future is successfully cancelled).
 
-    When *_admission_held* is an :class:`_AdmissionSlot` the caller already holds
-    a slot (through :func:`acquire_embed_admission`), so this acquires no new one:
-    a pre-reserved slot skips the acquire. Once the work is submitted the slot's
-    release is handed off to the build future's done-callback -- which frees the
-    slot when the thread finishes or the queued future is cancelled -- because a
-    submitted future cannot be cancelled once its thread starts, so the slot must
-    track the THREAD. The reservation's owner then skips its own release (gated on
-    ``not slot.handed_off``), so a cancelled caller never frees a slot a running
-    build still holds. If submission never happens (an error before submit) the
-    slot is NOT handed off and only the owner releases it. Used by a caller that
-    must BOUND its admission wait and has taken the slot ahead of the work.
+    Two callers bound their admission wait. One that reserved its slot through
+    :func:`acquire_embed_admission` passes it as *_admission_held*, so this takes
+    no second one; once submitted, the build future's done-callback owns its
+    release (the slot tracks the THREAD), and the owner releases it, gated on
+    ``not slot.handed_off``, only when nothing was submitted. One that reserved
+    nothing passes *_admission_timeout*: a pool still saturated after that many
+    seconds raises :class:`EmbedAdmissionTimeout` and submits nothing.
     """
     from contextvars import copy_context
 
@@ -1438,6 +1437,7 @@ async def run_in_embed_pool(
         copy_context(),
         functools.partial(func, *args, **kwargs),
         held=_admission_held,
+        timeout=_admission_timeout,
     )
 
 
@@ -1469,6 +1469,7 @@ async def _run_admitted(
     call: Callable[[], _T],
     *,
     held: _AdmissionSlot | None = None,
+    timeout: float | None = None,
 ) -> _T:
     """Submit *call* once this loop's per-pool admission has a free slot.
 
@@ -1489,7 +1490,13 @@ async def _run_admitted(
     loop = asyncio.get_running_loop()
     if held is None:
         admission = _loop_admission(loop, admission_key, workers)
-        await admission.acquire()
+        if timeout is None:
+            await admission.acquire()
+        else:
+            try:
+                await asyncio.wait_for(admission.acquire(), timeout=timeout)
+            except asyncio.TimeoutError as exc:
+                raise EmbedAdmissionTimeout(_ADMISSION_BUSY) from exc
         # An unreserved call releases the per-loop semaphore it just acquired.
         release = admission.release
     else:

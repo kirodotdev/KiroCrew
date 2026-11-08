@@ -31,7 +31,11 @@ from kiro_crew.dashboard.chat_utils import (
     mint_options_token,
     remember_slack_options,
 )
-from kiro_crew.executors import run_in_embed_pool
+from kiro_crew.executors import (
+    TURN_BUILD_ADMISSION_TIMEOUT_SECS,
+    EmbedAdmissionTimeout,
+    run_in_embed_pool,
+)
 from kiro_crew.hooks import HOOK_REPLY, TOOL_AUTO_APPROVE, TOOL_DENY, hook_gate_kwargs
 from kiro_crew.llm_helpers import save_conversation_turn_off_loop
 from kiro_crew.memory_stores import UnknownMemoryStore
@@ -161,7 +165,7 @@ def _transport_error_text(exc: BaseException) -> str:
     refusal. Every other failure, including an unclassified ``AcpError``, keeps
     the generic retry text, because its message is internal detail.
     """
-    if isinstance(exc, UnknownMemoryStore):
+    if isinstance(exc, (UnknownMemoryStore, EmbedAdmissionTimeout)):
         return _redacted_error_detail(exc)
     if is_user_worded_failure(exc):
         return f"❌ {_redacted_error_detail(exc)}"
@@ -946,6 +950,7 @@ async def handle_message_transport(
                 # the same text as the current request.
                 exclude_last_n=1 if _logged_user_turn else 0,
                 tab_notices=_tab_notices,
+                _admission_timeout=TURN_BUILD_ADMISSION_TIMEOUT_SECS,
             )
         else:
             full_message = text
@@ -1389,6 +1394,11 @@ async def handle_message_transport(
             await _live.settle()
         logger.exception("transport_dispatch: error handling message")
         Stats().inc_message_failed()
+        if client and _acquired and isinstance(exc, EmbedAdmissionTimeout):
+            # Probed: the session manager's own hand-back (`turn_bracket.rearm_first_turn`).
+            _rearm = getattr(sessions, "rearm_first_turn", None)
+            if is_new and callable(_rearm):
+                _rearm(session_key, client, resumed=resumed)
         if client and _acquired:
             # A dying runtime reaches this generic handler as one more exception,
             # so without the attribution question every tenant of one process

@@ -43,6 +43,7 @@ if TYPE_CHECKING:
         STOP_REASON_CANCELLED,
         STOP_REASON_COMPACTION_FAILED,
         STOP_REASON_END_TURN,
+        TURN_BUILD_ADMISSION_TIMEOUT_SECS,
         AcpError,
         AcpProcessDied,
         AcpPromptBusy,
@@ -51,6 +52,7 @@ if TYPE_CHECKING:
         ConversationLog,
         CronService,
         DashboardState,
+        EmbedAdmissionTimeout,
         HistoryConsolidator,
         KiroCrewConfig,
         LLMProvider,
@@ -167,6 +169,9 @@ class _SlackTurn:
     answer: "_AnswerStream"
     client: "LLMProvider | None"
     _had_error: "bool"
+    # The busy memory pool refused the build, so no prompt went out and the turn
+    # leaves no transcript row (the retry reads the conversation as it was).
+    _unsent: "bool"
     _replayed: "bool"
     routed_link_key: "str | None"
     _stop_reason: "str"
@@ -420,6 +425,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
         enabled=KiroCrewConfig.load().slack.reactions_enabled,
     )
     _had_error = False
+    _unsent = False
     _stop_reason = ""
     # Whether the stream delivered an EVENT_COMPLETE; ``_stop_reason`` alone
     # cannot say (it is "" both before any completion and for one that carries
@@ -531,6 +537,9 @@ async def _run_turn(turn: _SlackTurn) -> bool:
     # whether the backend reported that it compacted the session.
     _needs_reinjection = False
     _turn_landed = False
+    # Whether this turn took the session's soft-cancel flag, to give it back if
+    # the turn's prompt never goes out.
+    _took_cancel_flag = False
     _turn_compacted = False
     # The settle call for the tab notices THIS turn's build read, settled in the finally.
     _tab_notices: list[Any] = []
@@ -788,6 +797,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             and context_builder.conversation_log
         ):
             _session.prev_turn_cancelled = False
+            _took_cancel_flag = True
             _preamble = await asyncio.to_thread(
                 build_cancelled_turn_preamble, context_builder.conversation_log, session_key
             )
@@ -865,6 +875,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
                 user_text_range=_user_text_range,
                 context_provider=client,
                 tab_notices=_tab_notices,
+                _admission_timeout=TURN_BUILD_ADMISSION_TIMEOUT_SECS,
             )
         else:
             full_message = text
@@ -1293,8 +1304,22 @@ async def _run_turn(turn: _SlackTurn) -> bool:
             task.fail(str(e))
             await sessions.record_failure(session_key)
             Stats().inc_message_failed()
-    except UnknownMemoryStore as exc:
+    except (UnknownMemoryStore, EmbedAdmissionTimeout) as exc:
         _had_error = True
+        if _acquired and isinstance(exc, EmbedAdmissionTimeout):
+            # Probed: the session manager's own hand-back (`turn_bracket.rearm_first_turn`).
+            _rearm = getattr(sessions, "rearm_first_turn", None)
+            if is_new and callable(_rearm):
+                _rearm(session_key, client, resumed=resumed)
+            # Nothing reached the model, so the stopped turn is still the one to
+            # recall, on the session this turn took the flag from.
+            if (
+                _took_cancel_flag
+                and _session is not None
+                and getattr(sessions, "_sessions", {}).get(session_key) is _session
+            ):
+                _session.prev_turn_cancelled = True
+            _unsent = True
         answer.accumulated = redact_local_paths(redact(str(exc)))[0][:1000]
         task.fail("memory_unavailable")
         Stats().inc_message_failed()
@@ -1360,6 +1385,7 @@ async def _run_turn(turn: _SlackTurn) -> bool:
     turn.answer = answer
     turn.client = client
     turn._had_error = _had_error
+    turn._unsent = _unsent
     turn.routed_link_key = linked_session_key
     turn._replayed = _replayed
     turn.session_key = session_key

@@ -603,6 +603,7 @@ class SessionManager:
     ending_key = _claims.ending_key
     allocation_requested_model = _claims.allocation_requested_model
     fresh_start_unclaimed = _claims.fresh_start_unclaimed
+    rearm_first_turn = _claims.rearm_first_turn
     record_effort_override = _claims.record_effort_override
     record_success = _claims.record_success
     record_failure = _claims.record_failure

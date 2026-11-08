@@ -63,6 +63,22 @@ def consume_reinjection(sessions: Any, session_key: str) -> bool:
     return bool(consume(session_key)) if callable(consume) else False
 
 
+def rearm_first_turn(
+    sessions: Any, session_key: str, provider: Any, *, is_new: bool, resumed: bool
+) -> None:
+    """Give back the first-turn observation a claim took, when its prompt never went out.
+
+    ``get_or_create`` hands a new session's first turn to the claim that takes it.
+    A turn that then gives up before sending its prompt (the busy memory pool never
+    admitted its build) must hand it back while it still holds the session, or
+    the next message reads as an existing session and loses its session-start
+    context. Defensive on the accessor, like :func:`consume_reinjection`.
+    """
+    rearm = getattr(sessions, "rearm_first_turn", None)
+    if is_new and callable(rearm):
+        rearm(session_key, provider, resumed=resumed)
+
+
 def stop_reason_landed(stop_reason: str | None) -> bool:
     """Whether the turn that ended with *stop_reason* landed, for re-injection.
 
