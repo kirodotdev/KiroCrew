@@ -2949,14 +2949,15 @@ answers `tools/list` from):
 - **Workflows and hooks:** `workflow_author`, `workflow_run`,
   `workflow_library_list`, `workflow_status`, `workflow_result`, `workflow_list`,
   `workflow_cancel`, `workflow_rerun_subtree`, `register_hook`
-- **App bridges:** `ops_mission_control_api`, `pod_up`, `pod_restart`,
-  `pod_down`, `pod_status`, `pod_ls`.
-  Listed only while the app each one reaches is enabled — see § An app's tools
+- **App bridges:** `ops_mission_control_api`.
+  Listed only while the app it reaches is enabled — see § An app's tools
   follow the app's enablement below.
 - **App-declared tools:** whatever a first-party app declares in its manifest
-  `agentTools` block, such as Design Tweak's `design_tweak_update_thread` and Issue
+  `agentTools` block, such as Design Tweak's `design_tweak_update_thread`, Issue
   Radar's `issue_radar_record_investigation`, `issue_radar_crew_read` and
-  `issue_radar_crew_record`. The app
+  `issue_radar_crew_record`, and Dev Fleet's `pod_up`, `pod_restart`, `pod_down`,
+  `pod_status` and `pod_ls` (declared under the namespace `pod`, so they keep the
+  names they had as core tools). The app
   serves each call from its own process; this server lists the tool and forwards the
   call (below).
 - **Browser:** `browser`
@@ -3239,13 +3240,11 @@ of its responsibility:
 
 ### An app's tools follow the app's enablement
 
-The six `apps`-domain tools each reach one built-in app — Dev Fleet (`pod_up`,
-`pod_restart`, `pod_down`, `pod_status`, `pod_ls`) and Ops Mission Control
-(`ops_mission_control_api`) — through gateway routes that refuse the call with HTTP 403
-while the app is disabled, on `kiro_crew.apps.manager`'s read of the app's
-`installed.json`. The refusal body differs per app — Dev Fleet's routes name it
-`app_not_enabled` (#10742), Ops Mission Control `app_disabled` — so nothing here keys on
-a code; the predicate behind both is the same `is_app_enabled` read. A tool an app
+The one `apps`-domain tool, `ops_mission_control_api`, reaches the built-in Ops Mission
+Control app through gateway routes that refuse the call with HTTP 403 while the app is
+disabled, on `kiro_crew.apps.manager`'s read of the app's `installed.json`. The refusal
+body names `app_disabled`, but nothing here keys on a code; the predicate behind it is
+the same `is_app_enabled` read. A tool an app
 declares in its manifest follows the same rule in the `app_tools` domain: its
 `advertised()` hides it on a readable `False`, and `POST /api/app-tools/call` refuses
 the call with `app_not_enabled`. `tools/list` advertised every one of them
@@ -5759,8 +5758,8 @@ its start, so a parked `wait` is old but never slow, and a backend that advertis
 the report is held to `PROGRESS_WEDGE_CEILING_SECS` (900s) instead of
 `HARD_WEDGE_CEILING_SECS` (`SUBAGENT_TIMEOUT_SECS + 300`, about 3 hours): an age
 that old on a reporting backend is a worker call that stopped progressing, and no
-shipped synchronous tool runs that long on purpose (the longest, `pod_up`, bounds
-itself at 210s). A backend that never advertised -- an older install, the Windows
+shipped synchronous tool runs that long on purpose (the longest, Dev Fleet's `pod_up`,
+declares a 210s `timeoutSeconds`). A backend that never advertised -- an older install, the Windows
 loop -- keeps the long ceiling, because it cannot tell a parked call from a hung
 one, and so does every server other than `kirocrew-core`. A forwarded
 `notifications/cancelled` marks the pending entry cancelled

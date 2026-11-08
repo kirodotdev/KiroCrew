@@ -1,7 +1,7 @@
 """Tool schemas for the builtin apps' agent tools.
 
-The Ops Mission Control API allowlist and the pod tools. A tool an installed app declares in its manifest carries its own
-schema (``apps.app_agent_tools.build_tool_schema``).
+The Ops Mission Control API allowlist. A tool an installed app declares in its manifest
+carries its own schema (``apps.app_agent_tools.build_tool_schema``).
 
 Callers import these names from :mod:`kiro_crew.validation`, which serves them; this
 module never imports that facade.
@@ -76,46 +76,3 @@ OPS_MISSION_CONTROL_API_SCHEMA = ToolSchema(
     ],
     custom_validator=_validate_omc_api,
 )
-
-# Dev Fleet pod lifecycle (agent surface). A pod name is a git worktree basename,
-# so it reaches `git worktree list` matching and a filesystem path before
-# `rt.validate_name` -- the real authority -- ever sees it. Bounded here so an
-# unbounded string is refused at the tool boundary rather than carried further.
-_POD_WORKTREE_MAX_LEN = 200
-
-# `memory` / `cpu` are validated by `kirocrew pod up` (syntax, floor, host cap);
-# the bound here only stops an unbounded string reaching the CLI's argv.
-_POD_LIMIT_MAX_LEN = 16
-
-POD_UP_SCHEMA = ToolSchema(
-    tool_name="pod_up",
-    fields=[
-        FieldSpec("worktree", str, required=True, max_len=_POD_WORKTREE_MAX_LEN),
-        FieldSpec("memory", str, max_len=_POD_LIMIT_MAX_LEN, default=""),
-        FieldSpec("cpu", str, max_len=_POD_LIMIT_MAX_LEN, default=""),
-    ],
-)
-
-POD_RESTART_SCHEMA = ToolSchema(
-    tool_name="pod_restart",
-    fields=[
-        FieldSpec("worktree", str, required=True, max_len=_POD_WORKTREE_MAX_LEN),
-        FieldSpec("memory", str, max_len=_POD_LIMIT_MAX_LEN, default=""),
-        FieldSpec("cpu", str, max_len=_POD_LIMIT_MAX_LEN, default=""),
-    ],
-)
-
-POD_DOWN_SCHEMA = ToolSchema(
-    tool_name="pod_down",
-    fields=[FieldSpec("worktree", str, required=True, max_len=_POD_WORKTREE_MAX_LEN)],
-)
-
-POD_STATUS_SCHEMA = ToolSchema(
-    tool_name="pod_status",
-    fields=[FieldSpec("worktree", str, required=True, max_len=_POD_WORKTREE_MAX_LEN)],
-)
-
-# `pod_ls` takes nothing. It is registered anyway: a tool ABSENT from
-# MCP_CORE_SCHEMAS has its arguments passed through raw, so an empty schema is
-# what makes an unexpected argument an "Error:" string instead of unvalidated input.
-POD_LS_SCHEMA = ToolSchema(tool_name="pod_ls", fields=[])

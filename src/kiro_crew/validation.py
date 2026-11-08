@@ -146,15 +146,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _OMC_API_PATHS,
         _OMC_MAX_BODY,
         _OMC_QUERY_RE,
-        _POD_LIMIT_MAX_LEN,
-        _POD_WORKTREE_MAX_LEN,
         OPS_MISSION_CONTROL_ALLOWED_CALLS,
         OPS_MISSION_CONTROL_API_SCHEMA,
-        POD_DOWN_SCHEMA,
-        POD_LS_SCHEMA,
-        POD_RESTART_SCHEMA,
-        POD_STATUS_SCHEMA,
-        POD_UP_SCHEMA,
         _validate_omc_api,
     )
     from kiro_crew.validation_parts.artifact_schemas import (  # noqa: F401

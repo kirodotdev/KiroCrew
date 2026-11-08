@@ -1234,6 +1234,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # stderr at the point of capture, before its bounded tail becomes the
         # cutover failure reason the app's own routes render.
         "apps/builtins/dev_fleet/gateway_service.py",
+        # Same Dev Fleet surface: the pod tools' gateway route scrubs a refusal's
+        # message and the status lines it renders, as the core tools it replaced
+        # did. The egress is `mcp_tools/app_tools.py`, which redacts the answer
+        # again before it reaches the model.
+        "apps/builtins/dev_fleet/agent_tools.py",
         # Capture-side, not egress: the GitHub Issues provider scrubs `gh`'s
         # stderr as it captures a failed poll or action, before the bounded tail
         # becomes the error text. The surfaces that SHOW that text (the app's

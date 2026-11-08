@@ -167,6 +167,14 @@ def _schema_with(arg: dict[str, Any]) -> dict[str, Any]:
         (_block(_tool(), _tool()), "declared twice"),
         (_block(*[_tool(name=f"fake_app_t{i}") for i in range(17)]), "at most 16"),
         (_block(_tool(maxResultChars=0)), "maxResultChars"),
+        ({**_block(), "namespace": "Pod"}, "namespace"),
+        ({**_block(), "namespace": "pod-x"}, "namespace"),
+        ({**_block(), "namespace": "a" * 33}, "namespace"),
+        ({**_block(), "namespace": 7}, "namespace"),
+        (_block(_tool(timeoutSeconds=0)), "timeoutSeconds"),
+        (_block(_tool(timeoutSeconds=601)), "timeoutSeconds"),
+        (_block(_tool(timeoutSeconds=True)), "timeoutSeconds"),
+        (_block(_tool(result="html")), "result"),
         (
             _block(
                 _tool(
@@ -320,23 +328,37 @@ def test_a_tool_is_in_the_deny_universe_before_its_app_is_installed(monkeypatch)
 
 
 def test_a_core_tool_name_is_never_an_apps(monkeypatch):
-    """An app named ``pod`` may declare ``pod_up``; the core's tool keeps the name."""
-    _install("pod", block=_block(_tool(name="pod_up")))
-    assert app_agent_tools.declared_tool("pod_up") is not None
+    """An app named ``spawn`` may declare ``spawn_run``; the core's tool keeps the name."""
+    _install("spawn", block=_block(_tool(name="spawn_run")))
+    assert app_agent_tools.declared_tool("spawn_run") is not None
     assert app_tools.schemas() == []
-    assert app_tools.declared("pod_up") is None
-    assert app_tools.tool_schema("pod_up") is None
-    assert "pod_up" not in app_tools.HANDLERS
-    assert [t["name"] for t in build_tool_list(names_only=True)].count("pod_up") == 1
+    assert app_tools.declared("spawn_run") is None
+    assert app_tools.tool_schema("spawn_run") is None
+    assert "spawn_run" not in app_tools.HANDLERS
+    assert [t["name"] for t in build_tool_list(names_only=True)].count("spawn_run") == 1
+
+
+def test_a_stated_namespace_replaces_the_app_name_and_a_core_name_still_wins():
+    """``namespace`` lets an app keep tool names it had before the seam, never a core one."""
+    block = AgentToolsConfig.from_value({**_block(_tool(name="pod_note")), "namespace": "pod"})
+    assert block.validate(_APP) == []
+    assert block.namespace == "pod"
+    wrong = AgentToolsConfig.from_value({**_block(_tool()), "namespace": "pod"})
+    assert any("'pod_'" in e for e in wrong.validate(_APP))
+    _install(block={**_block(_tool(name="spawn_run")), "namespace": "spawn"})
+    assert app_agent_tools.declared_tool("spawn_run") is not None
+    assert app_tools.declared("spawn_run") is None
 
 
 class _FakePost:
     def __init__(self, resp: dict[str, Any]) -> None:
         self.resp = resp
         self.calls: list[tuple[str, Any]] = []
+        self.timeouts: list[Any] = []
 
-    def __call__(self, path: str, body: Any = None, **_kw: Any) -> dict[str, Any]:
+    def __call__(self, path: str, body: Any = None, **kw: Any) -> dict[str, Any]:
         self.calls.append((path, copy.deepcopy(body)))
+        self.timeouts.append(kw.get("timeout"))
         return dict(self.resp)
 
 
@@ -395,6 +417,100 @@ def test_the_answer_is_redacted_then_capped(monkeypatch):
     assert out == full[:50] + f"\n… truncated ({len(full)} chars total)."
 
 
+@pytest.mark.parametrize(("declared", "expected"), [({}, 30), ({"timeoutSeconds": 210}, 210)])
+def test_the_core_waits_the_declared_time(monkeypatch, declared, expected):
+    _install(block=_block(_tool(**declared)))
+    post = _FakePost({"ok": True})
+    monkeypatch.setattr(mcp_core, "_post", post)
+    app_tools.app_agent_tool("fake_app_note", {"item_id": "i"})
+    assert post.timeouts == [expected]
+
+
+def _redact_marked(text: str) -> str:
+    return f"<{text}>"
+
+
+def test_a_text_tool_answer_is_redacted_text(monkeypatch):
+    _install(block=_block(_tool(result="text", maxResultChars=60_000)))
+    monkeypatch.setattr(app_tools, "redact", _redact_marked)
+    monkeypatch.setattr(mcp_core, "_post", _FakePost({"text": "token: tok-1\nopen: x"}))
+    assert app_tools.app_agent_tool("fake_app_note", {"item_id": "i"}) == "<token: tok-1\nopen: x>"
+
+
+def test_a_text_tool_keeps_only_the_credential_it_names(monkeypatch):
+    """Each piece around the credential is redacted; the credential is put back verbatim."""
+    cred = "c" * 16
+    _install(block=_block(_tool(result="text", maxResultChars=60_000)))
+    monkeypatch.setattr(app_tools, "redact", _redact_marked)
+    monkeypatch.setattr(
+        mcp_core,
+        "_post",
+        _FakePost({"text": ["token: ", "\nopen: ?token=", "\nend"], "credential": cred}),
+    )
+    assert app_tools.app_agent_tool("fake_app_note", {"item_id": "i"}) == (
+        f"<token: >{cred}<\nopen: ?token=>{cred}<\nend>"
+    )
+
+
+@pytest.mark.parametrize(
+    ("resp", "expected"),
+    [
+        (
+            {"error": "gateway not reachable", "transport_error": True},
+            "Error: fake_app_note failed: <gateway not reachable>",
+        ),
+        (
+            {"code": "app_not_enabled", "error": "app 'fake-app' is not enabled"},
+            "Error: fake_app_note failed [app_not_enabled]: <app 'fake-app' is not enabled>",
+        ),
+        (
+            {"code": "Not A Code!", "error": "refused"},
+            "Error: fake_app_note failed: <refused>",
+        ),
+        (
+            {"text": "x", "extra": 1},
+            'Error: fake_app_note returned no result: <{"text": "x", "extra": 1}>',
+        ),
+        ({"text": 7}, 'Error: fake_app_note returned no result: <{"text": 7}>'),
+        (
+            {"text": ["a", "b"], "credential": "short"},
+            'Error: fake_app_note returned no result: <{"text": ["a", "b"], "credential": "short"}>',
+        ),
+        (
+            {"text": "a", "credential": "c" * 16},
+            "Error: fake_app_note returned no result: <"
+            + json.dumps({"text": "a", "credential": "c" * 16})
+            + ">",
+        ),
+        (
+            {"text": ["a"] * 9, "credential": "c" * 16},
+            "Error: fake_app_note returned no result: <"
+            + json.dumps({"text": ["a"] * 9, "credential": "c" * 16})
+            + ">",
+        ),
+        (
+            {"text": ["a", "b"], "credential": "has a space in it"},
+            "Error: fake_app_note returned no result: <"
+            + json.dumps({"text": ["a", "b"], "credential": "has a space in it"})
+            + ">",
+        ),
+    ],
+)
+def test_any_other_answer_of_a_text_tool_is_an_error_line(monkeypatch, resp, expected):
+    """A timeout or a refusal must read ``Error:``: the tool-call audit keys its outcome on it."""
+    _install(block=_block(_tool(result="text", maxResultChars=60_000)))
+    monkeypatch.setattr(app_tools, "redact", _redact_marked)
+    monkeypatch.setattr(mcp_core, "_post", _FakePost(resp))
+    assert app_tools.app_agent_tool("fake_app_note", {"item_id": "i"}) == expected
+
+
+def test_a_json_tool_never_relays_text_unredacted(monkeypatch):
+    _install(block=_block(_tool(maxResultChars=60_000)))
+    monkeypatch.setattr(app_tools, "redact", lambda text: "REDACTED")
+    monkeypatch.setattr(mcp_core, "_post", _FakePost({"text": "tok-1"}))
+    assert app_tools.app_agent_tool("fake_app_note", {"item_id": "i"}) == "REDACTED"
+
+
 # ── The gateway handler ──────────────────────────────────────────────────────
 
 
@@ -418,6 +534,11 @@ def _request(body: Any, *, internal: bool = True) -> web.Request:
 class _Registry:
     def __init__(self) -> None:
         self.seen: list[tuple[str, str, Any]] = []
+        #: ``(app, method, path)`` the fake reports as an app's own registered route.
+        self.routes: set[tuple[str, str, str]] = set()
+
+    def serves(self, app_name: str, method: str, path: str) -> bool:
+        return (app_name, method, path.lstrip("/")) in self.routes
 
     async def dispatch(self, request: web.Request) -> web.Response:
         body = await request.json()
@@ -469,6 +590,61 @@ async def test_a_backend_app_is_served_through_the_signed_proxy(monkeypatch):
     status, body = await _status(_CALL)
     assert (status, body) == (200, {"proxied": True})
     assert seen == [(_APP, "agent-tools", json.dumps(_CALL).encode())]
+
+
+@pytest.mark.asyncio
+async def test_a_backend_app_with_its_own_gateway_route_is_served_there(monkeypatch, registry):
+    """A tool that needs the gateway's host namespaces is served by the app's gateway route."""
+    from kiro_crew.apps import routes as app_routes
+
+    _install(backend={"entryPoint": "server.py", "port": "auto"})
+    registry.routes.add((_APP, "POST", "agent-tools"))
+    monkeypatch.setattr(
+        app_routes, "handle_app_api_proxy", lambda *_a, **_k: pytest.fail("not proxied")
+    )
+    status, body = await _status(_CALL)
+    assert (status, body) == (200, {"served": True})
+    assert registry.seen == [(_APP, "agent-tools", _CALL)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "route",
+    [("other-app", "POST", "agent-tools"), (_APP, "GET", "agent-tools"), (_APP, "POST", "x")],
+)
+async def test_any_other_gateway_route_leaves_a_backend_app_on_its_proxy(
+    monkeypatch, registry, route
+):
+    from kiro_crew.apps import routes as app_routes
+
+    _install(backend={"entryPoint": "server.py", "port": "auto"})
+    registry.routes.add(route)
+
+    async def _proxy(request: web.Request, *, read_body: bytes | None = None) -> web.Response:
+        return web.json_response({"proxied": True})
+
+    monkeypatch.setattr(app_routes, "handle_app_api_proxy", _proxy)
+    assert await _status(_CALL) == (200, {"proxied": True})
+    assert registry.seen == []
+
+
+def test_the_registry_reports_only_an_exact_registered_route():
+    from kiro_crew.apps.route_registry import RouteRegistry, _RegisteredRoute
+
+    reg = RouteRegistry(web.Application())
+
+    async def _h(_r: Any, _c: Any) -> web.Response:
+        return web.json_response({})
+
+    reg._routes[_APP] = [
+        _RegisteredRoute("POST", "/agent-tools", _h, has_params=False),
+        _RegisteredRoute("POST", "/items/{item}", _h, has_params=True),
+    ]
+    assert reg.serves(_APP, "POST", "agent-tools")
+    assert reg.serves(_APP, "POST", "/agent-tools")
+    assert not reg.serves(_APP, "GET", "agent-tools")
+    assert not reg.serves(_APP, "POST", "items/{item}")
+    assert not reg.serves("other-app", "POST", "agent-tools")
 
 
 @pytest.mark.asyncio
