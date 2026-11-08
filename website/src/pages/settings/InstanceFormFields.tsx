@@ -15,6 +15,7 @@ import SimpleSelect from '../../components/SimpleSelect'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
 import { i18nT } from '../../i18n/t'
+import { Trans } from 'react-i18next'
 
 // Re-exported so the form's existing consumers keep one import site, while the
 // shapes themselves live in a neutral module the store can read without
@@ -667,7 +668,7 @@ export function InstanceFormFields({
         />
         <span className="text-[12px] text-muted leading-snug">
           {i18nT('pages.settings.instancesPanel.only_needed_if')} <code className="text-text">{i18nT('pages.settings.instancesPanel.kirocrew')}</code> {i18nT('pages.settings.instancesPanel.is_installed_somewhere_non_standard_on_the_remot')} <code className="text-text">{i18nT('pages.settings.instancesPanel.command_v_kirocrew')}</code>{' '}
-          {i18nT('pages.settings.instancesPanel.commonly')} <code className="text-text">{i18nT('pages.settings.instancesPanel.local_bin_kirocrew')}</code>{i18nT('pages.settings.instancesPanel.use_an_absolute_path_no')} <code className="text-text">~</code>).
+          <Trans i18nKey="pages.settings.instancesPanel.commonly_path_use_absolute" components={{ path: <code className="text-text">{i18nT('pages.settings.instancesPanel.local_bin_kirocrew')}</code>, tilde: <code className="text-text">~</code> }} />
         </span>
       </label>
       )}
