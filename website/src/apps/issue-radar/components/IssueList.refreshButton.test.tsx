@@ -46,6 +46,23 @@ describe('IssueList refresh button', () => {
     expect(screen.queryByRole('button', { name: 'Refreshing issues…' })).toBeNull()
   })
 
+  it('shows a refresh failure outside the card region, so cached cards cannot cover it', () => {
+    const issue = {
+      number: 1, title: 'Alpha', url: '', comments: 0, labels: [], author: 'a', assignees: [],
+      author_association: 'NONE', updated_at: '2026-07-03T00:00:00Z',
+    }
+    setContext({
+      issues: [issue], filteredIssues: [issue], sortedIssues: [issue],
+      issuesError: new Error('rate limited'),
+    })
+    const { container } = render(<IssueList />)
+    const notice = screen.getByText('rate limited')
+    // The card scrollers are absolute children of this region and paint over it.
+    const region = container.querySelector('.relative.flex-1')
+    expect(region).not.toBeNull()
+    expect(region!.contains(notice)).toBe(false)
+  })
+
   it('keeps keyboard focus on Refresh while it runs, and ignores a press then', () => {
     // A native `disabled` takes the focused button out of the tab order, so a
     // keyboard press dropped focus to the page for the whole refresh.
