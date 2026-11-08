@@ -1272,5 +1272,13 @@ def build_permission_event(
         deepseek_read_only_issue=_deepseek_read_only_issue,
         side_read_only_refusal=_side_read_only_refusal,
         tool_purpose=_purpose,
+        # KAS reads a reason only on its one-time Deny, which ``reject_tool``
+        # answers with when one was offered (``recorded["reject"]``).
+        takes_rejection_reason=bool(
+            kas_consent_meta
+            and recorded is not None
+            and kind_to_id.get("reject_once")
+            and recorded.get("reject") == kind_to_id.get("reject_once")
+        ),
     )
     return event, recorded

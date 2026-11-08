@@ -8672,7 +8672,8 @@
     },
     "rejectDropdown": {
       "reject_all": "すべて拒否 — 残りは確認せずに拒否する",
-      "reject_once": "1 回だけ拒否 — 残りは引き続き確認する"
+      "reject_once": "1 回だけ拒否 — 残りは引き続き確認する",
+      "reason_placeholder": "理由（任意）— エージェントが読みます"
     },
     "remoteArtifactCard": {
       "clone": "クローン",

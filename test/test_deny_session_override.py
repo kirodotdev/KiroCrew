@@ -419,6 +419,21 @@ class TestDashboardOverrideCard:
         assert slot._deny_waivers == set()
 
     @pytest.mark.asyncio
+    async def test_card_asks_for_no_rejection_reason(self, tmp_path, monkeypatch):
+        # Its rejection is the rule's own refusal, which carries no reason, so a
+        # KAS request that takes one still gets no reason box on this card.
+        _no_pins(monkeypatch)
+        state, client = _make_state(tmp_path, context_builder=_scripted_gate([_RM_ROOT]))
+        slot = _make_slot()
+        _set_stream(client, _stream(_shell_event(takes_rejection_reason=True)))
+
+        await _run_answered(state, slot, "rejected")
+
+        meta = json.loads(_permission_rows(slot)[0]["cls"])
+        assert meta[DENY_OVERRIDE_META_KEY] == _RM_ROOT
+        assert "rejection_reason_accepted" not in meta
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("answer", ["approved", "approved_trust_reads", "rejected"])
     async def test_any_other_answer_refuses(self, tmp_path, monkeypatch, answer):
         # A trust or YOLO sweep resolves pending cards with "approved": never a grant here.

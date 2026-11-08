@@ -108,6 +108,7 @@ from kiro_crew.agent_sdk.host_auth import (  # noqa: E402,F401 - re-exported for
 from kiro_crew.recovery.ladder import (  # noqa: E402 - see the re-export note above
     SESSION_RECOVERY_MAX_ATTEMPTS,
 )
+from kiro_crew.rejection_reason import rejection_reason_text
 
 logger = logging.getLogger(__name__)
 
@@ -579,6 +580,13 @@ OUTCOME_SELECTED = "selected"
 OUTCOME_CANCELLED = "cancelled"
 OPTION_ALLOW_ONCE = "allow_once"
 OPTION_ALLOW_ALWAYS = "allow_always"
+
+
+def rejection_reason_meta(reason: str) -> dict[str, Any] | None:
+    """The response ``_meta`` that carries *reason* to KAS, or None for none."""
+    text = rejection_reason_text(reason)
+    return {"kiro": {"rejectionReason": text}} if text else None
+
 
 # ── Stop Reasons ──
 
@@ -1143,6 +1151,12 @@ class AcpEvent:
     #: maps to its kiro-cli policy name. False on every other harness, whose
     #: bare ids the gate reads under their own name only.
     kas_builtin_ids: bool = False
+    #: takes_rejection_reason: a person's reason for rejecting this request reaches
+    #: the model. True only for a KAS request that offered a one-time Deny
+    #: (``reject_once``): KAS reads ``_meta.kiro.rejectionReason`` on that answer
+    #: and on no other. False everywhere else, so no surface asks for a reason
+    #: the backend would drop.
+    takes_rejection_reason: bool = False
     #: spec_granted_builtins: on a KAS session's OWN permission request (never a
     #: sub-session's), the built-ins the active agent's spec grants that the KAS
     #: policy keeps at ``ask`` (``AcpSessionHandle.kas_crew_answered``). Written by
@@ -1311,6 +1325,26 @@ class AcpEvent:
                 if cmd:
                     return cmd
         return None
+
+    @property
+    def path_scope_trusted(self) -> bool:
+        """True when a file grant may be keyed on this event's tool and path.
+
+        A path grant (``trust_patterns.path_trust_target``) binds a built-in tool
+        name to the path in its arguments, so both must come from the harness's
+        own ``tool_call`` frame: the params from the cache (``raw_params_trusted``,
+        never the permission payload's inline copy), the built-in identity from the
+        cache (``mcp_identity_trusted`` with no server), and a resolved not-shell
+        classification.
+        """
+        return (
+            self.raw_params_trusted
+            and self.mcp_identity_trusted
+            and self.shell_classified
+            and not self.is_shell
+            and not self.mcp_server_name
+            and isinstance(self.raw_tool_params, dict)
+        )
 
     @property
     def child_low_fidelity(self) -> bool:

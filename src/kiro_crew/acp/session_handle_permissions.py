@@ -26,7 +26,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from kiro_crew import acp_tool_gate, mediated_request_capability, permission_floor
 from kiro_crew.acp import batch_guard
@@ -49,6 +49,7 @@ from kiro_crew.acp.types import (
     OUTCOME_SELECTED,
     AcpEvent,
     JsonRpcMessage,
+    rejection_reason_meta,
 )
 from kiro_crew.agent_sdk.backends import ACP_BACKENDS_SHARED_RUNTIME_CHILD_CALLS_MARKED
 from kiro_crew.metrics.events import CHILD_PERMISSION_DENIED, emit_counter
@@ -222,8 +223,12 @@ def _restore_withdrawn(
         self._permission_options[request_id] = recorded
 
 
-async def reject_tool(self: AcpSessionHandle, request_id: str | int) -> None:
+async def reject_tool(self: AcpSessionHandle, request_id: str | int, reason: str = "") -> None:
     """Reject a pending permission request.
+
+    *reason* is what the person typed with the rejection. On KAS it rides the
+    one-time Deny as ``_meta.kiro.rejectionReason``, which KAS hands the model;
+    every other backend, and an answer with no deny option, sends none.
 
     Prefers a clean ``selected`` reject using the reject optionId the agent
     advertised (claude-agent-acp offers ``reject`` → behavior:"deny",
@@ -243,10 +248,15 @@ async def reject_tool(self: AcpSessionHandle, request_id: str | int) -> None:
     self._note_steering_denial()
     reject_id = recorded.get("reject") if recorded else None
     if reject_id:
-        await self._runtime.send_response(
-            request_id,
-            {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": reject_id}},
+        response: dict[str, Any] = {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": reject_id}}
+        reason_meta = (
+            rejection_reason_meta(reason)
+            if reason and self._runtime.acp_backend == ACP_BACKEND_KAS
+            else None
         )
+        if reason_meta is not None:
+            response["_meta"] = reason_meta
+        await self._runtime.send_response(request_id, response)
     else:
         # Same last-resort warning as AcpClient.reject_tool — this is the
         # second of the two ``cancelled`` fallback sites, and the cascade
