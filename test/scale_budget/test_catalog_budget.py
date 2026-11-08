@@ -65,9 +65,6 @@ def catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         dir_revision, "time", types.SimpleNamespace(time_ns=lambda: time.time_ns() + ahead)
     )
     monkeypatch.setattr(agent_catalog, "is_owner_dashboard_request", lambda request: True)
-    gate = getattr(agent_catalog, "_RefreshGate", None)
-    if gate is not None:
-        monkeypatch.setattr(agent_catalog, "_REFRESH_GATE", gate())
 
     scans: list[Path] = []
     real_scan = loader_snapshots._scan_materialized_index

@@ -51,9 +51,14 @@ _REBOUND_STATE = (
     "_MATERIALIZED_COMPLETE",
     "_MATERIALIZED_REFRESH_APPLIED",
     "_MATERIALIZED_REFRESH_ISSUED",
-    "_MATERIALIZED_SKIPPED",
+    "_MATERIALIZED_MEMO",
 )
-_STATE_NAMES = (*_REBOUND_STATE, "_MATERIALIZED_SEEN", "_MATERIALIZED_STEMS")
+_STATE_NAMES = (
+    *_REBOUND_STATE,
+    "_MATERIALIZED_SCAN_COUNTS",
+    "_MATERIALIZED_SEEN",
+    "_MATERIALIZED_STEMS",
+)
 
 
 def _index() -> _facade_mirror.MirrorIndex:
@@ -68,7 +73,7 @@ def restored_state(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     in place are swapped for copies, so the process-wide originals come back untouched."""
     for name in _STATE_NAMES:
         monkeypatch.setattr(loader, name, getattr(loader, name))
-    for name in ("_MATERIALIZED_SEEN", "_MATERIALIZED_STEMS"):
+    for name in ("_MATERIALIZED_SCAN_COUNTS", "_MATERIALIZED_SEEN", "_MATERIALIZED_STEMS"):
         monkeypatch.setattr(loader, name, dict(getattr(loader, name)))
     return monkeypatch
 
@@ -238,11 +243,14 @@ class TestTheSnapshotStateHasOneHome:
             "_MATERIALIZED_COMPLETE": False,
             "_MATERIALIZED_REFRESH_APPLIED": 0,
             "_MATERIALIZED_REFRESH_ISSUED": 1000,
-            "_MATERIALIZED_SKIPPED": None,
+            "_MATERIALIZED_MEMO": None,
         }.items():
             restored_state.setattr(loader, preset, value)
         restored_state.setattr(loader, "kiro_agents_dir", lambda: tmp_path)
         publish = (loader.publish_materialized_agents, [["fresh-agent"]])
+        # What a landed scan memoizes over these presets: the key, then its ticket.
+        key = loader._memo_key()
+        memo = None if key is None else (key, 1001)
         # name -> (a call that rebinds it in the owner's own code, its args, the value after)
         rebinds = {
             "_CONFIG_AGENT_ALIAS_SNAPSHOT": (
@@ -261,7 +269,7 @@ class TestTheSnapshotStateHasOneHome:
             "_MATERIALIZED_COMPLETE": (loader.refresh_materialized_agents, [], True),
             "_MATERIALIZED_REFRESH_APPLIED": (loader.refresh_materialized_agents, [], 1001),
             "_MATERIALIZED_REFRESH_ISSUED": (loader.refresh_materialized_agents, [], 1001),
-            "_MATERIALIZED_SKIPPED": (loader.refresh_materialized_agents, [], frozenset()),
+            "_MATERIALIZED_MEMO": (loader.refresh_materialized_agents, [], memo),
         }
         rebind, args, expected = rebinds[name]
         rebind(*args)
