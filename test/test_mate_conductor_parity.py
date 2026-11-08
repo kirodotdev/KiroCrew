@@ -335,19 +335,24 @@ def test_skill_keys_read_both_uri_forms(monkeypatch: pytest.MonkeyPatch, home_fo
 _SKILL_MD = "---\nname: {0}\ndescription: A {0} skill.\n---\n# {0}\n"
 
 
-def test_a_mapped_crewmate_conductor_keeps_the_skills_it_inherits(
+def test_a_mapped_crewmate_conductor_loads_only_its_mapped_skills(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Mapping ``goal-conductor`` for the ledger must not cost a crewmate's chat on
-    kiro-cli the trees it inherits: the user's ``~/.kiro/skills`` and the
-    workspace's ``.kiro/skills``. Both trees exist here, so the inherited set is
-    not empty and the check cannot pass vacuously."""
+    """A crewmate's chat maps ``goal-conductor`` for the ledger, and that mapping is
+    its whole skill scope, as on the Ultra Mode conductor: the user's
+    ``~/.kiro/skills`` and the workspace's ``.kiro/skills`` are not added
+    (the decision entry ``conductors-stay-simple-and-new-abilities-go-to-workers``).
+    Both trees exist here, so the inherited set is not empty and the check cannot
+    pass vacuously."""
     from kiro_crew import skills as skills_mod
+    from kiro_crew.agent_discovery_parts import skill_scope
     from kiro_crew.agent_discovery_parts.skill_scope import (
         agent_skill_globs,
         inherited_skill_globs,
     )
 
+    # The scope the next release ships; this release still inherits by default.
+    monkeypatch.setattr(skill_scope, "MATE_CONDUCTOR_INHERITS_USER_SKILLS", False)
     kiro_home = tmp_path / "kiro-home"
     (kiro_home / "skills" / "mine").mkdir(parents=True)
     (kiro_home / "skills" / "mine" / "SKILL.md").write_text(
@@ -370,22 +375,22 @@ def test_a_mapped_crewmate_conductor_keeps_the_skills_it_inherits(
     scope = agent_skill_globs(
         "kirocrew-mate-conductor", project_dir=project, strict=True, inherit_defaults=True
     )
-    missing = [g for g in inherited if g not in scope]
-    assert missing == [], f"a mapped crewmate conductor lost its inherited skill trees: {missing}"
+    assert scope, "the mapped conductor resolved no skill at all"
+    added = [g for g in inherited if g in scope]
+    assert added == [], f"a mapped crewmate conductor took the user's skill trees: {added}"
 
     # The per-turn triggered-skill filter asks without ``inherit_defaults``
-    # (``context_assembly/turn_message.py``): a non-empty answer there narrows the
-    # triggered skills to it, so it must hold the inherited trees too.
+    # (``context_assembly/turn_message.py``); it must hold the mapping alone too.
     from kiro_crew import context as ctx
 
     per_turn = ctx.agent_skill_globs("kirocrew-mate-conductor", project_dir=project)
-    missing = [g for g in inherited if per_turn and g not in per_turn]
-    assert missing == [], (
-        f"the per-turn triggered-skill filter drops a mapped crewmate conductor's "
-        f"inherited skill trees: {missing}"
+    added = [g for g in inherited if g in per_turn]
+    assert added == [], (
+        f"the per-turn triggered-skill filter gives a mapped crewmate conductor the "
+        f"user's skill trees: {added}"
     )
 
-    # KAS loads both trees by itself; the scope must not send a rule that denies them.
+    # KAS loads both trees by itself; the scope must send a rule that denies them.
     from kiro_crew.acp.kas_skill_scope import scope_globs, skill_scope_rules
 
     globs = scope_globs(
@@ -394,20 +399,19 @@ def test_a_mapped_crewmate_conductor_keeps_the_skills_it_inherits(
         agents_dir=paths_mod.mate_agents_dir(),
         work_dir=project,
     )
-    denied = []
-    for rule in skill_scope_rules(globs, work_dir=project):
-        if rule.get("effect") != "deny":
-            continue
-        for name in ("mine", "ours"):
+    offered = []
+    for name in ("mine", "ours"):
+        denied = False
+        for rule in skill_scope_rules(globs, work_dir=project):
+            if rule.get("effect") != "deny":
+                continue
             if "exclude" in rule:
-                hit = name not in rule["exclude"]
+                denied = denied or name not in rule["exclude"]
             else:
-                hit = "match" not in rule or name in rule["match"]
-            if hit:
-                denied.append((name, rule))
-    assert (
-        denied == []
-    ), f"on KAS a mapped crewmate conductor is denied its inherited skills: {denied}"
+                denied = denied or "match" not in rule or name in rule["match"]
+        if not denied:
+            offered.append(name)
+    assert offered == [], f"on KAS a mapped crewmate conductor is offered user skills: {offered}"
 
 
 @pytest.fixture
