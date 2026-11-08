@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 
-from kiro_crew.messaging.transport import InboundMessage
+from kiro_crew.messaging.transport import InboundMessage, sole_direct_target
 from kiro_crew.teams.client import TeamsInbound
 from kiro_crew.teams.transport import TEAMS_CAPABILITIES, TeamsTransport
 
@@ -128,6 +128,21 @@ class TestReceive:
             "conv-1",
             None,
         )
+
+    @pytest.mark.asyncio
+    async def test_a_second_allowed_person_who_has_not_written_keeps_the_owner_unnamed(
+        self,
+    ) -> None:
+        async def _dispatch(inbound: TeamsInbound) -> None:
+            return None
+
+        transport = TeamsTransport(
+            _FakeClient(),
+            allowed_emails=["alice@example.com", "bob@example.com"],
+            dispatch=_dispatch,
+        )
+        await transport.receive(_dm())
+        assert sole_direct_target(transport.configured_targets()) == ""
 
     @pytest.mark.asyncio
     async def test_channel_scope_denied_and_audited(self, monkeypatch) -> None:
