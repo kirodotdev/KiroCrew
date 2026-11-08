@@ -269,6 +269,10 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   'AppSessionMuteSection.tsx': { tab: 'notifications', params: { sub: 'sources' } },
   // The Web Push toggle NotificationsPanel's Desktop alerts page mounts.
   'NotificationsPushSection.tsx': { tab: 'notifications', params: { sub: 'alerts' } },
+  // The per-channel "Deliver to" route NotificationsPanel's Sources page mounts on
+  // each runtime-fetched channel row; mapped so a static control added to it lands
+  // on the Sources deep link.
+  'NotificationsBridgeRoute.tsx': { tab: 'notifications', params: { sub: 'sources' } },
 }
 
 /** Panels whose controls sit in `case '<sub>':` pages of a SettingsSubNav;

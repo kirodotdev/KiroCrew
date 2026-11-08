@@ -18713,10 +18713,17 @@
         "filled_in_from_a_link": "已根据链接填写。请确认 SSH 主机是你在用的机器，然后再添加。"
       },
       "notificationsPanel": {
+        "deliver_floor_all": "所有优先级",
+        "deliver_floor_critical": "仅紧急",
+        "deliver_floor_default": "默认和紧急",
+        "deliver_min_priority_for": "{{name}} 的最低发送优先级",
+        "deliver_to": "发送到",
+        "deliver_to_group": "将 {{name}} 的通知发送到",
         "desktop_alerts": "桌面通知",
         "no_channels": "暂无通知来源。",
         "notify_when_a_background_chat_finishes": "后台聊天完成时通知",
         "notify_when_a_background_chat_finishes_description": "显示一条系统通知，其中包含已完成聊天的名称；仅在此窗口最小化或被其他应用遮挡时显示。",
+        "transport_unavailable": "不可用",
         "unread_only_when_done_or_waiting": "仅在需要你处理时将会话标记为未读",
         "unread_only_when_done_or_waiting_description": "后台会话只在代理完成或等待你回复时标记为未读，而不是每条新消息都标记。",
         "always_interrupts_cannot_be_muted_or_lowered": "始终打断 — 无法静音或降低优先级",

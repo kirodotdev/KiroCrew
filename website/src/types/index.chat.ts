@@ -767,7 +767,9 @@ export interface NotificationChannel {
   registered: boolean
   default_priority: string | null
   protected: boolean
-  settings: { muted?: boolean; priority?: string }
+  /** `deliver_to` / `deliver_min_priority` are the channel's bridge route:
+   *  the chat apps its notes are also sent to, and the lowest priority sent. */
+  settings: { muted?: boolean; priority?: string; deliver_to?: string[]; deliver_min_priority?: string }
 }
 
 export interface PendingApproval {

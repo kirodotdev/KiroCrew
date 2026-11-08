@@ -19196,10 +19196,17 @@
         "filled_in_from_a_link": "একটি লিঙ্ক থেকে পূরণ করা হয়েছে। SSH হোস্টটি তোমার ব্যবহার করা মেশিন কি না দেখে নাও, তারপর এটি যোগ করো।"
       },
       "notificationsPanel": {
+        "deliver_floor_all": "সব অগ্রাধিকার",
+        "deliver_floor_critical": "শুধু জরুরি",
+        "deliver_floor_default": "ডিফল্ট ও জরুরি",
+        "deliver_min_priority_for": "{{name}}-এর জন্য পাঠানোর সর্বনিম্ন অগ্রাধিকার",
+        "deliver_to": "এখানে পাঠান",
+        "deliver_to_group": "{{name}}-এর বিজ্ঞপ্তি পাঠান",
         "desktop_alerts": "ডেস্কটপ বিজ্ঞপ্তি",
         "no_channels": "এখনও কোনো বিজ্ঞপ্তির উৎস নেই।",
         "notify_when_a_background_chat_finishes": "ব্যাকগ্রাউন্ডের চ্যাট শেষ হলে জানান",
         "notify_when_a_background_chat_finishes_description": "যে চ্যাট শেষ হয়েছে তার নাম জানিয়ে একটি সিস্টেম বিজ্ঞপ্তি দেখায়, তবে কেবল যখন এই উইন্ডো মিনিমাইজ করা থাকে বা অন্য কোনো অ্যাপের পিছনে থাকে।",
+        "transport_unavailable": "উপলব্ধ নয়",
         "unread_only_when_done_or_waiting": "সেশন শুধু তখনই অপঠিত হিসেবে চিহ্নিত করো যখন তোমাকে দরকার",
         "unread_only_when_done_or_waiting_description": "ব্যাকগ্রাউন্ডের সেশন প্রতিটি নতুন মেসেজে নয়, শুধু তখনই অপঠিত হিসেবে চিহ্নিত হয় যখন এজেন্ট কাজ শেষ করে বা তোমার উত্তরের অপেক্ষা করে।",
         "always_interrupts_cannot_be_muted_or_lowered": "সব সময় বাধা দেয় — মিউট বা কমানো যায় না",

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Lock, MonitorCog, Blocks, Check, RadioTower, Bell, Volume2, ListMusic, Music } from 'lucide-react'
 import { SettingsSection, SettingsCard, SettingsToggle, SettingsSelect } from '../../components/settings'
 import { SettingsSubNav, type SubNavItem } from '../../components/SettingsSubNav'
@@ -18,6 +18,7 @@ import { putSoundFile, getSoundFile, deleteSoundFile, newSoundFileKey } from '..
 import { CustomSoundsSection, type UndoResult } from './CustomSoundsSection'
 import { PushSection } from './NotificationsPushSection'
 import { AppSessionMuteSection } from './AppSessionMuteSection'
+import { DeliverToControl, type BridgePatch } from './NotificationsBridgeRoute'
 import { saveChatCompleteNotify, useChatCompleteNotify } from '../../hooks/chatCompleteNotify'
 import { loadBannerEnabled, saveBannerEnabled } from '../../hooks/notificationBanner'
 import { loadUnreadOnAttention, saveUnreadOnAttention } from '../../hooks/unreadOnAttention'
@@ -212,15 +213,22 @@ function channelLabel(c: NotificationChannel): string {
   return c.channel.startsWith(`${c.source}.`) ? c.channel.slice(c.source.length + 1) : c.channel
 }
 
-type ChannelsData = { channels?: NotificationChannel[] }
-type ChannelPatch = { muted?: boolean; priority?: string | null }
+/** `bridge_transports`: the chat apps the bridge has a sink for, the only ones a
+ *  route may newly name. Absent from a gateway that predates it: nothing is offered. */
+type ChannelsData = { channels?: NotificationChannel[]; bridge_transports?: string[] }
+type ChannelPatch = { muted?: boolean; priority?: string | null } & BridgePatch
+type ChannelField = 'muted' | 'priority' | 'deliver_to' | 'deliver_min_priority'
 const CHANNELS_KEY = ['notification-channels'] as const
+const CHANNEL_PATCH_KEY = ['notification-channel-patch'] as const
 
-/** The stored settings fields a channel patch writes. */
-function channelPatchFields(patch: ChannelPatch): ('muted' | 'priority')[] {
-  const fields: ('muted' | 'priority')[] = []
+/** The stored settings fields a channel patch writes. An emptied route also
+ *  drops the floor: the backend clears both together. */
+function channelPatchFields(patch: ChannelPatch): ChannelField[] {
+  const fields: ChannelField[] = []
   if (patch.muted !== undefined) fields.push('muted')
   if ('priority' in patch) fields.push('priority')
+  if (patch.deliver_to !== undefined) fields.push('deliver_to')
+  if (patch.deliver_min_priority !== undefined || patch.deliver_to?.length === 0) fields.push('deliver_min_priority')
   return fields
 }
 
@@ -234,6 +242,14 @@ function ChannelsSection({ patch }: { patch: (channel: string, settings: Channel
     queryFn: api.notificationChannels,
   })
   const channels = channelsQuery.data?.channels
+  const bridgeTransports = channelsQuery.data?.bridge_transports
+  // Channels with a route save still in flight (its refetch included: onSettled
+  // awaits it). A route is written whole, so a later save the server handled
+  // first would be undone by the earlier one; the row holds new picks until then.
+  const routeSaving = new Set(useMutationState({
+    filters: { mutationKey: CHANNEL_PATCH_KEY, status: 'pending' },
+    select: m => m.state.variables as { channel: string; settings: ChannelPatch } | undefined,
+  }).filter(v => v && (v.settings.deliver_to !== undefined || v.settings.deliver_min_priority !== undefined)).map(v => v!.channel))
 
   if (channelsQuery.isError) {
     return (
@@ -326,6 +342,15 @@ function ChannelsSection({ patch }: { patch: (channel: string, settings: Channel
                     </div>
                   </>
                 )}
+                <DeliverToControl
+                  channel={c.channel}
+                  name={channelLabel(c)}
+                  deliverTo={c.settings.deliver_to}
+                  floor={c.settings.deliver_min_priority}
+                  deliverable={bridgeTransports}
+                  saving={routeSaving.has(c.channel)}
+                  patch={patch}
+                />
               </div>
             )
           })}
@@ -624,6 +649,7 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
   const persistedRef = useRef(new Map<string, { value: unknown; pending: number }>())
   const fieldKey = (channel: string, k: string) => JSON.stringify([channel, k])
   const patchMut = useMutation({
+    mutationKey: CHANNEL_PATCH_KEY,
     mutationFn: ({ channel, settings }: { channel: string; settings: ChannelPatch }) =>
       api.updateNotificationChannelSettings(channel, settings),
     // Optimistic update; the PUT is authoritative — a failure rolls back the
@@ -634,6 +660,11 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
       const applied = { ...before }
       if (settings.muted !== undefined) { if (settings.muted) applied.muted = true; else delete applied.muted }
       if ('priority' in settings) { if (settings.priority) applied.priority = settings.priority; else delete applied.priority }
+      if (settings.deliver_to !== undefined) {
+        if (settings.deliver_to.length) applied.deliver_to = settings.deliver_to
+        else { delete applied.deliver_to; delete applied.deliver_min_priority }
+      }
+      if (settings.deliver_min_priority !== undefined) applied.deliver_min_priority = settings.deliver_min_priority
       qc.setQueryData<ChannelsData>(CHANNELS_KEY, prev => prev && {
         ...prev,
         channels: prev.channels?.map(c => {
@@ -671,7 +702,9 @@ export function NotificationsPanel({ basePath }: { basePath?: string } = {}) {
           if (c.channel !== channel) return c
           const next = { ...c.settings }
           for (const k of ctx.touched) {
-            if (next[k] !== ctx.applied[k]) continue
+            // By value: the cache holds its own copy of a route array
+            // (setQueryData's structural sharing), never `applied`'s reference.
+            if (JSON.stringify(next[k]) !== JSON.stringify(ctx.applied[k])) continue
             const persisted = persistedRef.current.get(fieldKey(channel, k))?.value
             if (persisted === undefined) delete next[k]
             else Object.assign(next, { [k]: persisted })
