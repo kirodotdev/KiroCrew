@@ -466,6 +466,23 @@ def test_handle_feed_populates_the_codex_cross_session_cache() -> None:
     assert handle._advertised_models_changed is True
 
 
+def test_handle_feed_holds_a_shrinking_list_until_a_second_read() -> None:
+    from kiro_crew.acp import session_handle_model_selection as sh_models
+
+    full = [{"modelId": "gpt-5.4"}, {"modelId": "gpt-5.5"}]
+    sh_models._feed_advertised_model_cache(_feeding_handle(ACP_BACKEND_CODEX, full))
+    degraded = _feeding_handle(ACP_BACKEND_CODEX, [{"modelId": "gpt-5.4"}])
+
+    sh_models._feed_advertised_model_cache(degraded)
+
+    assert model_registry.advertised_models("codex") == ["gpt-5.4", "gpt-5.5"]
+    assert degraded._advertised_models_changed is False
+    sh_models._feed_advertised_model_cache(
+        _feeding_handle(ACP_BACKEND_CODEX, [{"modelId": "gpt-5.4"}])
+    )
+    assert model_registry.advertised_models("codex") == ["gpt-5.4"]
+
+
 def test_handle_feed_skips_a_non_advertised_backend() -> None:
     """kiro reaches its ids through --list-models, not this feed (harness-parity H6)."""
     from kiro_crew.acp import session_handle_model_selection as sh_models
