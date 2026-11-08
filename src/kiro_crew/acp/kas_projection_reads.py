@@ -1,6 +1,6 @@
 """Config reads the KAS agent projection makes (:mod:`kiro_crew.acp.kas_agents`).
 
-Split out of that module for its line cap; it imports both names back, so
+Split out of that module for its line cap; it imports every name back, so
 ``kas_agents._registry_governed`` stays the name callers and tests patch.
 """
 
@@ -29,6 +29,20 @@ def _registry_governed() -> bool:
     from kiro_crew.acp.session_mcp import _registry_mode
 
     return _registry_mode()
+
+
+def _gated_off_managed_servers() -> frozenset[str]:
+    """Kiro Crew's managed servers whose ``spec_gate`` is closed right now.
+
+    The snapshot both spec writers take (``agent._gated_off_servers``), so the
+    projection withholds exactly what a fresh build would, and a gate that raises
+    reads as closed here too: declaring the entry is what makes the engine launch
+    the backend. Deferred for the reason :func:`_registry_governed` gives, and
+    read on the same off-loop route.
+    """
+    from kiro_crew.agent import _gated_off_servers
+
+    return _gated_off_servers()
 
 
 def _relayed_env_references() -> frozenset[str]:
