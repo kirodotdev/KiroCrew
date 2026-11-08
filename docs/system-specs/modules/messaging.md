@@ -1281,7 +1281,9 @@ differ by two channels.** `channel_type` names a conversation -- the calling ses
 explicit `target_id` -- and infers no recipient. A channel `session` infers one via
 `_owner_dm_target`, whose safety claim is that the agent can only reach somebody the
 USER configured. The inference itself is `messaging.transport.sole_direct_target`
-(exactly one available `user:` target among `configured_targets()`, else nobody),
+(exactly one configured `user:` target among `configured_targets()`, named only
+while it is available, else nobody: an unavailable one still counts, so who has
+written to the bot never decides who the owner is),
 and it is the ONE spelling of "the owner of a channel": session control's
 owner-DM audience predicate (`session_control.owner_dm_refusal`, see
 [session-control](session-control.md)) consults the same function, so the human a
