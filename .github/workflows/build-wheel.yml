@@ -109,6 +109,11 @@ jobs:
       - name: Verify vendored native libs survived into the wheel + sdist
         run: python scripts/verify_vendored_payload.py
 
+      # The public build must name no internal host. Scans the built wheel and
+      # the website dist/, not the source tree (test fixtures there are fine).
+      - name: Verify the build ships no internal host
+        run: python scripts/verify_no_internal_host.py dist website/dist
+
       # `local` is the default speech-to-text provider, so `kirocrew[voice]` has to
       # resolve to a PREBUILT wheel wherever we claim one: a platform that silently
       # falls back to a source build needs CMake and a C++ toolchain, which a desktop

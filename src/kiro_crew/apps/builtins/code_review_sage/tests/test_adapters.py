@@ -18,7 +18,7 @@ class TestPlatformDetection(unittest.TestCase):
 
     def test_crux_link_unsupported(self):
         with self.assertRaises(A.UnsupportedPlatform):
-            A.detect_platform("https://code.amazon.com/reviews/CR-12345678")
+            A.detect_platform("https://code.example.test/reviews/1")
 
     def test_unsupported(self):
         with self.assertRaises(A.UnsupportedPlatform):
