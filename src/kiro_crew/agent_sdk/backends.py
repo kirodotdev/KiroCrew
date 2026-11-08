@@ -643,21 +643,21 @@ POLICY_ID_BY_BACKEND: dict = {
 #: Revisit if KAS ever ships a binary of its own.
 GOVERNANCE_FLOOR_BACKEND: str = ACP_BACKEND_KIRO
 
-#: The floor in an ENTERPRISE build: KAS (RFC ``rfc-crew-enterprise-edition.md``, D6).
+#: The floor in an LTS build: KAS (RFC ``rfc-crew-lts-edition.md``, D6).
 #:
-#: The owner made KAS the one harness an enterprise build keeps, because KAS is the
+#: The owner made KAS the one harness an LTS build keeps, because KAS is the
 #: forward harness and kiro-cli is being retired. The precondition argument above
 #: does not apply there: KAS has a second route that needs no kiro-cli (Crew's own
-#: engine bundle, ``acp/kas_bundle.py``), and an enterprise start whose KAS cannot run
-#: on either route is refused (``enterprise_boot.require_kas_harness``) instead of
+#: engine bundle, ``acp/kas_bundle.py``), and an LTS start whose KAS cannot run
+#: on either route is refused (``lts_boot.require_kas_harness``) instead of
 #: falling back to the Kiro CLI harness.
-ENTERPRISE_GOVERNANCE_FLOOR_BACKEND: str = ACP_BACKEND_KAS  # harness-ok: RFC D6 enterprise floor
+LTS_GOVERNANCE_FLOOR_BACKEND: str = ACP_BACKEND_KAS  # harness-ok: RFC D6 LTS floor
 
 
 def governance_floor_backend() -> str:
     """The backend no policy can remove in THIS build.
 
-    :data:`ENTERPRISE_GOVERNANCE_FLOOR_BACKEND` in an enterprise build, else
+    :data:`LTS_GOVERNANCE_FLOOR_BACKEND` in an LTS build, else
     :data:`GOVERNANCE_FLOOR_BACKEND`. Read at call time from the build-time edition
     (``kiro_crew.edition``), which is stdlib-only and never reads the platform
     context or config, so the config-load gate below stays safe (harness-parity H3).
@@ -665,8 +665,8 @@ def governance_floor_backend() -> str:
     """
     from kiro_crew import edition
 
-    if edition.is_enterprise():
-        return ENTERPRISE_GOVERNANCE_FLOOR_BACKEND
+    if edition.is_lts():
+        return LTS_GOVERNANCE_FLOOR_BACKEND
     return GOVERNANCE_FLOOR_BACKEND
 
 

@@ -100,7 +100,7 @@ export type KasLoginExtra = { start_url?: string; region?: string }
  */
 type Chrome = 'gate' | 'card'
 const ChromeContext = createContext<Chrome>('gate')
-// True when only an organisation sign-in can work (an enterprise gateway with
+// True when only an organisation sign-in can work (an LTS gateway with
 // nobody signed in): the chooser offers Company SSO alone, already open.
 const OrganisationOnlyContext = createContext(false)
 

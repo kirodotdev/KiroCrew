@@ -458,7 +458,7 @@ class GateFacts:
         of a call the client did not classify as a shell call: the title and the
         ACP ``kind`` are agent-influenced. A KAS id is read under the kiro-cli
         names it may be admitted as, never a deny-only one, and every name with a
-        row must lack ``commands`` (``code`` keeps it). Enterprise only, so the
+        row must lack ``commands`` (``code`` keeps it). LTS only, so the
         ``oss`` gate is unchanged.
         """
         from kiro_crew import edition
@@ -466,7 +466,7 @@ class GateFacts:
 
         call = self.call
         if (
-            not edition.is_enterprise()
+            not edition.is_lts()
             or not call.identity_trusted
             or call.identity_unreadable
             or call.is_shell

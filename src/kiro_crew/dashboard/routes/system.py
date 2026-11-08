@@ -93,7 +93,7 @@ def register(app: web.Application) -> None:
     # Host-only: a strict internal path, re-asserted by the handler.
     app.router.add_post("/api/restart/when-idle", restart_gate_handlers.api_restart_when_idle)
     # Only expose the simulation endpoint in dev/debug environments. Both are local
-    # developer switches, which an enterprise build ignores (RFC D3).
+    # developer switches, which an LTS build ignores (RFC D3).
     _is_dev_env = os.environ.get("KIROCREW_HOME", "").endswith("-dev")
     if (_is_dev_env or env_flag_enabled("KIROCREW_DEV_MODE")) and not local_enable_locked(
         "developer_mode"

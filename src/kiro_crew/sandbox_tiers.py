@@ -344,9 +344,9 @@ def _liftable_declared_file(target: str) -> bool:
 def enterprise_policy_cache_view(
     mode: str = "standard", extra_hidden_dirs: tuple[str, ...] = ()
 ) -> tuple[str, ...]:
-    """The governance cache to lift READ-ONLY for a sandboxed spawn, in an enterprise build.
+    """The governance cache to lift READ-ONLY for a sandboxed spawn, in an LTS build.
 
-    An enterprise build always enters the central tier (RFC D2), including a Kiro Crew
+    An LTS build always enters the central tier (RFC D2), including a Kiro Crew
     MCP server kiro-cli starts inside the agent sandbox. That process reaches neither the
     sign-in nor the control plane, so it resolves the ceiling from the cache in cache-only
     mode (``policy_distribution_source.cache_only``) and fails closed without it. The cache
@@ -369,9 +369,9 @@ def enterprise_policy_cache_view(
       304 rewrites it without the source.
     """
     try:
-        from kiro_crew.edition import is_enterprise
+        from kiro_crew.edition import is_lts
 
-        if not is_enterprise():
+        if not is_lts():
             return ()
         target = os.path.join(str(config_dir()), _POLICY_CACHE_LEAF)
     except Exception:
@@ -1406,8 +1406,8 @@ def _clamp_sandbox_mode_to_floor(mode: str, floor: str | None) -> str:
     from kiro_crew.edition_locks import sandbox_mode_floor
     from kiro_crew.platform.governance import _ORDINAL_SCALES, OrdinalControl
 
-    # Enterprise: ``off`` reads as the shipped default tier, so no caller-supplied
-    # mode goes below Crew's own sandbox (RFC enterprise edition, "Minimum sandbox
+    # LTS: ``off`` reads as the shipped default tier, so no caller-supplied
+    # mode goes below Crew's own sandbox (RFC LTS edition, "Minimum sandbox
     # level", D7). The governance floor below still clamps it further up.
     mode = sandbox_mode_floor(mode, _SANDBOX_MODE_FALLBACK)
     if not floor:

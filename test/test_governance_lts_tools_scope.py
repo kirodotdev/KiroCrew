@@ -1,4 +1,4 @@
-"""Enterprise gate: a proven non-shell call is judged in its own scope.
+"""LTS gate: a proven non-shell call is judged in its own scope.
 
 ``classify_tool_title`` reads an unprefixed name as a command body AND a tool
 name, so with ``commands`` off every bare tool name was refused, read-only tools
@@ -6,7 +6,7 @@ included. ``gate_decision(own_scopes=...)`` keeps those off-scope pairs as
 deny-only, and ``GateFacts.governance_own_scopes`` proves when a call may use it.
 
 ``commands``, ``tools``, ``mcp`` and ``filesystem.*`` are open controls under RFC
-``rfc-crew-enterprise-edition.md`` D3: an empty policy
+``rfc-crew-lts-edition.md`` D3: an empty policy
 leaves them at Crew's default. Most tests here therefore name them closed in the
 remote policy (``_closed``), the shape an organisation that turns them off sends.
 """
@@ -56,8 +56,8 @@ def _closed(**overrides: object) -> governance.GovernanceCeiling:
 
 
 @pytest.fixture
-def enterprise(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+def lts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
 
 
 # The shapes kiro-cli and KAS send (test/fixtures/acp_frames/kiro/side-read-only-live.jsonl).
@@ -108,14 +108,14 @@ def _mcp(server: str, **kw: object) -> governance.Decision:
     )
 
 
-def test_root_cause_the_commands_reading_refuses_a_read(enterprise: None) -> None:
+def test_root_cause_the_commands_reading_refuses_a_read(lts: None) -> None:
     """Without the proof the bare names are also asked as commands, and refused there."""
     decision = _grep()
     assert not decision.permitted
     assert decision.reason.startswith("policy denies")
 
 
-def test_enterprise_read_only_tools_pass_on_an_empty_policy(enterprise: None) -> None:
+def test_lts_read_only_tools_pass_on_an_empty_policy(lts: None) -> None:
     assert _read(own_scopes=_ROW_READ).permitted
     assert _grep(own_scopes=_ROW_READ).permitted
     kas = gate_decision(
@@ -130,12 +130,12 @@ def test_enterprise_read_only_tools_pass_on_an_empty_policy(enterprise: None) ->
     assert kas.permitted
 
 
-def test_enterprise_read_outside_the_workspace_stays_denied(enterprise: None) -> None:
+def test_lts_read_outside_the_workspace_stays_denied(lts: None) -> None:
     assert not _read(_OUTSIDE, own_scopes=_ROW_READ).permitted
     assert not _grep(_OUTSIDE, own_scopes=_ROW_READ).permitted
 
 
-def test_enterprise_pathless_search_is_refused_by_the_read_confinement(enterprise: None) -> None:
+def test_lts_pathless_search_is_refused_by_the_read_confinement(lts: None) -> None:
     """A search with no path runs in a directory the gate cannot see."""
     decision = _grep("", own_scopes=_ROW_READ)
     assert not decision.permitted
@@ -145,8 +145,8 @@ def test_enterprise_pathless_search_is_refused_by_the_read_confinement(enterpris
     assert _grep("", ceiling=open_reads, own_scopes=_ROW_READ).permitted
 
 
-def test_enterprise_missing_target_marker_never_lands_in_the_working_directory(
-    enterprise: None, monkeypatch: pytest.MonkeyPatch, tmp_path: object
+def test_lts_missing_target_marker_never_lands_in_the_working_directory(
+    lts: None, monkeypatch: pytest.MonkeyPatch, tmp_path: object
 ) -> None:
     """The gateway may run inside the allowed root; the marker must still miss it."""
     root = os.path.abspath(str(tmp_path))
@@ -171,7 +171,7 @@ def test_enterprise_missing_target_marker_never_lands_in_the_working_directory(
     assert not write.permitted
 
 
-def test_enterprise_write_not_sent_as_an_edit_meets_the_write_scope(enterprise: None) -> None:
+def test_lts_write_not_sent_as_an_edit_meets_the_write_scope(lts: None) -> None:
     """A kindless write names no ``filesystem.write`` target, so the row asks the marker."""
     both = _ceiling(
         tools={"mode": "allow", "allow": ["fs_write"]},
@@ -190,13 +190,13 @@ def test_enterprise_write_not_sent_as_an_edit_meets_the_write_scope(enterprise: 
         assert not decision.permitted, kind
 
 
-def test_enterprise_core_mcp_passes_and_other_servers_do_not(enterprise: None) -> None:
+def test_lts_core_mcp_passes_and_other_servers_do_not(lts: None) -> None:
     assert _mcp("kirocrew-core", own_scopes=("mcp",)).permitted
     assert not _mcp("other", own_scopes=("mcp",)).permitted
     assert not _mcp("kirocrew-core").permitted
 
 
-def test_enterprise_writes_stay_denied(enterprise: None) -> None:
+def test_lts_writes_stay_denied(lts: None) -> None:
     assert not _write(own_scopes=_ROW_WRITE).permitted
     # A remote tools grant alone does not open the write path.
     granted = _closed(tools={"mode": "allow", "allow": ["fs_write"]})
@@ -209,7 +209,7 @@ def test_enterprise_writes_stay_denied(enterprise: None) -> None:
     assert _write(ceiling=both, own_scopes=_ROW_WRITE).permitted
 
 
-def test_enterprise_shell_stays_governed(enterprise: None) -> None:
+def test_lts_shell_stays_governed(lts: None) -> None:
     assert not gate_decision(_closed(), None, "Running: ls", tool_kind="execute").permitted
     ceiling = _ceiling(commands={"mode": "deny", "deny": []})
     profile = parse_profile({"name": "p", "commands": {"mode": "deny", "deny": ["curl *"]}})
@@ -217,7 +217,7 @@ def test_enterprise_shell_stays_governed(enterprise: None) -> None:
     assert not gate_decision(ceiling, profile, "Running: curl https://example.com").permitted
 
 
-def test_enterprise_local_curl_deny_binds_an_off_scope_pair(enterprise: None) -> None:
+def test_lts_local_curl_deny_binds_an_off_scope_pair(lts: None) -> None:
     """An explicit deny still refuses through a pair the call is not judged in."""
     profile = parse_profile({"name": "p", "commands": {"mode": "deny", "deny": ["curl *"]}})
     for ceiling in (_ceiling(), _ceiling(commands={"mode": "deny", "deny": []})):
@@ -235,7 +235,7 @@ def test_enterprise_local_curl_deny_binds_an_off_scope_pair(enterprise: None) ->
     assert not _grep(ceiling=remote, own_scopes=_ROW_READ).permitted
 
 
-def test_enterprise_profile_only_narrows_the_tools_baseline(enterprise: None) -> None:
+def test_lts_profile_only_narrows_the_tools_baseline(lts: None) -> None:
     profile = parse_profile({"name": "p", "tools": {"mode": "deny", "deny": ["grep"]}})
     assert not _grep(profile=profile, own_scopes=_ROW_READ).permitted
     assert _read(profile=profile, own_scopes=_ROW_READ).permitted
@@ -244,15 +244,15 @@ def test_enterprise_profile_only_narrows_the_tools_baseline(enterprise: None) ->
     assert not _read(profile=widen, own_scopes=_ROW_READ).permitted
 
 
-def test_own_scopes_without_an_identity_changes_nothing(enterprise: None) -> None:
+def test_own_scopes_without_an_identity_changes_nothing(lts: None) -> None:
     assert not gate_decision(_closed(), None, "grep", own_scopes=_ROW_READ).permitted
     assert not gate_decision(
         _closed(), None, "Running: @kirocrew-core/x", own_scopes=("mcp",)
     ).permitted
 
 
-def test_enterprise_empty_policy_leaves_the_open_controls_to_crews_default(
-    enterprise: None,
+def test_lts_empty_policy_leaves_the_open_controls_to_crews_default(
+    lts: None,
 ) -> None:
     """Policy silent: reads, writes, shell and any MCP server are not refused here."""
     empty = _ceiling()
@@ -315,9 +315,7 @@ def _scope(**fields: object) -> tuple[str, ...]:
         ({"mcp_tool": ""}, ()),
     ],
 )
-def test_enterprise_own_scope_proof(
-    enterprise: None, fields: dict[str, object], expected: str
-) -> None:
+def test_lts_own_scope_proof(lts: None, fields: dict[str, object], expected: str) -> None:
     assert _scope(**fields) == expected
 
 
@@ -330,17 +328,17 @@ def test_oss_own_scope_proof_is_off() -> None:
 
 
 @pytest.fixture
-def enterprise_gate(monkeypatch: pytest.MonkeyPatch) -> None:
-    """An enterprise build whose bound profile names nothing, under an empty policy.
+def lts_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An LTS build whose bound profile names nothing, under an empty policy.
 
-    The standalone context is composed first: in enterprise an unbooted
+    The standalone context is composed first: in LTS an unbooted
     ``current_context`` refuses to compose (the boot gate's job, not this one's).
     """
     import kiro_crew.platform.governance_profiles as profiles_mod
     from kiro_crew.platform.context import current_context
 
     current_context()
-    monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+    monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
     monkeypatch.setattr(
         profiles_mod,
         "resolve_active_scope",
@@ -352,8 +350,8 @@ def _gate(title: str, **kw: object) -> hooks.ToolHookResult:
     return hooks.HookManager().on_tool_call(title, mcp_identity_trusted=True, **kw)  # type: ignore[arg-type]
 
 
-def test_enterprise_gate_leaves_reads_writes_and_shell_to_crews_default(
-    enterprise_gate: None,
+def test_lts_gate_leaves_reads_writes_and_shell_to_crews_default(
+    lts_gate: None,
 ) -> None:
     """The open controls: governance refuses none of these; the approval prompt decides."""
     grep = _gate(

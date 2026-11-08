@@ -630,7 +630,7 @@ class IngestionPipeline:
 
     def _record_harness_refusal(self, job_id: str, source_id: str,
                                 content_hash: str, exc: BaseException) -> None:
-        """Fail *job_id* on the enterprise pool's harness refusal (RFC D6).
+        """Fail *job_id* on the LTS pool's harness refusal (RFC D6).
 
         The job ends ``failed`` with the refusal's remedy in ``error``, and the source
         reads ``error``. The source forgets *content_hash* when it holds it (a source
@@ -1370,7 +1370,7 @@ class IngestionPipeline:
             with extraction_source(source_id):
                 extractions = await self.extractor.extract_batch(chunk_contents)
         except Exception as exc:
-            # The enterprise harness refusal fails the job (see ingest_file); any
+            # The LTS harness refusal fails the job (see ingest_file); any
             # other extraction error keeps its existing path.
             if _is_harness_refusal(exc):
                 await run_to_completion(functools.partial(

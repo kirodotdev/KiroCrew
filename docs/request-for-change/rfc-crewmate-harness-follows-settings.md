@@ -17,14 +17,14 @@ superseded-by: []
 - Status: draft. The owner decided the direction on 2026-11-04: crewmates can run on different harnesses, and a crewmate the person has not pinned follows Settings → Agent Harness (`agent.acp_backend`). The owner also decided O1 to O5 in section 5.0 the same day. This document records how, so the implementation PRs have a design for the First Principles and Design lanes to check against: it changes which harness existing crewmates run on.
 - Amended 2026-11-05: the owner changed two rules (O6, O7) and added one (O8) in section 5.0. A pin to a harness this gateway can start but that cannot run a full crewmate no longer runs there; it shows an error and runs on KAS (5.8). A pin this gateway cannot start still refuses (H17). A crewmate's default model follows the harness it lands on (5.9). The same PR updates H17 in `harness-parity.md` and `AUTOSDE.yaml`. This amendment does not change the status field.
 - Tracking issue: [#21910](https://github.com/kirodotdev/KiroCrew/issues/21910)
-- Related: [harness-parity](../system-specs/modules/harness-parity.md) (H3, H6, H13, H17), [rfc-crew-enterprise-edition](rfc-crew-enterprise-edition.md) (D6, the enterprise KAS floor), [rfc-subagent-backend-selection](rfc-subagent-backend-selection.md) and [rfc-chat-backend-selection](rfc-chat-backend-selection.md) (the other per-session harness choices), decision record [2026-10-28 a Kiro CLI choice runs on KAS](../decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md).
+- Related: [harness-parity](../system-specs/modules/harness-parity.md) (H3, H6, H13, H17), [rfc-crew-lts-edition](rfc-crew-lts-edition.md) (D6, the LTS KAS floor), [rfc-subagent-backend-selection](rfc-subagent-backend-selection.md) and [rfc-chat-backend-selection](rfc-chat-backend-selection.md) (the other per-session harness choices), decision record [2026-10-28 a Kiro CLI choice runs on KAS](../decisions/2026-10-28-a-kiro-cli-choice-runs-on-kas.md).
 - Measured at: `origin/main` `3609b8dd57`. Every symbol below was checked at that commit.
 
 ## 1. Summary
 
 Today a crewmate's own chat and the workers it opens run on `agent.member_acp_backend`, a field with default `"kas"` and no Settings control, while the same crewmate's Slack threads, cron jobs and spawned sessions run on `agent.acp_backend`. One crewmate can run on two harnesses, and the person's Settings pick does not reach the crewmate's chat.
 
-This RFC makes the crewmate route resolve, in order: the crewmate's own pin `agents.<name>.acp_backend`, then a legacy explicit `agent.member_acp_backend`, then `agent.acp_backend`. A Kiro CLI value maps to KAS on the crewmate route, as `member_acp_backend` already does. An inherited value that cannot carry a crewmate falls back to KAS, logged and shown to the person as a dashboard warning. Settings → Agent Harness shows which harness crewmates actually run on and where that value comes from. The crewmate harness picker offers only harnesses crewmates can run on. A pin this gateway cannot start still refuses (H17). A pin that starts but cannot run a full crewmate runs on KAS, and the person sees an error in the editor, the log and the dashboard bell (5.8). A crewmate's default model follows the harness it lands on (5.9). The enterprise KAS floor and governance harness locks still win because every value still crosses the one selection gate.
+This RFC makes the crewmate route resolve, in order: the crewmate's own pin `agents.<name>.acp_backend`, then a legacy explicit `agent.member_acp_backend`, then `agent.acp_backend`. A Kiro CLI value maps to KAS on the crewmate route, as `member_acp_backend` already does. An inherited value that cannot carry a crewmate falls back to KAS, logged and shown to the person as a dashboard warning. Settings → Agent Harness shows which harness crewmates actually run on and where that value comes from. The crewmate harness picker offers only harnesses crewmates can run on. A pin this gateway cannot start still refuses (H17). A pin that starts but cannot run a full crewmate runs on KAS, and the person sees an error in the editor, the log and the dashboard bell (5.8). A crewmate's default model follows the harness it lands on (5.9). The LTS KAS floor and governance harness locks still win because every value still crosses the one selection gate.
 
 The inherit change is made at one place: the loader resolves `cfg.agent.member_acp_backend` from `agent.acp_backend` when it is not stored. The 20+ readers of that field keep reading it and need no edit.
 
@@ -59,7 +59,7 @@ The inherit change is made at one place: the loader resolves `cfg.agent.member_a
 1. A crewmate with no pin runs its DM, its workers, and its Slack, cron and spawned sessions on one harness, the one Settings → Agent Harness names, whenever that harness can carry a crewmate.
 2. A person who explicitly stored `agent.member_acp_backend` sees no silent change, and Settings shows them that value and where it comes from.
 3. Kiro CLI keeps meaning KAS on the crewmate route, with the `kas_bundle` and `kiro_cli_pick_backend()` semantics intact.
-4. The enterprise KAS floor (D6) and governance harness locks win over every value in this design.
+4. The LTS KAS floor (D6) and governance harness locks win over every value in this design.
 5. The crew editor and the crewmate profile show and write the pin through one picker, offer only harnesses crewmates can run on, and say before a pick which harnesses refuse workers.
 6. A fallback to KAS is shown to the person, not only logged. This holds for an inherited value (5.3) and for a pin (5.8).
 7. A crewmate that lands on a harness other than the Settings one never starts with a model that harness cannot serve (5.9).
@@ -78,7 +78,7 @@ The inherit change is made at one place: the loader resolves `cfg.agent.member_a
 - **O1.** An explicitly stored `agent.member_acp_backend` keeps working with its old value. Settings → Agent Harness shows the harness crewmates actually run on and where that value comes from, so it is no longer hidden (5.2).
 - **O2.** When the inherited Settings value is one crewmates cannot run on, crewmates fall back to KAS and the person sees a dashboard warning naming the harness and the fallback, not only a log line (5.3).
 - **O3.** Harnesses crewmates cannot run on are not offered in the crewmate harness picker (5.7). A hand-edited pin this gateway cannot start still refuses with `crewmate_harness_unavailable` (H17), as today. A startable pin that cannot run a full crewmate is covered by O7.
-- **O4.** The enterprise KAS floor (D6) and governance harness locks win, unchanged (5.5).
+- **O4.** The LTS KAS floor (D6) and governance harness locks win, unchanged (5.5).
 - **O5.** The crew editor gets a harness field. It is built on the existing preview-gated profile row from #25485, which graduates out of Feature Preview; there is one picker, not two (5.7).
 
 Owner decisions of 2026-11-05, which amend the above:
@@ -125,7 +125,7 @@ A stored non-empty value keeps winning over `agent.acp_backend` (tier 2), with t
 | "Same as above" | tier 3, the inherited value is used |
 | "KAS, because <harness> cannot run crewmates" | tier 3 fell back (5.3); shown as a warning |
 | "Set by agent.member_acp_backend in config.json" | tier 2; with the one-line fix "remove it to follow this setting" |
-| "KAS, the enterprise harness" | enterprise build, when D6 decides it |
+| "KAS, the LTS harness" | LTS build, when D6 decides it |
 
 Per-crewmate pins are not listed there; the line says "crewmates with their own harness keep it" and links the crewmates page. The value comes from one new read-only field, `crewmate_harness: {backend, source}`, on the config response the Agent Harness panel already loads. The resolver of 5.1 returns `source` beside the value, so the panel never re-derives it.
 
@@ -159,12 +159,12 @@ The follow-up to add codex: record a live worker-kit capture on codex-acp (a wor
 
 Not chosen: requiring tier-3 values to be in `ACP_BACKENDS_MATE_WORKER_KIT` too. That would keep codex users' crewmates on KAS, which is the problem this RFC exists to fix.
 
-### 5.5 Enterprise edition and governance locks
+### 5.5 LTS edition and governance locks
 
-- **D6 floor.** In an enterprise build the floor is KAS and Kiro CLI is selectable only when a remote rule names it. Step 1 maps an allowed Kiro CLI pick to KAS, and steps 1 and 3 land on KAS, so the crewmate route lands on the enterprise floor. A KAS that cannot start on its route still stops the gateway at boot (D6), and nothing here falls back to kiro.
-- **Per-session KAS refusal.** The open enterprise work in [#29284](https://github.com/kirodotdev/KiroCrew/pull/29284) refuses a crewmate session on KAS when the kiro-cli that hosts it is unavailable. This design produces KAS on the same paths, so that refusal applies unchanged. Either PR can land first.
+- **D6 floor.** In an LTS build the floor is KAS and Kiro CLI is selectable only when a remote rule names it. Step 1 maps an allowed Kiro CLI pick to KAS, and steps 1 and 3 land on KAS, so the crewmate route lands on the LTS floor. A KAS that cannot start on its route still stops the gateway at boot (D6), and nothing here falls back to kiro.
+- **Per-session KAS refusal.** The open LTS work in [#29284](https://github.com/kirodotdev/KiroCrew/pull/29284) refuses a crewmate session on KAS when the kiro-cli that hosts it is unavailable. This design produces KAS on the same paths, so that refusal applies unchanged. Either PR can land first.
 - **Governance harness locks.** Policy narrows `selectable_backends()`. Every tier still crosses either `resolve_selected_backend` (tiers 0, 2, 3) or the pin's pre-gate check (tier 1), and both read `selectable_backends()` per call. A locked-out inherited harness degrades through the gate as any explicit value does. A locked-out pin cannot start, so it refuses as today (H17). The KAS of a 5.8 fallback still crosses the gate, so the lock and the D6 floor still decide what runs.
-- The edition is read only through `kiro_crew.edition.is_enterprise()` inside the existing gate. This design adds no edition read.
+- The edition is read only through `kiro_crew.edition.is_lts()` inside the existing gate. This design adds no edition read.
 
 ### 5.6 Harness-parity compliance (`AUTOSDE.yaml` rule `harness-parity`)
 
@@ -213,7 +213,7 @@ Two kinds of pin are told apart:
 
 Today goose and opencode start on the pinned harness, and a saved spec there is then refused with `capability_harness_unsupported`; pi and deepseek start and their workers are refused.
 
-Such a pin no longer runs on the pinned harness. At the pre-gate check (`crewmate_backend_pin`, `CrewBackendPin.resolve`), after the startable check passes, a pin in `ACP_BACKENDS_CREWMATE_PIN_TO_KAS` resolves to KAS. That KAS then crosses the one gate like a tier-3 fallback (5.1): an enterprise build lands on the D6 floor, a policy that denies `kas` takes the floor, and the per-session KAS refusal of 5.5 still applies. The crewmate's DM and the workers it opens both run there. In an oss build whose policy denies `kas`, that floor is Kiro CLI, the same result tier 3 gives in that case (5.1): the crewmate runs there, the operating-mode block is withheld by `_member_backend_can_dispatch`, and the error names Kiro CLI instead of KAS.
+Such a pin no longer runs on the pinned harness. At the pre-gate check (`crewmate_backend_pin`, `CrewBackendPin.resolve`), after the startable check passes, a pin in `ACP_BACKENDS_CREWMATE_PIN_TO_KAS` resolves to KAS. That KAS then crosses the one gate like a tier-3 fallback (5.1): an LTS build lands on the D6 floor, a policy that denies `kas` takes the floor, and the per-session KAS refusal of 5.5 still applies. The crewmate's DM and the workers it opens both run there. In an oss build whose policy denies `kas`, that floor is Kiro CLI, the same result tier 3 gives in that case (5.1): the crewmate runs there, the operating-mode block is withheld by `_member_backend_can_dispatch`, and the error names Kiro CLI instead of KAS.
 
 The person sees an error, never only a log line:
 
@@ -273,8 +273,8 @@ Exit criteria (tests in `test/test_config_member_backend_inherit.py` unless name
 - `test_full_document_save_keeps_member_key_absent` — save after load; the file still has no `member_acp_backend`.
 - `test_harness_parity.py::test_crewmate_inheritable_is_capabilities_and_dispatch_minus_kiro`.
 - `test_crewmate_harness.py` pin tests pass unchanged (Phase 1 does not touch pins; Phase 6 does).
-- `test_enterprise_crewmate_inherit_lands_on_kas` — enterprise build, policy allows kiro, Settings = Kiro CLI → KAS.
-- `test_config_member_backend_inherit.py::test_crewmate_harness_source[inherited|fallback|member_field|enterprise]` — the served `source` for each row of the 5.2 table.
+- `test_lts_crewmate_inherit_lands_on_kas` — LTS build, policy allows kiro, Settings = Kiro CLI → KAS.
+- `test_config_member_backend_inherit.py::test_crewmate_harness_source[inherited|fallback|member_field|lts]` — the served `source` for each row of the 5.2 table.
 - `test_cli_doctor.py::test_member_backend_deprecation_row_only_when_it_differs`.
 
 **Phase 2 — refusal text (flag-free).** Reword `worker_kit_backend_refusal` and the two member-backend texts in `dashboard/chat_turn/turn_failures.py` to name the pin and Settings. Exit: `test_mate_worker.py::test_worker_refusal_names_pin_and_settings_not_member_field`; no string in `src/` tells a person to set `agent.member_acp_backend`.
@@ -285,7 +285,7 @@ Exit criteria (tests in `test/test_config_member_backend_inherit.py` unless name
 
 **Phase 5 — codex workers (gated only on evidence).** Live capture plus set membership (5.4). Exit: the capture fixture exists and `test_mate_worker.py::test_codex_worker_kit_projects_excluded_tools` replays it.
 
-**Phase 6 — pin fallback (flag-free; the H17 rule text it follows lands with this RFC amendment).** Add `ACP_BACKENDS_CREWMATE_PIN_TO_KAS`; a startable pin in it resolves to KAS at the pre-gate check, with the editor error, the log line and the bell notification (5.8). Exit: `test_crewmate_harness.py::test_unrunnable_pin_runs_on_kas[goose|opencode|strands|pi|deepseek|copilot]` (DM and worker), `test_harness_parity.py::test_pin_to_kas_members_lack_chat_or_worker_kit`, `::test_every_selectable_harness_without_chat_or_worker_kit_is_in_pin_to_kas`, `::test_codex_pin_is_not_moved_to_kas`, `::test_unrunnable_pin_logs_one_error`, `::test_unrunnable_pin_bell_once_per_pin`, `::test_enterprise_unrunnable_pin_lands_on_floor`, `::test_oss_kas_denied_unrunnable_pin_lands_on_kiro_floor_and_error_names_it`, `::test_stored_pin_is_not_rewritten`, `website/src/test/CrewEditorNextDialog.test.tsx::shows the runs-on-KAS error for an unrunnable pin`. The H17 refusal tests (`TestThePreGateCheck::test_an_unstartable_pin_refuses_instead_of_falling_back`, `::test_a_harness_that_stopped_being_selectable_refuses`, `::test_the_provider_factory_refuses_before_the_gate`, `TestWorkerBackend::test_an_unstartable_pin_refuses`) pass unchanged.
+**Phase 6 — pin fallback (flag-free; the H17 rule text it follows lands with this RFC amendment).** Add `ACP_BACKENDS_CREWMATE_PIN_TO_KAS`; a startable pin in it resolves to KAS at the pre-gate check, with the editor error, the log line and the bell notification (5.8). Exit: `test_crewmate_harness.py::test_unrunnable_pin_runs_on_kas[goose|opencode|strands|pi|deepseek|copilot]` (DM and worker), `test_harness_parity.py::test_pin_to_kas_members_lack_chat_or_worker_kit`, `::test_every_selectable_harness_without_chat_or_worker_kit_is_in_pin_to_kas`, `::test_codex_pin_is_not_moved_to_kas`, `::test_unrunnable_pin_logs_one_error`, `::test_unrunnable_pin_bell_once_per_pin`, `::test_lts_unrunnable_pin_lands_on_floor`, `::test_oss_kas_denied_unrunnable_pin_lands_on_kiro_floor_and_error_names_it`, `::test_stored_pin_is_not_rewritten`, `website/src/test/CrewEditorNextDialog.test.tsx::shows the runs-on-KAS error for an unrunnable pin`. The H17 refusal tests (`TestThePreGateCheck::test_an_unstartable_pin_refuses_instead_of_falling_back`, `::test_a_harness_that_stopped_being_selectable_refuses`, `::test_the_provider_factory_refuses_before_the_gate`, `TestWorkerBackend::test_an_unstartable_pin_refuses`) pass unchanged.
 
 **Phase 7 — model follows harness (flag-free, after Phase 1).** The model order of 5.9 for crewmate DMs and workers. Exit: `test_crewmate_model_follows_harness.py::test_own_model_kept_when_valid`, `::test_own_model_dropped_for_harness_default_when_invalid[inherit|pin|fallback]`, `::test_settings_harness_uses_agent_model`, `::test_inherit_value_uses_harness_default`, `::test_dropped_model_logs_once`, `::test_stored_model_is_not_rewritten`.
 
@@ -300,7 +300,7 @@ Exit criteria (tests in `test/test_config_member_backend_inherit.py` unless name
 ## 9. Security considerations
 
 - No capability is granted. Worker-kit membership changes only in Phase 5, with live evidence.
-- A crewmate moving to Claude Code or Codex moves its prompts, memory context and tool calls to that vendor's harness and bill. That is the person's Settings choice, and the Phase 4 notice says it happened. In an enterprise build only harnesses policy allows are reachable.
+- A crewmate moving to Claude Code or Codex moves its prompts, memory context and tool calls to that vendor's harness and bill. That is the person's Settings choice, and the Phase 4 notice says it happened. In an LTS build only harnesses policy allows are reachable.
 - Sandbox treatment follows the harness, as for any session on it (`ACP_BACKENDS_INTERNAL_SANDBOX`, the adapter mask); nothing here changes it.
 
 ## 10. Alternatives considered

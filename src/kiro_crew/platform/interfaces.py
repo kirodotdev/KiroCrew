@@ -367,7 +367,7 @@ class SlackEnterpriseGate(Protocol):
         A companion may return ``REDIRECTED`` (it handled the message out-of-band,
         e.g. minted + posted a presigned dashboard-session challenge link) or
         ``DROPPED`` (denied) to short-circuit inline processing. This is the seam an
-        enterprise edition's "challenge-and-redirect" security posture composes
+        LTS edition's "challenge-and-redirect" security posture composes
         against: the first message from an unverified (user, channel) is turned into
         a one-time dashboard link instead of reaching the agent, and follow-up
         traffic flows inline only while a bounded auth window (opened at token

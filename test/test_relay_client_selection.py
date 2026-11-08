@@ -1,7 +1,7 @@
 """Which tunnel provider the public composition installs, and the relay client in that slot.
 
 The relay client is off by default, chosen only by ``tunnel.relay_enabled``, never
-over an edition's own provider, never under an enterprise build's lock, and never
+over an edition's own provider, never under an LTS build's lock, and never
 started past ``tunnel/setup.py``'s ``--no-tunnel`` and token-auth gates.
 """
 
@@ -89,8 +89,8 @@ class TestSelection:
     def test_a_stand_in_config_never_selects_it(self) -> None:
         assert type(bootstrap._public_tunnel_provider(MagicMock())) is DefaultTunnelProvider
 
-    def test_an_enterprise_build_ignores_the_local_enable(self, monkeypatch) -> None:
-        monkeypatch.setattr(edition, "is_enterprise", lambda: True)
+    def test_an_lts_build_ignores_the_local_enable(self, monkeypatch) -> None:
+        monkeypatch.setattr(edition, "is_lts", lambda: True)
         tunnel = bootstrap._public_tunnel_provider(_cfg(relay_enabled=True))
         assert type(tunnel) is DefaultTunnelProvider
 
@@ -560,7 +560,7 @@ def test_composing_with_the_relay_off_never_imports_the_relay_client(monkeypatch
 
 
 def _lock_tunnel(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Lock the ``tunnel`` control as an enterprise build does, and nothing else.
+    """Lock the ``tunnel`` control as an LTS build does, and nothing else.
 
     Every reader of the relay switch asks ``edition_locks.local_enable_locked`` at
     call time, so this stands in for the edition without its policy or login boot.
@@ -593,11 +593,11 @@ class TestTheRelaySwitch:
         _lock_tunnel(monkeypatch)
         assert relay_selected(_cfg(relay_enabled=True)) is False
 
-    def test_an_enterprise_build_locks_the_switch(self, monkeypatch) -> None:
+    def test_an_lts_build_locks_the_switch(self, monkeypatch) -> None:
         from kiro_crew import edition_locks
 
         edition_locks.reset_logged()
-        monkeypatch.setattr(edition, "EDITION", "enterprise")
+        monkeypatch.setattr(edition, "EDITION", "lts")
         try:
             assert edition_locks.config_path_locked("tunnel.relay_enabled")
             assert edition_locks.local_enable_locked("tunnel")

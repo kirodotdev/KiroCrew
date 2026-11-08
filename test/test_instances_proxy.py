@@ -121,15 +121,15 @@ class TestProxyRequest:
         assert call["allow_redirects"] is False
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("enterprise", [False, True], ids=["oss", "enterprise"])
+    @pytest.mark.parametrize("lts", [False, True], ids=["oss", "lts"])
     @pytest.mark.parametrize("remote", ["127.0.0.1", "169.254.255.193"])
     async def test_write_passes_peer_csrf_on_every_edition_and_peer_address(
-        self, tmp_path, monkeypatch, enterprise, remote
+        self, tmp_path, monkeypatch, lts, remote
     ):
         """The hub's POST headers pass the peer's real :func:`check_origin`.
 
         An SSH server outside the box's container forwards from a link-local
-        address, where a write with no ``Origin`` is refused. An enterprise
+        address, where a write with no ``Origin`` is refused. An LTS
         peer asks its ``dashboard_origins`` policy about any origin outside its
         floor, so the forward's local port would be refused there even from
         loopback. The peer's own loopback origin passes both.
@@ -152,13 +152,13 @@ class TestProxyRequest:
 
         monkeypatch.setattr(mgr, "_exchange_link", fake_exchange)
         monkeypatch.setattr(m.aiohttp, "ClientSession", self._fake_session(calls, statuses=[200]))
-        monkeypatch.setattr(edition, "is_enterprise", lambda: enterprise)
+        monkeypatch.setattr(edition, "is_lts", lambda: lts)
 
         async with mgr.proxy_request("ds-1", "POST", "api/chat/slots", data=b"{}"):
             pass
 
         # The peer as it sees this request: only its origin floor on its own
-        # port (what an enterprise peer keeps), the Host the hub's client
+        # port (what an LTS peer keeps), the Host the hub's client
         # derives from the forward URL, and the address the SSH server dials from.
         peer_req = MagicMock()
         peer_req.headers = {"Host": f"127.0.0.1:{st.local_port}", **calls[0]["headers"]}

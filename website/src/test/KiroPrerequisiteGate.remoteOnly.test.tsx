@@ -50,7 +50,7 @@ function installBridge({
 const QUESTION = 'Your crews run on another computer?'
 const CONNECT = 'Connect to a crew on another machine'
 // Initial waits cover prerequisite query -> config query -> setup screen render
-// -> bridge available(); enterprise-locked screens skip config and the bridge.
+// -> bridge available(); lts-locked screens skip config and the bridge.
 const SETUP_CHAIN_TIMEOUT_MS = 5_000
 const SETUP_CHAIN_WAIT = { timeout: SETUP_CHAIN_TIMEOUT_MS }
 const FAILURE_SCREENS: {
@@ -140,8 +140,8 @@ describe('KiroPrerequisiteGate remote-only exit', () => {
     expect(screen.queryByRole('button', { name: CONNECT })).toBeNull()
   })
 
-  it.each(FAILURE_SCREENS)('never offers the exit on enterprise-locked $name', async ({ overrides, heading }) => {
-    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ ...overrides, enterprise_login_required: true }))
+  it.each(FAILURE_SCREENS)('never offers the exit on lts-locked $name', async ({ overrides, heading }) => {
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ ...overrides, lts_login_required: true }))
     const bridge = installBridge()
     render()
     await screen.findByRole('heading', { name: heading }, SETUP_CHAIN_WAIT)
@@ -162,8 +162,8 @@ describe('KiroPrerequisiteGate remote-only exit', () => {
     expect(bridge.available).not.toHaveBeenCalled()
   })
 
-  it('never offers the exit on enterprise-locked install setup', async () => {
-    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ enterprise_login_required: true }))
+  it('never offers the exit on lts-locked install setup', async () => {
+    vi.mocked(api.kiroPrerequisite).mockResolvedValue(status({ lts_login_required: true }))
     const bridge = installBridge()
     render()
     await screen.findByText('Get Kiro CLI', undefined, SETUP_CHAIN_WAIT)
@@ -171,7 +171,7 @@ describe('KiroPrerequisiteGate remote-only exit', () => {
     expect(bridge.available).not.toHaveBeenCalled()
   })
 
-  it('does not offer an exit without a status proving the enterprise gate is open', async () => {
+  it('does not offer an exit without a status proving the LTS gate is open', async () => {
     vi.mocked(api.kiroPrerequisite).mockRejectedValue(new Error('Status unavailable'))
     const bridge = installBridge()
     render()

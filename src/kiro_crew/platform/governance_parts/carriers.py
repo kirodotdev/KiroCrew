@@ -134,8 +134,8 @@ class UpdatePins:
     min_version: str = ""
     # The release channel this fleet follows (one of :data:`UPDATE_CHANNELS`), in
     # place of the local ``$KIROCREW_HOME/channel`` file (RFC
-    # crew-enterprise-edition, appendix row "Update channel"). Empty = unpinned:
-    # the local file decides, except an enterprise build follows ``stable``.
+    # crew-lts-edition, appendix row "Update channel"). Empty = unpinned:
+    # the local file decides, except an LTS build follows ``stable``.
     channel: str = ""
     # The operator-authored shell commands for the command update provider. Their
     # PRESENCE is what enables the provider (there is no mechanism selector): when
@@ -342,15 +342,15 @@ DEFAULT_FETCH_TIMEOUT_SECS = 10.0
 MAX_POLICY_BYTES = 1 << 20  # 1 MiB
 
 
-def _is_enterprise() -> bool:
-    """``kiro_crew.edition.is_enterprise()``, read at call time.
+def _is_lts() -> bool:
+    """``kiro_crew.edition.is_lts()``, read at call time.
 
     Imported here rather than at module scope so the facade family binds no new project
     module name (``test_governance_parts_facade`` keeps that set closed).
     """
-    from kiro_crew.edition import is_enterprise
+    from kiro_crew.edition import is_lts
 
-    return is_enterprise()
+    return is_lts()
 
 
 @dataclass(frozen=True)
@@ -604,9 +604,9 @@ class PolicyDistribution:
         if (
             not source
             and not os.environ.get(_POLICY_DISTRIBUTION_URL_ENV, "").strip()
-            # An enterprise build supplies the source itself (RFC D2), so a block that
+            # An LTS build supplies the source itself (RFC D2), so a block that
             # only tunes the cadence or staleness bound is not inert there.
-            and not _is_enterprise()
+            and not _is_lts()
             and any(
                 (
                     numbers["refresh_interval_secs"],
@@ -714,11 +714,11 @@ class GovernanceCeiling:
     # cannot carry this key. Read through :func:`agentcore_workload_name`.
     agentcore_workload_name: str = ""
     # Policy-only OTLP collector (``capabilities.telemetry.otlp_endpoint``), read by
-    # an enterprise build only. Empty when omitted. A profile cannot carry this key.
+    # an LTS build only. Empty when omitted. A profile cannot carry this key.
     # Read through :func:`telemetry_otlp_endpoint`.
     telemetry_otlp_endpoint: str = ""
     # Policy-only cap on an auto-approve (YOLO) grant, in seconds (top-level
-    # ``yolo_max_seconds``; RFC crew-enterprise-edition, appendix row
+    # ``yolo_max_seconds``; RFC crew-lts-edition, appendix row
     # "Auto-approval duration"). 0 = no cap. Read through
     # ``safety_override_permits.yolo_ttl_cap``.
     yolo_max_seconds: int = 0
@@ -876,10 +876,10 @@ def _capability_raw_for_gate(
     rejected — Rule 6, same fail-closed raise as ``ScopedMap.posture``.
 
     ``capabilities.telemetry.otlp_endpoint`` gets the same treatment in an
-    enterprise build only.
+    LTS build only.
     """
     if scope == _TELEMETRY_SCOPE:
-        if _TELEMETRY_OTLP_ENDPOINT not in raw or not _is_enterprise():
+        if _TELEMETRY_OTLP_ENDPOINT not in raw or not _is_lts():
             return raw
         if not is_policy:
             raise PlatformCompositionError(
@@ -940,8 +940,8 @@ def agentcore_posture(ceiling: Optional[GovernanceCeiling]) -> Optional[str]:
     omitted, disabled, or fail-closed-disabled. The single reader later work
     must use — do not re-parse raw policy JSON for this field.
 
-    Always ``None`` in an enterprise build, which also empties the Gateway URL and
-    workload name read through it (RFC enterprise edition, Red "Workload identity"
+    Always ``None`` in an LTS build, which also empties the Gateway URL and
+    workload name read through it (RFC LTS edition, Red "Workload identity"
     and "Identity settings").
     """
     from kiro_crew.edition_locks import locked_off
@@ -1045,13 +1045,13 @@ def agentcore_workload_name(ceiling: Optional[GovernanceCeiling]) -> str:
 def _apply_telemetry_otlp_endpoint(data: Mapping[str, object], boot: "BootControls") -> str:
     """Validate and return the policy OTLP endpoint, or empty.
 
-    Enterprise build only; an ``oss`` build never gets here with the key, because
+    LTS build only; an ``oss`` build never gets here with the key, because
     :func:`_capability_raw_for_gate` leaves it for the gate to refuse. A present but
     unusable value aborts when ``boot.fail_closed``; otherwise it is ignored.
     """
     from kiro_crew.metrics.otlp_endpoints import EntryError, _endpoint
 
-    if not _is_enterprise():
+    if not _is_lts():
         return ""
     # Both spellings ``_parse_controls`` accepts: the flat ``"capabilities.telemetry"``
     # key and ``capabilities: {telemetry: ...}``.
@@ -1079,12 +1079,12 @@ def _apply_telemetry_otlp_endpoint(data: Mapping[str, object], boot: "BootContro
 
 
 def telemetry_otlp_endpoint(ceiling: object) -> str:
-    """The OTLP endpoint the policy supplies, in an enterprise build; else empty.
+    """The OTLP endpoint the policy supplies, in an LTS build; else empty.
 
     Empty unless *ceiling* is a ceiling whose ``capabilities.telemetry`` gate is on,
     so a policy that turns telemetry off, or no policy, names no collector.
     """
-    if not _is_enterprise() or not isinstance(ceiling, GovernanceCeiling):
+    if not _is_lts() or not isinstance(ceiling, GovernanceCeiling):
         return ""
     control = ceiling.controls.get(_TELEMETRY_SCOPE)
     if not isinstance(control, CapabilityGate) or not control.enabled:

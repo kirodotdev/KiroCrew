@@ -778,7 +778,7 @@ class TestStartDashboardWiring:
         cfg.tunnel = dataclasses.replace(cfg.tunnel, relay_enabled=relay_enabled)
         monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: cfg))
         if locked:
-            # The enterprise lock on the ``tunnel`` control alone, without the
+            # The LTS lock on the ``tunnel`` control alone, without the
             # edition's policy and login boot.
             monkeypatch.setattr(edition_locks, "local_enable_locked", lambda c: c == "tunnel")
         monkeypatch.setattr(srv, "data_home", lambda: tmp_path)

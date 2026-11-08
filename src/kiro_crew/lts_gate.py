@@ -1,12 +1,12 @@
-"""The enterprise gate: whether an enterprise build serves anything but login.
+"""The LTS gate: whether an LTS build serves anything but login.
 
-Design: ``docs/request-for-change/rfc-crew-enterprise-edition.md``, section
-"Enterprise gate". In an enterprise build (``edition.is_enterprise()``) the
-gateway does not start at all without a kiro login (``kiro_crew.enterprise_boot``
+Design: ``docs/request-for-change/rfc-crew-lts-edition.md``, section
+"LTS gate". In an LTS build (``edition.is_lts()``) the
+gateway does not start at all without a kiro login (``kiro_crew.lts_boot``
 exits before the bind), so the gate starts OPEN. It closes when that login is
 lost or expires while the gateway runs, and reopens once a check sees a valid
 login again. While it is closed, the gateway middleware in
-``dashboard/enterprise_gate_middleware.py`` denies every route except the few a
+``dashboard/lts_gate_middleware.py`` denies every route except the few a
 login screen needs. An ``oss`` build never builds a gate.
 
 The gate is closed while ANY reason holds it closed, and open when none does.
@@ -17,8 +17,8 @@ Each concern owns one reason and only ever clears its own:
   ``gate.close("<its reason>")`` and ``gate.clear("<its reason>")`` with its own
   reason string. Nothing here needs to change for it.
 
-:class:`LoginWatch` reads the one enterprise sign-in (RFC D4) through
-``kiro_crew.enterprise_sign_in.SignInLoginSource``: the same resolver the start check,
+:class:`LoginWatch` reads the one LTS sign-in (RFC D4) through
+``kiro_crew.lts_sign_in.SignInLoginSource``: the same resolver the start check,
 the rules fetch and the account lock read, so there is no second login check.
 """
 
@@ -39,14 +39,14 @@ REASON_LOGIN_REQUIRED = "login_required"
 
 #: The ``code`` of the 403 the gateway answers while the gate is closed. Internal
 #: clients match on it to fail closed rather than read the 403 as a decision.
-GATE_CLOSED_CODE = "enterprise_gate_closed"
+GATE_CLOSED_CODE = "lts_gate_closed"
 
 _REASON_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 # How often the login watch checks, and how old the last read may be before a
 # check reads again. While closed it checks often, so a fresh sign-in reopens the
-# gate within seconds; while open it checks less often. The enterprise source
-# (``enterprise_sign_in.SignInLoginSource``) is a plain store read: it reads on
+# gate within seconds; while open it checks less often. The LTS source
+# (``lts_sign_in.SignInLoginSource``) is a plain store read: it reads on
 # every check while signed out, and at least once a minute while signed in.
 _CLOSED_INTERVAL_SECS = 5.0
 _CLOSED_MAX_AGE_SECS = 60.0
@@ -70,7 +70,7 @@ class GateStatus:
 GateListener = Callable[[GateStatus], None]
 
 
-class EnterpriseGate:
+class LtsGate:
     """Open or closed, plus why. Safe to call from any thread.
 
     Starts closed for every reason in *closed_for*, open when it is empty (the
@@ -104,7 +104,7 @@ class EnterpriseGate:
             self._reasons[reason] = None
             status = GateStatus(open=False, reasons=tuple(self._reasons))
         if was_open:
-            logger.warning("Enterprise gate closed: %s", reason)
+            logger.warning("LTS gate closed: %s", reason)
             self._notify(status)
         return was_open
 
@@ -118,7 +118,7 @@ class EnterpriseGate:
             opened = not self._reasons
             status = GateStatus(open=opened, reasons=tuple(self._reasons))
         if opened:
-            logger.info("Enterprise gate opened")
+            logger.info("LTS gate opened")
             self._notify(status)
         return opened
 
@@ -133,17 +133,17 @@ class EnterpriseGate:
             try:
                 listener(status)
             except Exception:
-                logger.exception("Enterprise gate listener failed")
+                logger.exception("LTS gate listener failed")
 
 
 def _checked(reason: str) -> str:
     if not isinstance(reason, str) or not _REASON_RE.match(reason):
-        raise ValueError(f"invalid enterprise gate reason: {reason!r}")
+        raise ValueError(f"invalid LTS gate reason: {reason!r}")
     return reason
 
 
 class LoginSource(Protocol):
-    """What :class:`LoginWatch` reads; ``enterprise_sign_in.SignInLoginSource`` provides it."""
+    """What :class:`LoginWatch` reads; ``lts_sign_in.SignInLoginSource`` provides it."""
 
     @property
     def authenticated(self) -> bool: ...
@@ -161,7 +161,7 @@ class LoginWatch:
 
     def __init__(
         self,
-        gate: EnterpriseGate,
+        gate: LtsGate,
         source: LoginSource,
         *,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
@@ -234,7 +234,7 @@ class LoginWatch:
 
     def start(self) -> asyncio.Task[None]:
         if self._task is None or self._task.done():
-            self._task = asyncio.create_task(self.run(), name="enterprise-login-watch")
+            self._task = asyncio.create_task(self.run(), name="lts-login-watch")
         return self._task
 
     async def stop(self) -> None:

@@ -475,8 +475,8 @@ async def run_gateway(
     try:
         boot_platform(cfg)
     except Exception as exc:
-        # Enterprise build: failed governance rules exit with the fix named.
-        from kiro_crew.enterprise_boot import refuse_policy_boot
+        # LTS build: failed governance rules exit with the fix named.
+        from kiro_crew.lts_boot import refuse_policy_boot
 
         refuse_policy_boot(exc)
         raise

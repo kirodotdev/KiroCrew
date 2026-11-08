@@ -613,7 +613,7 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # The Web Push stores, written lazily on the first subscribe or key fetch; see
     # its entry in ``_CREW_HIDDEN_LEAVES``.
     "web-push",
-    # The governance cache, masked in every tier and lifted READ-ONLY for an enterprise
+    # The governance cache, masked in every tier and lifted READ-ONLY for an LTS
     # sandbox (``sandbox_tiers.enterprise_policy_cache_view``). Written on the first
     # successful fetch, so a sandbox spawned before then would find no name to mask or
     # seal and could create the directory and plant a ceiling there. An empty directory

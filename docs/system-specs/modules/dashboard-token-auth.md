@@ -159,11 +159,11 @@ on: stripped of relay headers, or rewritten as relayed. It RETURNS its own
 refusals and records each one itself (`relay_ingress` rows, source `kiro_relay`),
 so the boundary never needs to.
 
-An enterprise build adds one layer to both chains, right after `token_auth`: the
-enterprise gate middleware (`dashboard/enterprise_gate_middleware.py`), which
+An LTS build adds one layer to both chains, right after `token_auth`: the
+LTS gate middleware (`dashboard/lts_gate_middleware.py`), which
 while the gate is closed denies everything but the login routes. It RAISES its
 403, so `deny_audit` records it. An `oss` build installs nothing. Contract:
-[platform-context § Enterprise gate](platform-context.md#enterprise-gate-login-half).
+[platform-context § LTS gate](platform-context.md#lts-gate-login-half).
 
 ## Components
 
@@ -968,7 +968,7 @@ request into an HTTP request to this gateway's loopback TCP listener and stamps 
 person as `x-kiro-relay-user`. `dashboard/kiro_relay/` is the Crew's half of that
 contract, and `relay_client/` is the relay client that calls it. All of it is behind
 `tunnel.relay_enabled`, **off by default**: off, the gateway builds its
-`RelayIngress` off and starts no relay client. An enterprise build ignores that
+`RelayIngress` off and starts no relay client. An LTS build ignores that
 local switch with the rest of the `tunnel` control
 ([platform-context § Local switches with no governance key](platform-context.md#local-switches-with-no-governance-key-edition_lockspy)).
 

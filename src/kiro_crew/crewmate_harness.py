@@ -81,16 +81,16 @@ class CrewmateHarnessUnavailable(RuntimeError):
 
 
 class KasUnavailable(CrewmateHarnessUnavailable):
-    """An enterprise session would run on KAS, and KAS cannot start on this host.
+    """An LTS session would run on KAS, and KAS cannot start on this host.
 
-    RFC D6: KAS is the enterprise floor and nothing falls back to the Kiro CLI
+    RFC D6: KAS is the LTS floor and nothing falls back to the Kiro CLI
     harness. The gateway started because its main sessions do not run KAS (a
     policy-allowed pick of another harness); this session does (a crewmate DM or worker, a
     ``spawn_run(backend=...)`` override, a main backend switched to KAS), so it is
-    refused before any process exists (``enterprise_boot.refuse_unstartable_kas``).
+    refused before any process exists (``lts_boot.refuse_unstartable_kas``).
     Same ``code`` as an unstartable pin (H17), so every caller that handles that
     refusal handles this one. *failed* and *fix* come from
-    ``enterprise_boot.kas_refusal``.
+    ``lts_boot.kas_refusal``.
     """
 
     def __init__(self, failed: str, fix: str) -> None:
@@ -707,10 +707,10 @@ def _harnesses_whose_runtime_is_in(config: Any, runtimes: frozenset[str]) -> lis
     Each harness is judged by the runtime its pin starts on (:meth:`CrewBackendPin.resolve`),
     the same runtime a crewmate's chat and its workers check. A pin that resolves to
     KAS is left out when boot recorded that KAS cannot start here
-    (:func:`kiro_crew.enterprise_boot.refuse_unstartable_kas`), because that session
+    (:func:`kiro_crew.lts_boot.refuse_unstartable_kas`), because that session
     would be refused at its start.
     """
-    from kiro_crew.enterprise_boot import refuse_unstartable_kas
+    from kiro_crew.lts_boot import refuse_unstartable_kas
 
     out: list[str] = []
     for backend in _backends.selectable_backends():

@@ -214,12 +214,12 @@ class KiroPrerequisiteService:
         # dir — otherwise spawn-count assertions vary by machine.
         self._spec_lister = spec_lister or _default_spec_lister
         self._clock = clock or time.monotonic
-        # An enterprise build never assumes readiness: its login gate reads this
+        # An LTS build never assumes readiness: its login gate reads this
         # service's verdict, and an assumed one (`--test-mode`) would open the
         # gate with no kiro login at all.
-        from kiro_crew.edition import is_enterprise
+        from kiro_crew.edition import is_lts
 
-        self._assume_ready = assume_ready and not is_enterprise()
+        self._assume_ready = assume_ready and not is_lts()
         assume_ready = self._assume_ready
         # `assume_ready` must hold from CONSTRUCTION, not from the first probe:
         # readiness is now a latch that `session_ready()` reads without probing,
@@ -762,9 +762,9 @@ class KiroPrerequisiteService:
     def authenticated(self) -> bool:
         """The latched sign-in verdict. Never probes.
 
-        The enterprise login gate reads this on every request, so it must stay a
+        The LTS login gate reads this on every request, so it must stay a
         field read. False before the first probe answers, which is what keeps an
-        enterprise gateway closed until a probe has seen a login.
+        LTS gateway closed until a probe has seen a login.
         """
 
         return bool(self._status.authenticated)
@@ -778,8 +778,8 @@ class KiroPrerequisiteService:
     async def login_verified(self, *, max_age_secs: float) -> bool:
         """Return the sign-in verdict, re-probing when it may be stale.
 
-        For the enterprise login gate's background check (docs/request-for-change/
-        rfc-crew-enterprise-edition.md, "Enterprise gate"), which must notice an
+        For the LTS login gate's background check (docs/request-for-change/
+        rfc-crew-lts-edition.md, "LTS gate"), which must notice an
         expired or lost login with no chat turn to surface it. The probe re-runs
         when the last one is older than *max_age_secs*, or when the identity store
         now names a different account (or none) than the latch: that read is
@@ -804,7 +804,7 @@ class KiroPrerequisiteService:
     async def boot_login_status(self) -> PrerequisiteStatus:
         """Probe ``--version`` and ``whoami`` only, and return the latched status.
 
-        For the enterprise boot check, which runs before the gateway binds: the
+        For the LTS boot check, which runs before the gateway binds: the
         spec and ``acp`` checks of a full probe run after the bind instead (a
         probe that reached ``whoami`` is left not done, so the next read runs the
         full one). ``authenticated`` is the verdict; it fails closed.

@@ -5,9 +5,9 @@ interface field is a ``Default*`` adapter — i.e. today's open-source behavior.
 ``bootstrap_context`` is the single entry point boot calls: it builds the
 default context, resolves the profile, and (for a non-standalone profile) swaps
 in the companion-composed context after validating the contract version and the
-ADD-only security floor. An enterprise build with no companion installed keeps
+ADD-only security floor. An LTS build with no companion installed keeps
 the default context under the enterprise profile (see
-:func:`_enterprise_on_core_defaults`).
+:func:`_lts_on_core_defaults`).
 """
 
 from __future__ import annotations
@@ -141,7 +141,7 @@ def compose_telemetry_provider(cfg: "KiroCrewConfig") -> "TelemetryProvider":
     profile = resolve_profile(cfg, entry_points=eps)
     if profile == PROFILE_STANDALONE:
         return DefaultTelemetryProvider()
-    if _enterprise_on_core_defaults(eps):
+    if _lts_on_core_defaults(eps):
         # No companion carries a ceiling here, so read the policy the core-defaults
         # boot would install, live: it names the collector
         # (``capabilities.telemetry.otlp_endpoint``) and its host list.
@@ -232,21 +232,21 @@ def _read_policy_now() -> object:
         return UNEVALUABLE
 
 
-def _enterprise_on_core_defaults(eps: "Sequence[Any]") -> bool:
-    """Does this enterprise build boot on the core defaults, with no companion?
+def _lts_on_core_defaults(eps: "Sequence[Any]") -> bool:
+    """Does this LTS build boot on the core defaults, with no companion?
 
-    True only for an enterprise build (the build-time edition, which no env var or
+    True only for an LTS build (the build-time edition, which no env var or
     config changes) with no ``kirocrew.plugins`` entry point at all. The governance
-    fetch and every enterprise gate live in the core and key off the edition, so a
-    companion adds nothing such a build needs (RFC rfc-crew-enterprise-edition,
+    fetch and every LTS gate live in the core and key off the edition, so a
+    companion adds nothing such a build needs (RFC rfc-crew-lts-edition,
     D1). *eps* is the answer of a scan that succeeded: in an
-    enterprise build ``plugin_entry_points`` raises rather than answer ``[]`` when
+    LTS build ``plugin_entry_points`` raises rather than answer ``[]`` when
     it cannot read the metadata. Any installed entry point still goes through discovery,
     so a broken, rejected, ambiguous or contract-mismatched companion fails closed
     exactly as before. An ``oss`` build never takes this path: there a
     non-standalone profile with no companion still fails closed.
     """
-    return edition.is_enterprise() and not eps
+    return edition.is_lts() and not eps
 
 
 def _checked_companion(
@@ -404,7 +404,7 @@ def _refresh_stt_for_edition(cfg: "KiroCrewConfig") -> None:
 def bootstrap_context(cfg: "KiroCrewConfig") -> PlatformContext:
     """Build, validate, install, and return the active platform context.
 
-    Standalone: returns the all-defaults context.  Enterprise build with no
+    Standalone: returns the all-defaults context.  LTS build with no
     companion: the all-defaults context under the enterprise profile.  Otherwise
     non-standalone: discovers the companion context (fail-closed), validates the
     contract version and the ADD-only security floor, then installs it as the
@@ -414,8 +414,8 @@ def bootstrap_context(cfg: "KiroCrewConfig") -> PlatformContext:
     profile = resolve_profile(cfg, entry_points=eps)
     ctx = build_default_context(cfg, profile=profile)
 
-    if _enterprise_on_core_defaults(eps):
-        logger.info("Enterprise build with no companion: composed the core defaults")
+    if _lts_on_core_defaults(eps):
+        logger.info("LTS build with no companion: composed the core defaults")
     elif profile != PROFILE_STANDALONE:
         companion = _checked_companion(profile, cfg, eps)
         assert_security_floor(companion.security)
@@ -611,8 +611,8 @@ def apply_kas_cli_floor(
     if reason is None:
         return None
     if governance_floor_backend() == ACP_BACKEND_KAS:
-        # Enterprise (RFC D6): KAS is the floor, so it is never marked unservable and
-        # nothing falls back to kiro-cli. ``enterprise_boot.require_kas_harness`` already
+        # LTS (RFC D6): KAS is the floor, so it is never marked unservable and
+        # nothing falls back to kiro-cli. ``lts_boot.require_kas_harness`` already
         # refused a start whose main sessions run KAS, or recorded the verdict so each
         # session on KAS is refused at its own start; only a Kiro CLI pick's notice holds.
         if not kiro_pick:

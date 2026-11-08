@@ -579,7 +579,7 @@ def wrap_argv(
             inside this package with zero agent/repo/user-config influence,
             or that run the kiro-cli Kiro Crew already launches for every ACP
             session, resolved only by ``kiro_cli.find_kiro_cli_candidates``,
-            with a fixed argv (the enterprise sign-in check's ``--version`` /
+            with a fixed argv (the LTS sign-in check's ``--version`` /
             ``whoami``): Crew already trusts and runs that binary, so the
             carve-out adds no new trust. Every passing site must be allowlisted in
             ``test/test_spawn_audit.py::FIRST_PARTY_SPAWNS``. On a host with
@@ -934,7 +934,7 @@ def wrap_argv(
 
     backend = detect_backend(config_mode=mode)
 
-    # An enterprise build's sandboxed processes resolve the ceiling from the governance
+    # An LTS build's sandboxed processes resolve the ceiling from the governance
     # cache, so it is shown to them READ-ONLY (the plan seals a lifted cache). After the
     # delegation branch on purpose: a delegated sandbox applies none of Kiro Crew's masks,
     # and adding a path here would cost the delegation.

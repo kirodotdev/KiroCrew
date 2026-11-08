@@ -1,7 +1,7 @@
-"""Enterprise build: the policy supplies the OTLP endpoint (``capabilities.telemetry.otlp_endpoint``).
+"""LTS build: the policy supplies the OTLP endpoint (``capabilities.telemetry.otlp_endpoint``).
 
-RFC ``rfc-crew-enterprise-edition``, appendix row "Diagnostic telemetry target". In an
-enterprise build the policy names the collector, the metrics path builds a reader
+RFC ``rfc-crew-lts-edition``, appendix row "Diagnostic telemetry target". In an
+LTS build the policy names the collector, the metrics path builds a reader
 for it, and local config or environment cannot change it. With no endpoint in the
 policy nothing is sent. The ``oss`` edition does not read the key: a policy that
 carries it is refused as an unknown key, as before.
@@ -47,7 +47,7 @@ def _fresh_lock_log():
 
 @pytest.fixture
 def enterprise(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+    monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
 
 
 @pytest.fixture
@@ -118,7 +118,7 @@ def test_only_the_central_tier_supplies_the_endpoint(enterprise) -> None:
     assert telemetry_otlp_endpoint(compose_tier_ladder(central, home)) == ""
     named = replace(parse_policy(_policy(enabled=True, otlp_endpoint=ADMIN)), tier=TIER_CENTRAL)
     assert telemetry_otlp_endpoint(compose_tier_ladder(named, home)) == ADMIN
-    # A local file alone cannot turn telemetry on in an enterprise build (RFC D3).
+    # A local file alone cannot turn telemetry on in an LTS build (RFC D3).
     assert telemetry_otlp_endpoint(compose_tier_ladder(home)) == ""
 
 

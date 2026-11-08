@@ -28,7 +28,7 @@ def _mock_source_sel(monkeypatch):
 
 
 class FakeAcmePlugin:
-    """Stand-in for an enterprise edition's internal code-review system."""
+    """Stand-in for an LTS edition's internal code-review system."""
 
     id = "acme"
 

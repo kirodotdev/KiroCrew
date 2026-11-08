@@ -464,12 +464,12 @@ class BackgroundSessionRuntime:
     def _unreadable_backend(self) -> str:
         """The backend a background runtime takes when ``agent.acp_backend`` is unreadable.
 
-        ``acp_backend_kiro`` in an ``oss`` build, as before. In an enterprise build the
+        ``acp_backend_kiro`` in an ``oss`` build, as before. In an LTS build the
         build's floor, KAS (RFC D6), because Kiro CLI there needs a remote rule.
         """
         from kiro_crew import edition
 
-        if edition.is_enterprise():
+        if edition.is_lts():
             from kiro_crew.agent_sdk.backends import governance_floor_backend
 
             return governance_floor_backend()
@@ -866,11 +866,11 @@ class BackgroundSessionRuntime:
                             ),
                         )
 
-                    # Enterprise (RFC D6): a background runtime on a KAS that boot
+                    # LTS (RFC D6): a background runtime on a KAS that boot
                     # proved cannot start is refused before any process, as every
                     # factory-built session is. A no-op in an oss build.
                     from kiro_crew.agent_sdk.backends import ACP_BACKEND_KAS
-                    from kiro_crew.enterprise_boot import refuse_unstartable_kas
+                    from kiro_crew.lts_boot import refuse_unstartable_kas
 
                     if configured_backend == ACP_BACKEND_KAS:
                         refuse_unstartable_kas()

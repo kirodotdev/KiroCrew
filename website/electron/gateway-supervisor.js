@@ -870,9 +870,9 @@ function createGatewaySupervisor({
         KIROCREW_PROJECT_DIR: IS_WIN
           ? resolveProjectDir()
           : path.resolve(dirname, ".."),
-        // Tells a signed-out enterprise gateway to exit with its refusal instead
+        // Tells a signed-out LTS gateway to exit with its refusal instead
         // of serving the browser sign-in screen, which this window cannot open
-        // yet (enterprise_signin_gateway.DESKTOP_GATEWAY_ENV).
+        // yet (lts_signin_gateway.DESKTOP_GATEWAY_ENV).
         KIROCREW_DESKTOP_GATEWAY: "1",
         // Windows only: where the gateway sends its stdout/stderr (see above).
         ...childLogEnv,

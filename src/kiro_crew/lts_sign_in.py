@@ -1,7 +1,7 @@
-"""The enterprise build's one sign-in: who is signed in, for every enterprise check.
+"""The LTS build's one sign-in: who is signed in, for every LTS check.
 
-Design: ``docs/request-for-change/rfc-crew-enterprise-edition.md``, D4. The login check
-at start (:func:`kiro_crew.enterprise_boot.require_kiro_login`), the gate
+Design: ``docs/request-for-change/rfc-crew-lts-edition.md``, D4. The login check
+at start (:func:`kiro_crew.lts_boot.require_kiro_login`), the gate
 (:class:`SignInLoginSource`), the rules fetch
 (:mod:`kiro_crew.platform.enterprise_policy_fetch`) and the account lock (its profile
 pin) all read :func:`select`, so they can never name different accounts.
@@ -21,15 +21,15 @@ Two sources, picked by presence and never mixed:
    sign-in": only a store with no token row is absent.
 
 Both stored for different accounts is decided by the caller's :class:`Policy`: the
-enterprise build refuses, naming both (D4); the ``oss`` build uses the vault and logs
+LTS build refuses, naming both (D4); the ``oss`` build uses the vault and logs
 one warning naming both.
 
 Every refusal is a :class:`SignInError` carrying one of the ``CAUSE_*`` values, so the
 boot error picks its fix from the real cause.
 
 This module does not read the edition. Its callers decide which :class:`Policy`
-applies: the enterprise wiring (``enterprise_boot``, the enterprise gate, the
-enterprise policy fetch and doctor's enterprise row) uses :data:`ENTERPRISE`, the
+applies: the LTS wiring (``lts_boot``, the LTS gate, the
+enterprise policy fetch and doctor's sign-in row) uses :data:`LTS`, the
 default; the ``oss`` spawn owner (:func:`kiro_crew.auth.bridge.vault_holds_identity`)
 uses :data:`OSS`.
 """
@@ -76,16 +76,16 @@ class Policy:
     """What one edition requires of the selection. The only edition-shaped input.
 
     ``refuse_mismatch``: a kiro-cli sign-in stored beside the vault's for another
-    account is refused (enterprise, D4), instead of the vault being used with one
+    account is refused (lts, D4), instead of the vault being used with one
     warning (oss). ``require_profile``: a sign-in with no profile ARN is refused as
-    not an organisation account (enterprise); oss accepts a Builder ID sign-in.
+    not an organisation account (lts); oss accepts a Builder ID sign-in.
     """
 
     refuse_mismatch: bool
     require_profile: bool
 
 
-ENTERPRISE = Policy(refuse_mismatch=True, require_profile=True)
+LTS = Policy(refuse_mismatch=True, require_profile=True)
 OSS = Policy(refuse_mismatch=False, require_profile=False)
 
 #: The sign-in verb, with no start URL. ``kas login --provider idc`` refuses to run
@@ -129,7 +129,7 @@ def _launcher() -> str:
 
         return _resolve_kirocrew_bin() or "kirocrew"
     except Exception:  # noqa: BLE001 - a remedy string never raises
-        logger.debug("Enterprise sign-in command: launcher not resolved", exc_info=True)
+        logger.debug("LTS sign-in command: launcher not resolved", exc_info=True)
         return "kirocrew"
 
 
@@ -157,7 +157,7 @@ _START_URL_RE = re.compile(r"^https://[^\s\"'`$\\<>|;&()]+$")
 #: The region grammar ``auth.service.begin_device`` accepts (its ``_REGION_RE``).
 _REGION_RE = re.compile(r"^[a-z]{2}(-[a-z]+)+-\d{1,2}$")
 
-# The real cause of a refused enterprise start. Read by enterprise_boot to pick the fix.
+# The real cause of a refused LTS start. Read by lts_boot to pick the fix.
 CAUSE_NO_SIGN_IN = "no_sign_in"
 CAUSE_SIGN_IN_UNUSABLE = "sign_in_unusable"
 CAUSE_UNREACHABLE = "unreachable"
@@ -170,7 +170,7 @@ CAUSE_SIGN_INS_DISAGREE = "sign_ins_disagree"
 TOKEN_TYPE_EXTERNAL_IDP = "EXTERNAL_IDP"
 
 #: SEL audit label for the read of kiro-cli's own store.
-KIRO_CLI_STORE_READ_ID = "enterprise_sign_in.kiro_cli_store"
+KIRO_CLI_STORE_READ_ID = "lts_sign_in.kiro_cli_store"
 #: A kiro-cli token this close to expiry counts as expired.
 _EXPIRY_MARGIN_SECS = 60.0
 _MAX_ARN_CHARS = 200
@@ -236,7 +236,7 @@ def run_coroutine(coro: Any, *, timeout: float = _CREDENTIAL_TIMEOUT_SECS) -> An
         finally:
             loop.close()
 
-    worker = threading.Thread(target=work, name="enterprise-sign-in-credential", daemon=True)
+    worker = threading.Thread(target=work, name="lts-sign-in-credential", daemon=True)
     worker.start()
     worker.join(timeout)
     if worker.is_alive():
@@ -557,7 +557,7 @@ def _select(policy: Policy) -> Tuple[Selection, Optional[_CliEntry]]:
     return Selection(Source.KIRO_CLI, cli.profile_arn, problem), cli
 
 
-def select(*, policy: Policy = ENTERPRISE) -> Selection:
+def select(*, policy: Policy = LTS) -> Selection:
     """The one sign-in, by presence, or raise :class:`SignInError`.
 
     A vault entry is the sign-in; with none, kiro-cli's. Raises for no sign-in, a store
@@ -568,7 +568,7 @@ def select(*, policy: Policy = ENTERPRISE) -> Selection:
     return _select(policy)[0]
 
 
-def resolve(*, with_token: bool = False, policy: Policy = ENTERPRISE) -> Selection:
+def resolve(*, with_token: bool = False, policy: Policy = LTS) -> Selection:
     """The selected sign-in (:func:`select`) when it is usable, or raise.
 
     *with_token* also returns a live access token, for the rules fetch: the vault's
@@ -588,7 +588,7 @@ def resolve(*, with_token: bool = False, policy: Policy = ENTERPRISE) -> Selecti
 
 
 def describe() -> str:
-    """One line for ``kirocrew doctor``: which sign-in an enterprise build uses."""
+    """One line for ``kirocrew doctor``: which sign-in an LTS build uses."""
     try:
         sign_in = resolve()
     except SignInError as exc:
@@ -614,7 +614,7 @@ def sign_in_command() -> tuple[str, bool]:
         start_url = recorded_start_url(token) if token is not None else ""
         region = (token.region or "") if token is not None else ""
     except Exception:  # noqa: BLE001 - a status read never raises
-        logger.debug("Enterprise sign-in command: vault unreadable", exc_info=True)
+        logger.debug("LTS sign-in command: vault unreadable", exc_info=True)
         start_url = region = ""
     if not (start_url and _START_URL_RE.match(start_url)):
         return vault_sign_in_command(), False
@@ -626,7 +626,7 @@ def sign_in_command() -> tuple[str, bool]:
 
 
 class SignInLoginSource:
-    """The enterprise gate's login source (``enterprise_gate.LoginSource``), from :func:`resolve`.
+    """The LTS gate's login source (``lts_gate.LoginSource``), from :func:`resolve`.
 
     ``authenticated`` is the latched verdict of the last check. ``login_verified``
     re-checks on every call while signed out, and otherwise when the last check is
@@ -647,13 +647,13 @@ class SignInLoginSource:
 
             pin = epf.pinned_scope()
             if pin and epf.profile_scope(found.profile_arn) != pin:
-                logger.warning("Enterprise sign-in check: %s", epf.ACCOUNT_CHANGED)
+                logger.warning("LTS sign-in check: %s", epf.ACCOUNT_CHANGED)
                 return False
         except SignInError as exc:
-            logger.warning("Enterprise sign-in check: %s", exc)
+            logger.warning("LTS sign-in check: %s", exc)
             return False
         except Exception:
-            logger.warning("Enterprise sign-in check raised", exc_info=True)
+            logger.warning("LTS sign-in check raised", exc_info=True)
             return False
         return True
 

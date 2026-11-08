@@ -1,6 +1,6 @@
 """``capabilities.feature_videos_download`` ``hosts``: where feature content may come from.
 
-RFC crew-enterprise-edition, appendix row "Feature content hosts". The key parses
+RFC crew-lts-edition, appendix row "Feature content hosts". The key parses
 with the catalog's matcher; a list that names X permits X and denies Y; a gate
 pinned off denies every host; no policy, or no list, permits as before. Then the
 call sites: the manifest walk, a mirror's redirect hops, and each clip request.

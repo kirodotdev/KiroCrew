@@ -1,9 +1,9 @@
 /**
- * Isolated capture entry for the enterprise sign-in-only screen.
+ * Isolated capture entry for the LTS sign-in-only screen.
  *
  * Mounts the REAL KiroPrerequisiteGate against the real stylesheet, theme tokens
- * and i18n catalog, with the prerequisite status a signed-out enterprise gateway's
- * sign-in-only app answers (`enterprise_sign_in_only: true`). Only the API calls
+ * and i18n catalog, with the prerequisite status a signed-out LTS gateway's
+ * sign-in-only app answers (`lts_sign_in_only: true`). Only the API calls
  * are stubbed.
  *
  * Scene from the query string: ?scene=signed-out|signed-in|restart&theme=dark|light&lang=en
@@ -36,10 +36,10 @@ api.kiroPrerequisite = () =>
     installed: true,
     initial_setup_complete: false,
     setup_allowed: true,
-    enterprise_login_required: true,
-    enterprise_sign_in_only: true,
-    enterprise_signed_in_restart: scene === 'restart',
-    ...(scene === 'restart' ? { enterprise_start_command: '/usr/local/bin/kirocrew gateway' } : {}),
+    lts_login_required: true,
+    lts_sign_in_only: true,
+    lts_signed_in_restart: scene === 'restart',
+    ...(scene === 'restart' ? { lts_start_command: '/usr/local/bin/kirocrew gateway' } : {}),
   }) as unknown as ReturnType<typeof api.kiroPrerequisite>
 api.kasLoginStatus = () =>
   Promise.resolve(

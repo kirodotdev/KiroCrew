@@ -690,7 +690,7 @@ def telemetry_permitted(
     leave it empty for a read-only diagnostic probe (see
     :func:`is_governance_pinned_off`).
 
-    An enterprise build refuses every route here (the heartbeat, the install
+    An LTS build refuses every route here (the heartbeat, the install
     receipt, the feedback survey) with the ``governance`` code.
 
     Deliberately does NOT include the beacon's once-per-day throttle. That

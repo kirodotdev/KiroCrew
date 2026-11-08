@@ -1,9 +1,9 @@
-"""Enterprise boot exits before the bind when the kiro sign-in or the policy fails.
+"""LTS boot exits before the bind when the kiro sign-in or the policy fails.
 
-Design: docs/request-for-change/rfc-crew-enterprise-edition.md, "Enterprise gate" and
-D4: the start check reads the one enterprise sign-in (vault first, else kiro-cli's
+Design: docs/request-for-change/rfc-crew-lts-edition.md, "LTS gate" and
+D4: the start check reads the one LTS sign-in (vault first, else kiro-cli's
 own sign-in), never ``kiro-cli whoami``. The resolver itself is covered in
-``test_enterprise_sign_in.py``.
+``test_lts_sign_in.py``.
 """
 
 from __future__ import annotations
@@ -18,15 +18,15 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 
-from kiro_crew import enterprise_boot
-from kiro_crew.dashboard import enterprise_gate_middleware as gate_mw
+from kiro_crew import lts_boot
+from kiro_crew.dashboard import lts_gate_middleware as gate_mw
 from kiro_crew.kiro_prerequisite import PrerequisiteStatus, ProcessResult
 from kiro_crew.platform.context import PlatformCompositionError
 
 
 @pytest.fixture
-def enterprise(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+def lts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
 
 
 @pytest.fixture
@@ -109,51 +109,51 @@ def vault_signed_in(vault_store: Any) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# The login check: the one enterprise sign-in (RFC D4), not kiro-cli whoami
+# The login check: the one LTS sign-in (RFC D4), not kiro-cli whoami
 
 
 @pytest.mark.asyncio
 async def test_no_sign_in_exits_naming_the_sign_in(
-    enterprise: None,
+    lts: None,
     empty_vault: None,
     fake_service: type[FakeService],
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     with pytest.raises(SystemExit) as exc:
-        await enterprise_boot.require_kiro_login()
-    assert exc.value.code == enterprise_boot.EXIT_CODE != 0
+        await lts_boot.require_kiro_login()
+    assert exc.value.code == lts_boot.EXIT_CODE != 0
     err = capsys.readouterr().err
     assert "no Kiro sign-in was found" in err
-    assert enterprise_boot.sign_in.vault_sign_in_command() in err
-    # kiro-cli whoami is not the enterprise gate.
+    assert lts_boot.sign_in.vault_sign_in_command() in err
+    # kiro-cli whoami is not the LTS gate.
     assert fake_service.instances == []
 
 
 @pytest.mark.asyncio
 async def test_a_vault_sign_in_boots(
-    enterprise: None, vault_signed_in: None, fake_service: type[FakeService]
+    lts: None, vault_signed_in: None, fake_service: type[FakeService]
 ) -> None:
-    assert await enterprise_boot.require_kiro_login() is None
+    assert await lts_boot.require_kiro_login() is None
     assert fake_service.instances == []
 
 
 @pytest.mark.asyncio
 async def test_a_resolver_that_raises_exits(
-    enterprise: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    lts: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     def broken() -> None:
         raise OSError("boom")
 
-    monkeypatch.setattr(enterprise_boot.sign_in, "resolve", broken)
+    monkeypatch.setattr(lts_boot.sign_in, "resolve", broken)
     with pytest.raises(SystemExit) as exc:
-        await enterprise_boot.require_kiro_login()
-    assert exc.value.code == enterprise_boot.EXIT_CODE
+        await lts_boot.require_kiro_login()
+    assert exc.value.code == lts_boot.EXIT_CODE
     assert "could not be checked (OSError)" in capsys.readouterr().err
 
 
 @pytest.mark.asyncio
 async def test_no_sign_in_exits_with_no_companion_installed(
-    enterprise: None,
+    lts: None,
     empty_vault: None,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -161,8 +161,8 @@ async def test_no_sign_in_exits_with_no_companion_installed(
     # The login gate keys off the build's edition, not a companion.
     monkeypatch.setattr("kiro_crew.platform.discovery.plugin_entry_points", lambda: [])
     with pytest.raises(SystemExit) as exc:
-        await enterprise_boot.require_kiro_login()
-    assert exc.value.code == enterprise_boot.EXIT_CODE
+        await lts_boot.require_kiro_login()
+    assert exc.value.code == lts_boot.EXIT_CODE
     assert "no Kiro sign-in was found" in capsys.readouterr().err
 
 
@@ -179,7 +179,7 @@ async def test_no_sign_in_exits_with_no_companion_installed(
     ],
 )
 def test_a_failed_policy_names_the_fix_for_its_cause(
-    enterprise: None,
+    lts: None,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     cause: str,
@@ -189,16 +189,14 @@ def test_a_failed_policy_names_the_fix_for_its_cause(
 
     monkeypatch.setattr(epf, "_last_failure", (cause, "the recorded failure"))
     with pytest.raises(SystemExit):
-        enterprise_boot.refuse_policy_boot(
-            PlatformCompositionError("no ceiling (the recorded failure)")
-        )
+        lts_boot.refuse_policy_boot(PlatformCompositionError("no ceiling (the recorded failure)"))
     err = capsys.readouterr().err
     assert needle in err
     assert err.count("\n") == 2  # one failed line, one fix line
 
 
 def test_an_earlier_failures_cause_is_not_reused(
-    enterprise: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    lts: None, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # A fetch that failed as unreachable and was recovered by the cache must not lend
     # its fix sentence to a later, unrelated composition failure.
@@ -206,7 +204,7 @@ def test_an_earlier_failures_cause_is_not_reused(
 
     monkeypatch.setattr(epf, "_last_failure", ("unreachable", "could not be reached"))
     with pytest.raises(SystemExit):
-        enterprise_boot.refuse_policy_boot(PlatformCompositionError("companion mismatch"))
+        lts_boot.refuse_policy_boot(PlatformCompositionError("companion mismatch"))
     err = capsys.readouterr().err
     assert "can reach the governance service and that you are signed in" in err
     assert "Check that this machine can reach the governance service, then" not in err
@@ -266,41 +264,39 @@ async def test_oss_checks_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
         "kiro_crew.kiro_prerequisite.KiroPrerequisiteService",
         MagicMock(side_effect=AssertionError("oss must not probe at boot")),
     )
-    assert await enterprise_boot.require_kiro_login() is None
+    assert await lts_boot.require_kiro_login() is None
 
 
 # --------------------------------------------------------------------------- #
 # The gate starts open on the verified login, and refuses a caller that skipped it
 
 
-def test_gate_starts_open_after_the_boot_check(
-    enterprise: None, fake_service: type[FakeService]
-) -> None:
+def test_gate_starts_open_after_the_boot_check(lts: None, fake_service: type[FakeService]) -> None:
     _set(fake_service, authenticated=True)
     service = FakeService()
     service.boot_probes = 1
     app = web.Application()
-    gate_mw.install_enterprise_gate(app, service)  # type: ignore[arg-type]
+    gate_mw.install_lts_gate(app, service)  # type: ignore[arg-type]
     assert app[gate_mw.GATE_APP_KEY].is_open
     assert not gate_mw.login_screen_required(app)
 
 
-def test_gate_reads_the_one_sign_in_by_default(enterprise: None, vault_signed_in: None) -> None:
+def test_gate_reads_the_one_sign_in_by_default(lts: None, vault_signed_in: None) -> None:
     app = web.Application()
-    gate_mw.install_enterprise_gate(app)
+    gate_mw.install_lts_gate(app)
     assert app[gate_mw.GATE_APP_KEY].is_open
 
 
-def test_gate_with_no_sign_in_refuses_to_install(enterprise: None, empty_vault: None) -> None:
+def test_gate_with_no_sign_in_refuses_to_install(lts: None, empty_vault: None) -> None:
     app = web.Application()
     with pytest.raises(RuntimeError, match="boot login check"):
-        gate_mw.install_enterprise_gate(app)
+        gate_mw.install_lts_gate(app)
 
 
-def test_gate_refuses_to_install_without_a_login(enterprise: None) -> None:
+def test_gate_refuses_to_install_without_a_login(lts: None) -> None:
     app = web.Application()
     with pytest.raises(RuntimeError, match="boot login check"):
-        gate_mw.install_enterprise_gate(app, SimpleNamespace(authenticated=False))  # type: ignore[arg-type]
+        gate_mw.install_lts_gate(app, SimpleNamespace(authenticated=False))  # type: ignore[arg-type]
     assert gate_mw.GATE_APP_KEY not in app
 
 
@@ -339,7 +335,7 @@ def _bare_orchestrator(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> Any:
 
 @pytest.mark.asyncio
 async def test_gateway_without_a_login_exits_before_any_service_or_bind(
-    enterprise: None,
+    lts: None,
     empty_vault: None,
     fake_service: type[FakeService],
     monkeypatch: pytest.MonkeyPatch,
@@ -350,7 +346,7 @@ async def test_gateway_without_a_login_exits_before_any_service_or_bind(
     orch = _bare_orchestrator(monkeypatch, tmp_path)
     with pytest.raises(SystemExit) as exc:
         await orch.run()
-    assert exc.value.code == enterprise_boot.EXIT_CODE
+    assert exc.value.code == lts_boot.EXIT_CODE
     assert "no Kiro sign-in was found" in capsys.readouterr().err
     for method in ("_init_services", "_init_mcp_gateway", "_init_dashboard", "_init_api_server"):
         getattr(orch, method).assert_not_awaited()
@@ -380,7 +376,7 @@ async def test_oss_gateway_boots_on_without_a_login_check(
 
 @pytest.mark.asyncio
 async def test_api_server_without_a_login_exits_before_the_bind(
-    enterprise: None,
+    lts: None,
     empty_vault: None,
     fake_service: type[FakeService],
     monkeypatch: pytest.MonkeyPatch,
@@ -403,7 +399,7 @@ async def test_api_server_without_a_login_exits_before_the_bind(
 
     with pytest.raises(SystemExit) as exc:
         await start_api_server(sessions=MagicMock(), crons=MagicMock(), lessons=MagicMock(), port=0)
-    assert exc.value.code == enterprise_boot.EXIT_CODE
+    assert exc.value.code == lts_boot.EXIT_CODE
     site_start.assert_not_awaited()
     assert tcp_listens == []
 
@@ -412,12 +408,10 @@ async def test_api_server_without_a_login_exits_before_the_bind(
 # The governance policy
 
 
-def test_failed_policy_exits_with_the_fix(
-    enterprise: None, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_failed_policy_exits_with_the_fix(lts: None, capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as exc:
-        enterprise_boot.refuse_policy_boot(PlatformCompositionError("central policy unreachable"))
-    assert exc.value.code == enterprise_boot.EXIT_CODE
+        lts_boot.refuse_policy_boot(PlatformCompositionError("central policy unreachable"))
+    assert exc.value.code == lts_boot.EXIT_CODE
     err = capsys.readouterr().err
     assert "governance rules" in err and "central policy unreachable" in err
     assert "start Kiro Crew again" in err
@@ -425,16 +419,16 @@ def test_failed_policy_exits_with_the_fix(
 
 def test_oss_policy_failure_is_left_to_the_caller() -> None:
     # Returns, so the caller re-raises exactly as before this change.
-    enterprise_boot.refuse_policy_boot(PlatformCompositionError("x"))
+    lts_boot.refuse_policy_boot(PlatformCompositionError("x"))
 
 
-def test_enterprise_non_composition_error_is_left_to_the_caller(enterprise: None) -> None:
-    enterprise_boot.refuse_policy_boot(ValueError("x"))
+def test_lts_non_composition_error_is_left_to_the_caller(lts: None) -> None:
+    lts_boot.refuse_policy_boot(ValueError("x"))
 
 
 @pytest.mark.asyncio
 async def test_run_gateway_with_a_failed_policy_exits_before_the_orchestrator(
-    enterprise: None,
+    lts: None,
     monkeypatch: pytest.MonkeyPatch,
     tcp_listens: list[Any],
     capsys: pytest.CaptureFixture[str],
@@ -452,13 +446,13 @@ async def test_run_gateway_with_a_failed_policy_exits_before_the_orchestrator(
     )
     with pytest.raises(SystemExit) as exc:
         await gateway.run_gateway(MagicMock(), test_mode=True)
-    assert exc.value.code == enterprise_boot.EXIT_CODE
+    assert exc.value.code == lts_boot.EXIT_CODE
     assert "central policy unreachable" in capsys.readouterr().err
     assert tcp_listens == []
 
 
 def test_cli_with_a_failed_policy_exits_before_the_gateway(
-    enterprise: None,
+    lts: None,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,
     tcp_listens: list[Any],
@@ -472,8 +466,8 @@ def test_cli_with_a_failed_policy_exits_before_the_gateway(
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     monkeypatch.setattr(cli, "boot_platform", failed_policy)
     # Signed in, so the failure is the rules, not the sign-in: it exits as before
-    # (the signed-out start is test_enterprise_signin_gateway.py).
-    monkeypatch.setattr("kiro_crew.enterprise_signin_gateway.signed_in", lambda: True)
+    # (the signed-out start is test_lts_signin_gateway.py).
+    monkeypatch.setattr("kiro_crew.lts_signin_gateway.signed_in", lambda: True)
     monkeypatch.setattr(cli, "maybe_reexec", lambda _argv: None)
     # Process-wide side effects of a real gateway start that this test skips.
     monkeypatch.setattr(
@@ -486,7 +480,7 @@ def test_cli_with_a_failed_policy_exits_before_the_gateway(
     monkeypatch.setattr(cli.sys, "argv", ["kirocrew", "gateway", "--test-mode", "--no-open"])
     with pytest.raises(SystemExit) as exc:
         cli.main()
-    assert exc.value.code == enterprise_boot.EXIT_CODE
+    assert exc.value.code == lts_boot.EXIT_CODE
     assert "central policy unreachable" in capsys.readouterr().err
     assert tcp_listens == []
 

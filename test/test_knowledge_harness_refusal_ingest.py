@@ -1,6 +1,6 @@
-"""An enterprise knowledge-pool refusal fails the ingest instead of storing it empty.
+"""An LTS knowledge-pool refusal fails the ingest instead of storing it empty.
 
-In an enterprise build the knowledge pool never falls back to the Kiro CLI harness
+In an LTS build the knowledge pool never falls back to the Kiro CLI harness
 (RFC D6): it raises :class:`KnowledgeHarnessUnavailable` instead. That refusal must
 reach the ingest, which ends the job ``failed`` with the refusal's remedy, writes no
 item, forgets the content hash (so the unchanged document is ingested again later),
@@ -28,8 +28,8 @@ _REPLY = json.dumps(
 
 
 @pytest.fixture
-def enterprise(monkeypatch):
-    monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+def lts(monkeypatch):
+    monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
 
 
 @pytest.fixture()
@@ -40,7 +40,7 @@ def kstore(tmp_path):
 
 
 class _Pool:
-    """A pool stand-in: refuses the way the enterprise pool does, or replies."""
+    """A pool stand-in: refuses the way the LTS pool does, or replies."""
 
     def __init__(self) -> None:
         self.refuse = True
@@ -92,7 +92,7 @@ def _props(kstore, source_id):
 
 
 class TestThePoolAndExtractorPassTheRefusalOn:
-    def test_send_batch_raises_the_refusal(self, enterprise):
+    def test_send_batch_raises_the_refusal(self, lts):
         pool = LLMPool.__new__(LLMPool)
 
         async def _send(prompt, timeout=0):
@@ -111,7 +111,7 @@ class TestThePoolAndExtractorPassTheRefusalOn:
         pool.send = _send  # type: ignore[method-assign]
         assert asyncio.run(pool.send_batch(["a", "b"])) == ["", ""]
 
-    def test_extractor_raises_the_refusal(self, enterprise, pool):
+    def test_extractor_raises_the_refusal(self, lts, pool):
         extractor = EntityExtractor(pool=pool)  # type: ignore[arg-type]
         with pytest.raises(KnowledgeHarnessUnavailable):
             asyncio.run(extractor.extract_batch(["text"]))
@@ -119,9 +119,9 @@ class TestThePoolAndExtractorPassTheRefusalOn:
             asyncio.run(extractor.extract("text"))
 
 
-class TestEnterpriseRefusalFailsTheIngest:
+class TestLtsRefusalFailsTheIngest:
     def test_new_file_job_fails_and_the_hash_is_not_kept(
-        self, enterprise, pipeline, pool, kstore, tmp_path
+        self, lts, pipeline, pool, kstore, tmp_path
     ):
         doc = tmp_path / "doc.md"
         doc.write_text("# Heading\n\nSome body text for the document.", encoding="utf-8")
@@ -140,7 +140,7 @@ class TestEnterpriseRefusalFailsTheIngest:
         assert _items(kstore, source["id"])
 
     def test_hash_cleanup_is_a_locked_delta_that_keeps_other_properties(
-        self, enterprise, pipeline, pool, kstore, tmp_path, monkeypatch
+        self, lts, pipeline, pool, kstore, tmp_path, monkeypatch
     ):
         doc = tmp_path / "doc.md"
         doc.write_text("# Heading\n\nSome body text for the document.", encoding="utf-8")
@@ -162,7 +162,7 @@ class TestEnterpriseRefusalFailsTheIngest:
         assert props.get("scan_paused") is True
         assert "content_hash" not in props
 
-    def test_replace_ingest_keeps_the_old_items(self, enterprise, pipeline, pool, kstore, tmp_path):
+    def test_replace_ingest_keeps_the_old_items(self, lts, pipeline, pool, kstore, tmp_path):
         doc = tmp_path / "doc.md"
         doc.write_text("# Heading\n\nThe first version.", encoding="utf-8")
         pool.refuse = False
@@ -178,7 +178,7 @@ class TestEnterpriseRefusalFailsTheIngest:
         assert _items(kstore, source["id"]) == old
         assert _job(kstore, source["id"])["status"] == "failed"
 
-    def test_text_job_fails_and_the_hash_is_not_kept(self, enterprise, pipeline, pool, kstore):
+    def test_text_job_fails_and_the_hash_is_not_kept(self, lts, pipeline, pool, kstore):
         with pytest.raises(KnowledgeHarnessUnavailable):
             asyncio.run(pipeline.ingest_text("Some body text for the note.", "note"))
         source = kstore.db.execute("SELECT id FROM sources WHERE name = 'note'").fetchone()

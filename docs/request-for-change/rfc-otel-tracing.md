@@ -567,7 +567,7 @@ the switch on, paths are kept as written.
 same captured content. The local sink stores it on disk under the telemetry directory, and with an endpoint set it
 leaves the host. Each switch's Settings description says so: "Sends this content to your traces endpoint and writes
 it to the local trace files." The switches sit in the Traces block in Settings → Privacy, behind phase 7's Feature
-Preview. On enterprise builds, which already ignore local `otlp_*` config, they are forced off.
+Preview. On LTS builds, which already ignore local `otlp_*` config, they are forced off.
 
 **Langfuse.** Langfuse's [OpenTelemetry mapping](https://langfuse.com/docs/opentelemetry/get-started) fills an
 observation's input and output from `gen_ai.tool.call.arguments` and `gen_ai.tool.call.result` on tool spans, so

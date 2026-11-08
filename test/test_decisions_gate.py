@@ -1554,7 +1554,7 @@ class TestResponseMetadataOnRow:
 
 class TestDecisionLists:
     """``capabilities.decisions`` ``models`` / ``points`` / ``endpoints`` lists, at
-    ``decide`` (RFC crew-enterprise-edition, appendix: decision models, decision
+    ``decide`` (RFC crew-lts-edition, appendix: decision models, decision
     kinds, decision endpoints). Real policy, real evaluator; only SEL is faked."""
 
     @pytest.fixture(autouse=True)

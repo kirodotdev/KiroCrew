@@ -522,7 +522,7 @@ def _url_payload_command(n: int) -> str:
 #: (owners, kits, revoked approvals, tool access, migration ledger), write-denied
 #: like the folder itself. Data, not rule logic: the matcher is unchanged.
 #:
-#: Raised by 3, from 32,613, for the enterprise install-tree write fence in
+#: Raised by 3, from 32,613, for the LTS install-tree write fence in
 #: ``paths``: one import and one ``or`` clause on the write gate, plus the blank line
 #: isort puts after the import. The matcher lives outside the package
 #: (``kiro_crew.edition_install_fence``).

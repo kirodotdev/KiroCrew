@@ -206,14 +206,14 @@ class TestProfileResolution:
         assert edition.EDITION == "oss"
 
 
-class TestEnterpriseEditionProfile:
-    """An enterprise build resolves enterprise before every other signal."""
+class TestLtsEditionProfile:
+    """An LTS build resolves enterprise before every other signal."""
 
     @pytest.mark.parametrize("value", ["standalone", "bogus", "", "enterprise"])
     def test_env_profile_cannot_change_it(
         self, cfg: KiroCrewConfig, monkeypatch, value: str
     ) -> None:
-        monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+        monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
         monkeypatch.setenv("KIROCREW_PROFILE", value)
         assert resolve_profile(cfg, entry_points=[]) == PROFILE_ENTERPRISE
 
@@ -221,23 +221,21 @@ class TestEnterpriseEditionProfile:
         self, cfg: KiroCrewConfig, monkeypatch
     ) -> None:
         # No entry point, no probe, no marker: still enterprise, so every
-        # enterprise gate stays on when bootstrap composes the core defaults.
-        monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+        # LTS gate stays on when bootstrap composes the core defaults.
+        monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
         monkeypatch.delenv("KIROCREW_PROFILE", raising=False)
         monkeypatch.delenv("KIROCREW_SSO_PROFILE_PROBE", raising=False)
         monkeypatch.delenv("KIROCREW_MIDWAY_PROFILE_PROBE", raising=False)
         monkeypatch.setattr("kiro_crew.platform.profile.Path.home", lambda: _FakeHome(False))
         assert resolve_profile(cfg, entry_points=[]) == PROFILE_ENTERPRISE
 
-    def test_enterprise_build_without_companion_fails_closed_at_discovery(
-        self, monkeypatch
-    ) -> None:
+    def test_lts_build_without_companion_fails_closed_at_discovery(self, monkeypatch) -> None:
         from kiro_crew.platform.discovery import (
             PlatformCompositionError,
             discover_companion_context,
         )
 
-        monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
+        monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
         monkeypatch.setenv("KIROCREW_PROFILE", "standalone")
         cfg = KiroCrewConfig()
         profile = resolve_profile(cfg, entry_points=[])
@@ -246,7 +244,7 @@ class TestEnterpriseEditionProfile:
         # The advice must not point at an override this build ignores.
         message = str(raised.value)
         assert "KIROCREW_PROFILE=standalone" not in message
-        assert "enterprise-edition build" in message
+        assert "LTS-edition build" in message
 
     def test_oss_build_keeps_the_standalone_advice(self, monkeypatch) -> None:
         from kiro_crew.platform.discovery import (
@@ -356,19 +354,19 @@ class TestBootstrapAndDiscovery:
             bootstrap_context(cfg)
 
 
-class TestEnterpriseBuildWithoutCompanion:
-    """An enterprise build with no companion boots on the core defaults (RFC D1).
+class TestLtsBuildWithoutCompanion:
+    """An LTS build with no companion boots on the core defaults (RFC D1).
 
     Any installed companion still goes through discovery, so the companion path,
     including every fail-closed refusal, is unchanged.
     """
 
     @staticmethod
-    def _enterprise_build(monkeypatch) -> None:
+    def _lts_build(monkeypatch) -> None:
         from kiro_crew.platform import bootstrap as bootstrap_mod
 
-        monkeypatch.setattr("kiro_crew.edition.EDITION", "enterprise")
-        # The real enterprise load fetches the organisation's policy; that fetch is
+        monkeypatch.setattr("kiro_crew.edition.EDITION", "lts")
+        # The real LTS load fetches the organisation's policy; that fetch is
         # covered elsewhere and is not what these tests measure.
         monkeypatch.setattr(bootstrap_mod, "load_security_policy", lambda: None)
 
@@ -380,7 +378,7 @@ class TestEnterpriseBuildWithoutCompanion:
     def test_boots_on_core_defaults_under_the_enterprise_profile(
         self, cfg: KiroCrewConfig, monkeypatch, env_profile: str
     ) -> None:
-        self._enterprise_build(monkeypatch)
+        self._lts_build(monkeypatch)
         from kiro_crew.platform import bootstrap as bootstrap_mod
         from kiro_crew.platform import current_context
         from kiro_crew.platform.defaults import DefaultIdentityProvider
@@ -391,14 +389,14 @@ class TestEnterpriseBuildWithoutCompanion:
 
         ctx = bootstrap_mod.bootstrap_context(cfg)
 
-        # The env var cannot lower the profile, so every enterprise gate stays on.
+        # The env var cannot lower the profile, so every LTS gate stays on.
         assert ctx.profile == PROFILE_ENTERPRISE
         assert ctx.is_enterprise
         assert isinstance(ctx.identity, DefaultIdentityProvider)
         assert current_context() is ctx
 
     def test_installed_companion_still_composes(self, cfg: KiroCrewConfig, monkeypatch) -> None:
-        self._enterprise_build(monkeypatch)
+        self._lts_build(monkeypatch)
         from kiro_crew.platform import bootstrap as bootstrap_mod
 
         companion = build_default_context(cfg, profile=PROFILE_ENTERPRISE)
@@ -409,7 +407,7 @@ class TestEnterpriseBuildWithoutCompanion:
         assert bootstrap_mod.bootstrap_context(cfg) is companion
 
     def test_broken_companion_still_fails_closed(self, cfg: KiroCrewConfig, monkeypatch) -> None:
-        self._enterprise_build(monkeypatch)
+        self._lts_build(monkeypatch)
         from kiro_crew.platform import bootstrap as bootstrap_mod
 
         def _broken(*_args, **_kwargs):
@@ -423,7 +421,7 @@ class TestEnterpriseBuildWithoutCompanion:
     def test_mismatched_companion_still_fails_closed(
         self, cfg: KiroCrewConfig, monkeypatch
     ) -> None:
-        self._enterprise_build(monkeypatch)
+        self._lts_build(monkeypatch)
         import dataclasses
 
         from kiro_crew.platform import bootstrap as bootstrap_mod
@@ -440,7 +438,7 @@ class TestEnterpriseBuildWithoutCompanion:
             bootstrap_mod.bootstrap_context(cfg)
 
     def test_telemetry_uses_the_core_provider(self, cfg: KiroCrewConfig, monkeypatch) -> None:
-        self._enterprise_build(monkeypatch)
+        self._lts_build(monkeypatch)
         from kiro_crew.metrics.otlp_governance import UNEVALUABLE
         from kiro_crew.platform import bootstrap as bootstrap_mod
         from kiro_crew.platform.defaults import DefaultTelemetryProvider
@@ -472,7 +470,7 @@ class TestEnterpriseBuildWithoutCompanion:
 
     def test_unreadable_entry_points_fail_closed(self, cfg: KiroCrewConfig, monkeypatch) -> None:
         # A scan that cannot read the metadata must not read as "no companion".
-        self._enterprise_build(monkeypatch)
+        self._lts_build(monkeypatch)
         from kiro_crew.platform import bootstrap as bootstrap_mod
 
         def _corrupt():
@@ -501,7 +499,7 @@ class TestEnterpriseBuildWithoutCompanion:
     def test_oss_build_with_enterprise_profile_still_fails_closed(
         self, cfg: KiroCrewConfig, monkeypatch
     ) -> None:
-        self._enterprise_build(monkeypatch)
+        self._lts_build(monkeypatch)
         from kiro_crew.platform import bootstrap as bootstrap_mod
 
         monkeypatch.setattr("kiro_crew.edition.EDITION", "oss")
