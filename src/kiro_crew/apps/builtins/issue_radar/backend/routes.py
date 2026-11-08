@@ -162,6 +162,7 @@ from .http_routes.investigation import (  # noqa: F401
     _handle_get_investigation,
     _handle_put_investigation,
     _item_kind,
+    put_investigation,
 )
 from .http_routes.issue_writes import (  # noqa: F401
     MAX_ASSIGNEES,

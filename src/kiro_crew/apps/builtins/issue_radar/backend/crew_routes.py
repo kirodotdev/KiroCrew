@@ -69,11 +69,13 @@ missing record is not a conflict.
 
 WHO A CREW IS (the identity decision). Exactly two routes are reachable by an
 AGENT — ``GET /crew`` and ``PUT /crew/work``, the pair behind the
-``issue_radar_crew_read`` / ``issue_radar_crew_record`` MCP tools. For an agent
-caller (loopback + ``X-Internal-Secret``, which the auth middleware marks as
-``request["internal_auth"]``), owner, repo and crew id are derived from the
-AUTHENTICATED SESSION KEY: ``X-Session-Key`` is matched against the crew record's
-``slot_key``. They are never taken from the request. That is the whole security
+``issue_radar_crew_read`` / ``issue_radar_crew_record`` agent tools, which reach
+them in-process (:func:`crew_read_for_session`, :func:`crew_work_for_session`) from
+the app's declared ``agentTools`` route. For an agent caller (the forwarded tool
+call, which the auth middleware marks as ``request["internal_auth"]``), owner, repo
+and crew id are derived from the AUTHENTICATED SESSION KEY: ``X-Session-Key``, the
+strictly resolved key the core sends for a ``strictSession`` tool, is matched
+against the crew record's ``slot_key``. They are never taken from the request. That is the whole security
 property — an agent cannot NAME a repo, so it cannot reach a same-numbered issue
 in another repo, and it cannot reach another crew's ledger at all (which would
 also defeat the store's per-crew "one editing item" invariant). A query or body
@@ -82,13 +84,11 @@ a cross-crew attempt must fail where someone can see it. The dashboard, which
 authenticates with a cookie, keeps passing ``owner``/``repo``/``id`` unchanged.
 
 Every OTHER crew route refuses an internal-secret caller outright — see
-``_AGENT_REACHABLE``. This gate lives here and not in the middleware allowlist
-because the allowlist cannot express it: ``dashboard.server`` entries are matched
-``path == p or path.startswith(p + "/")`` and carry no method, so the ``/crew``
-entry admits ``/crew/pause`` as well, and no path-only entry can separate
-``GET /crew`` from ``PUT``/``DELETE /crew``. Deny-by-default HERE is what makes
-"those two endpoints and only those two" true, including for any route added under
-``/crew/`` later.
+``_AGENT_REACHABLE``. The gateway admits no internal-secret caller under
+``/api/apps/issue-radar`` at all; this gate stays deny-by-default anyway, because it
+is the ONLY place a method can be distinguished (``GET /crew`` from
+``PUT``/``DELETE /crew``), so "those two endpoints and only those two" holds here
+whatever the gateway admits, including for any route added under ``/crew/`` later.
 """
 
 from __future__ import annotations
@@ -1007,23 +1007,32 @@ async def _handle_crew_work(request: web.Request) -> web.Response:
         body, early = await _json_object(request)
         if early is not None:
             return early
-        key, crew, early = await _session_identity(
-            request,
-            {
-                "owner": routes._str_field(body, "owner"),
-                "repo": routes._str_field(body, "repo"),
-                "id": routes._str_field(body, "crew_id"),
-            },
-        )
-        if early is not None:
-            return early
-        crew_id = str(crew.get("id") or "")
-    else:
-        body, key, early = await _body_preamble(request, "issue_radar.crew_work")
-        if early is not None:
-            return early
-        crew_id = routes._str_field(body, "crew_id")
+        return await _crew_work_as_session(request, body)
+    body, key, early = await _body_preamble(request, "issue_radar.crew_work")
+    if early is not None:
+        return early
+    return await _crew_work(request, key, routes._str_field(body, "crew_id"), body)
 
+
+async def _crew_work_as_session(request: web.Request, body: dict[str, Any]) -> web.Response:
+    """``PUT /crew/work`` for the crew the calling session IS: identity from ``X-Session-Key``."""
+    key, crew, early = await _session_identity(
+        request,
+        {
+            "owner": routes._str_field(body, "owner"),
+            "repo": routes._str_field(body, "repo"),
+            "id": routes._str_field(body, "crew_id"),
+        },
+    )
+    if early is not None:
+        return early
+    return await _crew_work(request, key, str(crew.get("id") or ""), body)
+
+
+async def _crew_work(
+    request: web.Request, key: provider.RepoKey, crew_id: str, body: dict[str, Any]
+) -> web.Response:
+    """The body of ``PUT /crew/work`` once the caller's crew is known (see that route)."""
     # `number` is OPTIONAL, and its ABSENCE is what selects a crew-level line: a
     # step that belongs to no issue, which today is only "swept the queue and took
     # nothing". Presence, not truthiness -- a present-but-invalid number is still a
@@ -1376,6 +1385,37 @@ async def _handle_issue_comment(request: web.Request) -> web.Response:
         "comment_id": result.get("id"),
         "url": result.get("url"),
     })
+
+
+# ── the crew agent tools' entry points ──────────────────────────────────────
+
+
+async def crew_read_for_session(request: web.Request) -> web.Response:
+    """``GET /crew`` for the calling session's own crew: the read behind
+    ``issue_radar_crew_read``, called in-process by ``backend/agent_tools.py``.
+
+    *request* is the forwarded agent tool call: ``internal_auth`` and the strictly
+    resolved ``X-Session-Key`` the core sends for a ``strictSession`` tool. It takes the
+    agent leg of :func:`_handle_crew_read` (the identity comes from the session, never
+    from the request), with the same 409/413/503 mapping every crew route has.
+    """
+    return await _crew_conflict(_handle_crew_read)(request)
+
+
+async def crew_work_for_session(request: web.Request, body: dict[str, Any]) -> web.Response:
+    """``PUT /crew/work`` with *body*, for the calling session's own crew: the write
+    behind ``issue_radar_crew_record`` (see :func:`crew_read_for_session`)."""
+    if _holds_non_finite_number(body):
+        return web.json_response(
+            {"error": "request body must not contain Infinity, -Infinity or NaN",
+             "code": "non_finite_number"},
+            status=400,
+        )
+
+    async def _work(req: web.Request) -> web.Response:
+        return await _crew_work_as_session(req, body)
+
+    return await _crew_conflict(_work)(request)
 
 
 # ── registration ────────────────────────────────────────────────────────────

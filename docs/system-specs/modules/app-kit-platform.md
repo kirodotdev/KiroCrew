@@ -739,8 +739,8 @@ never another scanner. An app that core never calls, as with Auto-Improvement, n
 seam: its gate pins that direction and the reasoned rows left (see `auto-improvement.md`,
 "Repository boundary").
 Issue Radar's gate (`test/test_core_issue_radar_decoupling.py`) pins the rows
-that still name it, chiefly its three agent tools, which still run in the core until the
-app serves them through the manifest `agentTools` seam (section 30.1; `issue-radar.md`,
+that still name it; its three agent tools are its own, declared in its manifest and
+served by its own route through the `agentTools` seam (section 30.1; `issue-radar.md`,
 "Repository boundary").
 
 ## 0. Three-axis classification: origin, resources, lifecycle
@@ -6044,7 +6044,15 @@ the rules, and `AppManifest.validate` refuses an install that breaks one:
   `maximum`), `boolean`, and arrays of strings or integers (`maxItems`, default and
   ceiling 256, item `maxLength`); `additionalProperties` may only be false, and
   `required` names declared arguments. A bool is refused where an integer is declared,
-  as an argument or as an array item.
+  as an argument or as an array item;
+- `strictSession`, when present, is `true` or `false` (default `false`). A
+  `strictSession` tool is one whose call acts as the calling session: the core forwards
+  it only from a session it identifies directly (`mcp_core.require_strict_session_key`,
+  never the lenient ancestor walk, under which a subagent resolves to its parent's slot)
+  and sends that session's key as `X-Session-Key`. The flag is not in the descriptor.
+  Only an app whose routes run in the gateway may declare it: `AppManifest.validate`
+  refuses it on a process-backed app (`app_frame.process_backed`), because the signed
+  proxy strips `X-Session-Key` and such an app would never receive the key.
 
 The block is in `signing_payload` (a description is text every agent reads as an
 instruction, and the route decides where calls go), in `to_dict` and in the built-in
@@ -6076,6 +6084,11 @@ in it names an app:
 | `mcp_core._validate_args` | checks a call against the declared schema through the field engine every core tool uses (`app_tools.tool_schema`): strings sanitized and bounded, enums held, an undeclared argument refused |
 | `dashboard/handlers/app_agent_tools.py`, `POST /api/app-tools/call` | decides the call (below) |
 
+For a `strictSession` tool, `app_agent_tool` resolves the caller through
+`require_strict_session_key` and posts with that key; with none it returns the refusal
+and posts nothing, so `mcp_tools/app_tools.py` is in `REFLEXIVE_TOOL_MODULES`. Any other
+tool's post carries the lenient key, as every core post does.
+
 A name any other `kirocrew-core` domain declares is never an app's: the domain drops it,
 so a core tool keeps its name, its schema and its handler.
 
@@ -6090,8 +6103,14 @@ the signed reverse proxy for a process-backed app (`/apps/<app>/api/<route>`, pr
 already read: `request.can_read_body` is False once a payload is at EOF), or the route registry for an app
 whose routes run in the gateway (`/api/apps/<app>/<route>`, a route the app registered
 through `RouteRegistry` and never a core route; a built-in that still mounts its routes
-on the gateway router directly is not reached this way). The app's answer is relayed unchanged; `app_agent_tool` redacts
+on the gateway router directly is not reached this way, so it registers its
+`agentTools` route through `backend.hooks.routes` beside them). The forwarded request
+keeps its headers, so an app whose routes run in the gateway reads a `strictSession`
+caller's `X-Session-Key` from it; a process-backed app cannot declare `strictSession`.
+The app's answer is relayed unchanged; `app_agent_tool` redacts
 it and then cuts it at the tool's `maxResultChars`, so a cut never splits a credential.
+An answer of exactly `{"text": <string>}` is that text, so a tool can answer in prose;
+any other answer is its JSON.
 No app route is admitted to internal-secret callers, so the one path in is the declared
 route, with declared arguments.
 
@@ -6102,6 +6121,7 @@ route, with declared arguments.
 | a tool no first-party app declares | 404 `unknown_tool` |
 | arguments outside the declaration, or not in validated form | 400 `invalid_arguments` |
 | the declaring app is not enabled | 403 `app_not_enabled` |
+| a `strictSession` tool's call without an `X-Session-Key` | 403 `session_required` |
 
 **One core table still names tools one by one.** The display-title table
 (`data/mcp_tool_titles.json`) is read by the chat's tool-call label on both sides, and
@@ -6113,7 +6133,9 @@ grant; its descriptor still carries its own `title`.
 
 **Level.** The seam is App Kit seam level 2 (`APP_SDK_LEVEL`). A host below it reads
 `agentTools` as an unknown key, so an app that declares tools installs there without
-them.
+them. `strictSession` and the text answer joined the seam before any release carried
+level 2; a level-3 build from before them refuses a block that declares
+`strictSession` as an unknown key, and shows a text answer as its JSON.
 
 Design Tweak's `design_tweak_update_thread` is the one shipped tool on the seam: its
 `app.json` declares it, with the description and schema it always had plus each string's
@@ -6128,19 +6150,31 @@ module or script imports the app, and the only core strings naming it are the
 security-posture redaction rows for its three backend modules, which leave with those
 files. The UI half is `website/src/apps/design-tweak/designTweakBoundary.test.ts`.
 
-Ops Mission Control's `ops_mission_control_api` and Issue Radar's three tools still run
-in the core (`mcp_tools/apps.py`, their validation rows, their internal paths and the
-`channel.py` deny), unchanged for users. They move onto this seam when each app serves
-its own route: for Ops Mission Control the GET/POST dispatcher over its allowlist and
-the per-operation channel deny; for Issue Radar the three tools, the
-strictly-identified crew session the crew tools resolve, and the `radar` crew-log fold.
-`test/test_core_ops_mission_control_decoupling.py` and
-`test/test_core_issue_radar_decoupling.py` pin those rows (see `ops-mission-control.md`
-and `issue-radar.md`, "Repository boundary").
+Issue Radar's `issue_radar_record_investigation`, `issue_radar_crew_read` and
+`issue_radar_crew_record` are on the seam too, with the names, descriptions and
+arguments they had in the core: its `app.json` declares them (the two crew tools
+`strictSession`, with a 60,000-character cap), its `backend/agent_tools.py` serves
+`POST /agent-tools` through `backend.hooks.routes` and answers `{"text": ...}`, and it
+runs the crew read, the crew write and the investigation write in-process, so no
+`/api/apps/issue-radar` path is admitted to internal-secret callers. What its old core
+schema checked beyond this seam's subset (a `base_sha` pattern and the event/phase
+coupling) the app checks, with the same refusal text. `test/test_core_issue_radar_decoupling.py`
+pins the rows that still name it, and `test/test_issue_radar_crew_mcp_tools.py` and
+`test/test_issue_radar_investigation_tool.py` drive the tools through the real
+`kirocrew-core` call path (`issue-radar.md`, "Repository boundary"). Its `radar` crew-log
+fold is still core's: there is no app-keyed fold seam yet.
+
+Ops Mission Control's `ops_mission_control_api` still runs in the core
+(`mcp_tools/apps.py`, its validation row, its internal paths and the `channel.py`
+deny), unchanged for users. It moves onto this seam when the app serves its own route:
+the GET/POST dispatcher over its allowlist and the per-operation channel deny.
+`test/test_core_ops_mission_control_decoupling.py` pins those rows (see
+`ops-mission-control.md`, "Repository boundary").
 
 Writers: `apps/manifest_agent_tools.py`, `apps/manifest.py`, `apps/discovery.py`,
 `apps/app_agent_tools.py`, `mcp_tools/app_tools.py`, `mcp_tools/__init__.py`,
-`mcp_core.py` (`_validate_args`), `dashboard/handlers/app_agent_tools.py`,
+`mcp_core.py` (`_validate_args`), `mcp_core_parts/identity.py`
+(`REFLEXIVE_TOOL_MODULES`), `dashboard/handlers/app_agent_tools.py`,
 `dashboard/server_runtime/mcp_routes.py`, `dashboard/server_internal_paths.py`,
 `apps/app_sdk_level.py`, `website/src/app-sdk/sdkLevel.ts`.
 

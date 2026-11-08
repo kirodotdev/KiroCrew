@@ -11,6 +11,8 @@ which holds the gateway's internal secret:
   fail-open read, as ``apps.advertised``);
 - ``HANDLERS`` answers each declared name with ONE core handler, :func:`app_agent_tool`,
   which posts the validated call to the gateway's ``/api/app-tools/call`` and returns the redacted answer cut at the tool's declared cap.
+  A tool declared ``strictSession`` is posted only from a strictly identified session,
+  with that session's key; an answer of exactly ``{"text": <string>}`` is that text.
 
 It is the LAST domain in ``DOMAIN_MODULES``, and it drops any declared name another
 domain already has: a core tool always keeps its name, its handler and its schema.
@@ -102,20 +104,47 @@ def tool_schema(name: str) -> Any:
     return app_agent_tools.build_tool_schema(tool) if tool is not None else None
 
 
+#: What a ``strictSession`` tool answers when this session cannot be identified directly.
+_STRICT_SESSION_REFUSAL = (
+    "Error: this tool needs a directly-identified dashboard session. A subagent "
+    "resolves to its parent's session, which would act as the parent. Run this "
+    "from the session the work belongs to."
+)
+
+
+def _answer_text(resp: Any) -> str:
+    """The tool result for the app's answer: its ``text`` when that is all it sent, else JSON."""
+    if isinstance(resp, dict) and set(resp) == {"text"} and isinstance(resp["text"], str):
+        return resp["text"]
+    return json.dumps(resp, ensure_ascii=False, default=str)
+
+
 def app_agent_tool(name: str, args: dict[str, Any]) -> str:
     """Forward one call of an app's declared tool to the gateway, which hands it to the app.
 
     *args* has already passed the declared schema (``mcp_core._validate_args`` reads
     :func:`tool_schema`). The gateway checks it again, resolves the app that declares
-    *name* and posts ``{"tool", "arguments"}`` to that app's declared route. The answer
-    echoes app state no inbound scrub touched, so it is redacted here, then cut at the
-    tool's declared cap: redacting first means a cut can never split a credential.
+    *name* and posts ``{"tool", "arguments"}`` to that app's declared route. A
+    ``strictSession`` tool is posted with the strictly resolved session key, and not at
+    all when there is none. The answer echoes app state no inbound scrub touched, so it
+    is redacted here, then cut at the tool's declared cap: redacting first means a cut
+    can never split a credential. An app that answers ``{"text": <string>}`` and
+    nothing else gets that text as the result, so a tool can answer in prose.
     """
     tool = declared(name)
     if tool is None:
         return f"Error: no installed app declares the tool {name!r}."
-    resp = mcp_core._post(_CALL_PATH, {"tool": name, "arguments": args})
-    text = redact(json.dumps(resp, ensure_ascii=False, default=str))
+    body = {"tool": name, "arguments": args}
+    if tool.decl.strict_session:
+        # The key the gate returned is the key on the wire: re-resolving at the post
+        # through the lenient walk would check one session and act as another.
+        session_key, refusal = mcp_core.require_strict_session_key(_STRICT_SESSION_REFUSAL)
+        if not session_key:
+            return refusal
+        resp = mcp_core._post(_CALL_PATH, body, session_key=session_key)
+    else:
+        resp = mcp_core._post(_CALL_PATH, body)
+    text = redact(_answer_text(resp))
     cap = tool.decl.max_result_chars
     if len(text) > cap:
         text = text[:cap] + f"\n… truncated ({len(text)} chars total)."
