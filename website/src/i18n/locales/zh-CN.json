@@ -9187,6 +9187,7 @@
     },
     "tunnelStatus": {
       "connected": "已连接",
+      "connected_with_error": "已连接（有错误）",
       "connecting": "连接中…",
       "error": "错误",
       "reconnect_attempt": "第 {{n}} 次重连尝试",
