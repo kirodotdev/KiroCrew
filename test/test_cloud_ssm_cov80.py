@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -59,6 +60,35 @@ def fake_platform(monkeypatch):
     return _apply
 
 
+# GNU `sha256sum -c` reading "<hex>  <path>" lines from stdin: exit 0 only when
+# every file matches. Any other use exits 2, so a one-liner that grew another
+# sha256sum call is caught.
+_GNU_SHA256SUM_CHECK = """import hashlib, sys
+if sys.argv[1:] != ["-c"]:
+    sys.exit(2)
+ok = True
+for line in sys.stdin.read().splitlines():
+    digest, path = line.split("  ", 1)
+    with open(path, "rb") as f:
+        ok = ok and hashlib.sha256(f.read()).hexdigest() == digest
+sys.exit(0 if ok else 1)
+"""
+
+
+def _host_has_gnu_sha256sum() -> bool:
+    if shutil.which("sha256sum") is None:
+        return False
+    probe = subprocess.run(
+        ["sha256sum", "--version"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=FALLBACK_TIMEOUT_SECS,
+        check=False,
+    )
+    return probe.returncode == 0 and "GNU" in probe.stdout
+
+
 class TestInstallCommandHint:
     def test_macos_prefers_brew_when_present(self, fake_platform) -> None:
         fake_platform("Darwin", "arm64", available=("brew",))
@@ -98,8 +128,8 @@ class TestInstallCommandHint:
         assert '| sha256sum -c && sudo dnf install -y "$p"' in cmd
 
     @pytest.mark.skipif(
-        os.name == "nt" or shutil.which("bash") is None or shutil.which("sha256sum") is None,
-        reason="runs the POSIX one-liner with sha256sum",
+        os.name == "nt" or shutil.which("bash") is None,
+        reason="runs the POSIX one-liner",
     )
     @pytest.mark.parametrize("matches", [True, False])
     def test_deb_one_liner_reaches_sudo_only_on_a_matching_download(
@@ -109,6 +139,8 @@ class TestInstallCommandHint:
         payload.write_bytes(b"pretend deb")
         pinned = hashlib.sha256(payload.read_bytes()).hexdigest() if matches else "0" * 64
         monkeypatch.setitem(ssm._SSM_PLUGIN_SHA256, "ubuntu_64bit", pinned)
+        # Probed before fake_platform: it patches the shared `shutil.which`.
+        gnu_sha256sum = _host_has_gnu_sha256sum()
         fake_platform("Linux", "x86_64", available=("dpkg",))
         cmd = ssm.session_manager_plugin_install_command()
         marker = tmp_path / "sudo-ran"
@@ -120,6 +152,16 @@ class TestInstallCommandHint:
             encoding="utf-8",
         )
         (stubs / "sudo").write_text(f'#!/bin/sh\ntouch "{marker}"\n', encoding="utf-8")
+        if not gnu_sha256sum:
+            # The one-liner targets Debian's GNU `sha256sum -c`, which reads its
+            # list from stdin. macOS ships a BSD `sha256sum` that prints its
+            # usage for that, so stand in for the GNU check on such a host.
+            checker = tmp_path / "sha256sum_check.py"
+            checker.write_text(_GNU_SHA256SUM_CHECK, encoding="utf-8")
+            (stubs / "sha256sum").write_text(
+                f'#!/bin/sh\nexec {shlex.quote(sys.executable)} {shlex.quote(str(checker))} "$@"\n',
+                encoding="utf-8",
+            )
         for stub in stubs.iterdir():
             stub.chmod(0o755)
         proc = subprocess.run(
