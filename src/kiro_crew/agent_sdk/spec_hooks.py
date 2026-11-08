@@ -344,6 +344,46 @@ def _fused_mcp_name(name: str) -> str | None:
     return None
 
 
+def _kas_write_id(tool_names: Sequence[str]) -> str:
+    """The KAS id of a call whose kiro-cli name is ``fs_write``.
+
+    The first name is the kiro-cli row; a KAS id other than ``fs_write`` in that row
+    (``str_replace``, ``fs_append``, ``delete_file``) follows it. A call none
+    follows is ``fs_write`` itself, or a harness's own write tool.
+    """
+    # circular import: see spec_hook_tool_names.
+    from kiro_crew.acp.kas_permissions import KAS_TOOL_IDS_BY_KIRO_TOOL
+
+    row = KAS_TOOL_IDS_BY_KIRO_TOOL.get("fs_write") or ()
+    return next((n for n in tool_names[1:] if n in row and n != "fs_write"), "fs_write")
+
+
+def _kiro_cli_write_input(tool_input: dict, kas_id: str) -> dict:
+    """*tool_input* of a write call, plus the keys kiro-cli's ``write`` states.
+
+    kiro-cli V2's ``write`` input is tagged by ``command``
+    (``agent/src/agent/tools/fs_write.rs``): ``create`` with ``path`` and
+    ``content``, ``strReplace`` with ``path``, ``oldStr``, ``newStr`` and
+    ``replaceAll``. KAS's ``fs_write`` states ``path`` and ``text``, and its
+    ``str_replace`` ``path``, ``oldStr``, ``newStr`` and ``replace_all``
+    (``tools/default/fs-write.ts``, ``str-replace.ts``). So a content or path guard
+    written for kiro-cli finds its keys. Only those two map: KAS's ``fs_append``
+    also states ``path`` and ``text``, and calling it ``create`` would tell a hook
+    the fragment is the whole file, so it, like ``delete_file``, keeps its input
+    as it is. KAS's own keys stay, and a key the input already has is never
+    overwritten.
+    """
+    out = dict(tool_input)
+    if kas_id == "str_replace" and "oldStr" in tool_input and "newStr" in tool_input:
+        out.setdefault("command", "strReplace")
+        if "replace_all" in tool_input:
+            out.setdefault("replaceAll", tool_input["replace_all"])
+    elif kas_id == "fs_write" and "text" in tool_input:
+        out.setdefault("command", "create")
+        out.setdefault("content", tool_input["text"])
+    return out
+
+
 def kiro_cli_hook_payload(payload: dict, event: str, tool_names: Sequence[str] | None) -> dict:
     """*payload* as kiro-cli writes an agent spec hook's stdin.
 
@@ -379,6 +419,10 @@ def kiro_cli_hook_payload(payload: dict, event: str, tool_names: Sequence[str] |
     if builtin is not None:
         out["tool_name"], tags = builtin
         out["tool_tags"] = list(tags)
+        if first == "fs_write" and isinstance(payload.get("tool_input"), dict):
+            out["tool_input"] = _kiro_cli_write_input(
+                payload["tool_input"], _kas_write_id(tool_names)
+            )
         return out
     mcp = next((full for n in tool_names if (full := _explicit_mcp_name(n))), None) or next(
         (full for n in tool_names if (full := _fused_mcp_name(n))), None
