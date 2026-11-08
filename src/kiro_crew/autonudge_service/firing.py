@@ -38,6 +38,7 @@ from kiro_crew.autonudge_service.model import (
     _CONSECUTIVE_FAILURE_STANDDOWN_AFTER,
     _START_FAILURE_BACKOFF_AFTER,
     _START_FAILURE_STANDDOWN_AFTER,
+    CLAIM_UNSAVED_REASON,
     CONSECUTIVE_FAILURE_REASON,
     PERSON_WAIT_HOLD,
     SERVICE_SHUTTING_DOWN_MESSAGE,
@@ -386,8 +387,8 @@ async def _settle_refused_claim(
     claim_ts: float,
     claimed_ts: float,
     admission: _MutationAdmission | None,
-) -> bool:
-    """Release a refused turn's claim, or record it undelivered; True if the claim stays.
+) -> None:
+    """Release a refused turn's claim, or record it undelivered and stop the loop.
 
     *admission* is the firing timer's lease: this runs in its own task, which a
     lease naming the timer as its owner would not otherwise authorize once
@@ -403,6 +404,13 @@ async def _settle_refused_claim(
         svc._store.delivering_claim[loop.id] = (claim_from + 1, claimed_ts)
         loop.last_fire_ts = claimed_ts
         svc._store.undelivered_claim.add(loop.id)
+        # The loop stops, in the qualifier's own write, under a reason the popover can show,
+        # instead of reading as running with nothing armed. Shown whatever that write
+        # returns: the store's refusal is why it stopped, and a restart that misses the
+        # stop loads the claim as ``interrupted_cycle``, paused too.
+        stopped = loop.active
+        if stopped:
+            loop.active, loop.next_due_ts, loop.stopped_reason = False, 0.0, CLAIM_UNSAVED_REASON
         try:
             await svc._persist_locked(admission=admission)
         except Exception as qualifier_error:
@@ -420,8 +428,8 @@ async def _settle_refused_claim(
                 loop.id,
                 exc,
             )
-        return True
-    return False
+        if stopped and svc._loops.get(loop.id) is loop:
+            svc._emit("updated", loop)
 
 
 async def _run_fire_cycle(self: AutoNudgeService, loop: NudgeLoop) -> None:
@@ -548,7 +556,6 @@ async def _settle_fire_cycle(
     dispatch (:func:`gate._delivery_basis`), recorded here on a delivered turn so a
     repeat of the same short reading can be held instead of delivered again.
     """
-    rollback_undurable = False
     claimed_wake = loop.id in self._pending_monitor_wake
     # Taken, not merely tested: the claim carries the wake's own text, and the
     # re-owe below has to put the same text back rather than an empty one.
@@ -627,7 +634,7 @@ async def _settle_fire_cycle(
                 await asyncio.shield(settlement)
             except asyncio.CancelledError:
                 settle_cancelled = True
-        rollback_undurable = settlement.result()
+        settlement.result()
         if settle_cancelled:
             raise asyncio.CancelledError
     if delivered and loop.monitor is not None and loop.monitor.terminal_pending:
@@ -688,9 +695,9 @@ async def _settle_fire_cycle(
         _record_delivered_reading(loop, delivery_basis)
     if not delivered:
         # If the fire path already removed the loop (e.g. slot missing →
-        # remove()), do NOT resurrect it with a fresh timer — that would
-        # orphan-poll forever. Clear the streak and stop.
-        if loop.id not in self._loops:
+        # remove()), or a reload replaced it, do NOT resurrect it with a fresh
+        # timer — that would orphan-poll forever. Clear the streak and stop.
+        if self._loops.get(loop.id) is not loop:
             self._rearm_fail_count.pop(loop.id, None)
             return
         # A concurrent update() may have DEACTIVATED this loop while the
@@ -698,17 +705,13 @@ async def _settle_fire_cycle(
         # cancel to avoid killing the turn, so the failure path must honour
         # the pause instead of re-arming. Otherwise "stop the loop" during a
         # cycle whose delivery then fails silently resumes unattended tool
-        # execution.
+        # execution. The refused claim's settlement stops it here too when the
+        # store would not take the release.
         if not loop.active:
             logger.info(
                 "AutoNudge: loop %s was deactivated mid-fire — not re-arming",
                 loop.id,
             )
-            self._rearm_fail_count.pop(loop.id, None)
-            return
-        if rollback_undurable:
-            # The claim is still on disk, so re-activation will charge this cycle.
-            # Re-arming would keep firing into a store that cannot record the outcome.
             self._rearm_fail_count.pop(loop.id, None)
             return
         # Slot was busy mid-turn, or the fire callback errored. Do NOT end

@@ -6743,6 +6743,8 @@
       "paused_approval_hold": "Pausado · uma aprovação neste chat expirou. Toque em Play ou envie uma mensagem para retomar.",
       "waiting_on_person_hold": "Esperando por você · cada tarefa aberta precisa da sua resposta neste chat. Os lembretes voltam quando um worker reporta.",
       "paused_last_cycle_failed": "Pausado · o último ciclo não pôde rodar",
+      "paused_interrupted_cycle": "Pausado · um reinício interrompeu o último ciclo. Retomar continua o loop.",
+      "paused_claim_unsaved": "Pausado · não foi possível salvar o progresso. Retomar continua o loop.",
       "clear_goal_for_good": "Limpar",
       "cancel": "Cancelar",
       "clear_goal_question": "Excluir este objetivo definitivamente?",

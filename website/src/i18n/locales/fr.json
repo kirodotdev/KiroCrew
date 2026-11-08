@@ -6743,6 +6743,8 @@
       "paused_approval_hold": "En pause · une approbation de ce chat a expiré. Appuie sur Play ou envoie un message pour reprendre.",
       "waiting_on_person_hold": "En attente de toi · chaque tâche ouverte attend ta réponse dans ce chat. Les relances reprennent dès qu'un worker fait son rapport.",
       "paused_last_cycle_failed": "En pause · le dernier cycle n’a pas pu s’exécuter",
+      "paused_interrupted_cycle": "En pause · un redémarrage a interrompu le dernier cycle. Reprendre relance la boucle.",
+      "paused_claim_unsaved": "En pause · sa progression n’a pas pu être enregistrée. Reprendre relance la boucle.",
       "clear_goal_for_good": "Effacer",
       "cancel": "Annuler",
       "clear_goal_question": "Supprimer définitivement cet objectif ?",

@@ -134,6 +134,11 @@ STRUCTURAL_TERMINAL_REASON = "structural_terminal"
 MODEL_REFUSED_REASON = "model_refused"
 
 
+# Persisted reason for a loop stopped because a refused turn's cycle claim could not be
+# released in the store. Resumable: the next fire after a revival takes a fresh claim.
+CLAIM_UNSAVED_REASON = "claim_unsaved"
+
+
 def new_goal_token() -> str:
     """A fresh opaque identity for a goal write.
 
