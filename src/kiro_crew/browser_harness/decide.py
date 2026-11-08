@@ -264,9 +264,11 @@ class BrowserDecisions:
         questions: list[Question] = [
             Choice(
                 id="pick",
-                prompt="Which control on `page` should the user use next to do `goal`?",
+                prompt=(
+                    "Which control on `page` should the user use next to do `goal`? "
+                    "Each option is described under `pick_options`."
+                ),
                 options=[ref for ref, _text in cands],
-                criteria=dict(cands),
             ),
             Noul(
                 id="present",
@@ -278,7 +280,8 @@ class BrowserDecisions:
             Noul(id="not_found", prompt="Is `page` a 'page not found' page?"),
             Noul(id="bot_check", prompt="Is `page` asking the user to prove they are a human?"),
         ]
-        state = {"goal": target, "page_title": title, "page": outline}
+        # Candidate words are page text: they ride the fenced state, not the question.
+        state = {"goal": target, "page_title": title, "page": outline, "pick_options": dict(cands)}
         answers = await gate.decide(
             POINT,
             state,
@@ -561,10 +564,11 @@ async def reflex_step(
 
     A Choice ``operation`` over *operations* (option name -> label); per targeted
     operation a Choice ``<operation>_target`` over its elements (option -> words),
-    each asked as if that operation were the one picked; a Choice ``value`` over
+    each asked as if that operation were the one picked (the words go in the
+    fenced state as ``target_options``, never in a question); a Choice ``value`` over
     *values* when typing is offered with more than one; the ``done``, ``stuck`` and
     ``off_path`` Nouls, the caller's own ``until`` Noul, and a ``risk_<i>`` Noul per
-    label in *risk_labels*. With *frame* the masked screenshot goes along under the
+    label in *risk_labels* (each label in the state as ``risk_moves``). With *frame* the masked screenshot goes along under the
     image scope and the questions name it. Answers ``{operation, picks, value, done,
     stuck, off_path, until, risk}`` or ``None`` for every refusal; the loop decides.
     *wait_s* widens the per-call ceiling for a provider that declares itself slow;
@@ -582,6 +586,13 @@ async def reflex_step(
         images = {screen: ImageAsset(frame)}
         scopes = (IMAGE_SCOPE,)
         named = "`screen`"
+    # Target and risk words are page text (accessible names, values, option
+    # labels). They ride the fenced state; the questions name them only by key.
+    state = {
+        **state,
+        "target_options": {f"{op.lower()}_target": dict(c) for op, c in targets.items()},
+        "risk_moves": {f"risk_{i}": label for i, label in enumerate(risk_labels)},
+    }
     questions: list[Question] = [
         Choice(
             id="operation",
@@ -596,10 +607,10 @@ async def reflex_step(
                 id=f"{op.lower()}_target",
                 prompt=(
                     f"If the next operation is {op}, which element in `elements` should it "
-                    "act on to move toward `goal`? Another question decides the operation."
+                    "act on to move toward `goal`? Another question decides the operation. "
+                    f"Each option is described under `target_options.{op.lower()}_target`."
                 ),
                 options=list(cands),
-                criteria=dict(cands),
             )
         )
     if "TYPE_TEXT" in targets and len(values) > 1:
@@ -639,12 +650,13 @@ async def reflex_step(
     ]
     if until:
         questions.append(Noul(id="until", prompt=f"Looking at {named}: {until}"))
-    for i, label in enumerate(risk_labels):
+    for i in range(len(risk_labels)):
         questions.append(
             Noul(
                 id=f"risk_{i}",
                 prompt=(
-                    f"Would doing '{label}' on this page be hard to undo, such as "
+                    f"Would doing the move in `risk_moves.risk_{i}` on this page be hard "
+                    "to undo, such as "
                     "paying, deleting, sending or publishing?"
                 ),
                 true_means="It commits something that cannot simply be taken back.",
