@@ -4,7 +4,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { Trans } from 'react-i18next'
 import { useImeGuard } from '../hooks/useImeGuard'
 import Clickable from '../components/Clickable'
-import { List, CalendarDays, CalendarClock, Plus, ClipboardList, ChevronRight, Globe, History, Trash2, FolderPlus, MoreHorizontal, Pencil, Folder, LayoutGrid, GitPullRequestArrow, Download, KeyRound, Info, X } from 'lucide-react'
+import { List, CalendarDays, CalendarClock, Plus, ClipboardList, ChevronRight, Globe, History, Trash2, FolderPlus, MoreHorizontal, Pencil, Folder, LayoutGrid, GitPullRequestArrow, Download, KeyRound, Info, X, Loader2 } from 'lucide-react'
 import { api, type MemberRosterRow } from '../api/client'
 import { membersRosterQuery } from '../api/membersQuery'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -1251,8 +1251,8 @@ export default function SchedulePage() {
                   {jobsTableEdges.right && <div aria-hidden="true" className="pointer-events-none absolute left-0 top-0 bottom-0 w-px bg-border" />}
                   <div className="flex items-center gap-1.5">
                     {j.is_running
-                      ? <span title={i18nT('pages.schedulePage.cancel_running_execution')}><Btn danger onClick={() => cancelRun(j.id)} disabled={cancelling.has(j.id)}>{cancelling.has(j.id) ? '...' : i18nT('pages.schedulePage.cancel')}</Btn></span>
-                      : <span title={j.enabled ? i18nT('pages.schedulePage.run_now_2') : i18nT('pages.schedulePage.resume_to_run')}><Btn onClick={() => runNow(j.id)} disabled={!j.enabled || running.has(j.id)} {...uiLocation('schedule.row-run')}>{running.has(j.id) ? '...' : i18nT('pages.schedulePage.run')}</Btn></span>}
+                      ? <span title={i18nT('pages.schedulePage.cancel_running_execution')}><Btn danger onClick={() => { if (!cancelling.has(j.id)) cancelRun(j.id) }} aria-disabled={cancelling.has(j.id) || undefined} aria-busy={cancelling.has(j.id) || undefined} className="relative aria-disabled:cursor-progress">{cancelling.has(j.id) && <Loader2 aria-hidden className="absolute inset-0 m-auto lucide-inline motion-safe:animate-spin" />}<span className={cancelling.has(j.id) ? 'opacity-0' : undefined}>{i18nT('pages.schedulePage.cancel')}</span></Btn></span>
+                      : <span title={j.enabled ? i18nT('pages.schedulePage.run_now_2') : i18nT('pages.schedulePage.resume_to_run')}><Btn onClick={() => { if (!running.has(j.id)) runNow(j.id) }} disabled={!j.enabled} aria-disabled={running.has(j.id) || undefined} aria-busy={running.has(j.id) || undefined} className="relative aria-disabled:cursor-progress" {...uiLocation('schedule.row-run')}>{running.has(j.id) && <Loader2 aria-hidden className="absolute inset-0 m-auto lucide-inline motion-safe:animate-spin" />}<span className={running.has(j.id) ? 'opacity-0' : undefined}>{i18nT('pages.schedulePage.run')}</span></Btn></span>}
                     {/* The armed state must explain itself IN THE LABEL: the
                         `title` tooltip below is hover-only, so on touch it does
                         not exist, and a bare "Confirm" gives a phone user no
