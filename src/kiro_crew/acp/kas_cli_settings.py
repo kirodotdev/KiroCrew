@@ -20,10 +20,6 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from kiro_crew.acp.skill_projection_parts.inheritance_overlay import (
-    _UNREADABLE_SETTINGS_ERRORS,
-    _settings,
-)
 from kiro_crew.config.paths import kiro_home
 
 logger = logging.getLogger(__name__)
@@ -79,7 +75,19 @@ def _read(path: Path) -> dict[str, Any]:
     for a file that is refused, too large, not JSON (a blank one included) or not an
     object.
     """
-    return _settings(path)
+    return _skill_projection()._settings(path)
+
+
+def _skill_projection():
+    """The skill-projection facade, imported on first use.
+
+    Importing one of its owners directly at module load would load that owner without
+    the facade, and a ``kiro_home`` patched before the facade's own first import would
+    then bind differently across its owners, which the facade refuses to install over.
+    """
+    from kiro_crew.acp import skill_projection
+
+    return skill_projection
 
 
 def kiro_cli_telemetry_enabled(
@@ -101,10 +109,11 @@ def kiro_cli_telemetry_enabled(
     except Exception:  # no home directory: nothing proves the user left it on
         logger.warning("KAS telemetry: kiro-cli settings path unknown; sending telemetry off")
         return False
+    unreadable = _skill_projection()._UNREADABLE_SETTINGS_ERRORS
     for path in files:
         try:
             data = _read(path)
-        except _UNREADABLE_SETTINGS_ERRORS as exc:
+        except unreadable as exc:
             logger.warning(
                 "KAS telemetry: %s is unreadable (%s); sending telemetry off",
                 path,

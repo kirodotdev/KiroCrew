@@ -163,3 +163,38 @@ async def test_a_switch_in_agent_env_turns_it_off_and_reaches_launch(homes, monk
     caps = await runtime_spawn_launch._handshake_client_capabilities(runtime)
     assert caps["_meta"]["kiro"]["telemetryEnabled"] is False
     assert runtime._spawn_agent_env == overlay
+
+
+def test_loading_it_first_leaves_the_skill_projection_installable(tmp_path):
+    """A kiro_home patched after this module loads must not break the facade's install.
+
+    Loading one skill-projection owner without its facade, then patching ``kiro_home``
+    before the facade's first import, left that owner on the old binding, and the
+    facade's family check refused to install. A fresh interpreter gives the real order.
+    """
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    import kiro_crew
+    from kiro_crew.testing.wait import FALLBACK_TIMEOUT_SECS
+
+    code = (
+        "import kiro_crew.acp.kas_cli_settings\n"
+        "import kiro_crew.config.paths as paths\n"
+        "paths.kiro_home = lambda: None\n"
+        "import kiro_crew.acp.skill_projection\n"
+    )
+    env = dict(os.environ)
+    package_root = str(Path(kiro_crew.__file__).resolve().parents[1])
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [package_root, env.get("PYTHONPATH")]))
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        env=env,
+        cwd=tmp_path,
+        capture_output=True,
+        encoding="utf-8",
+        timeout=FALLBACK_TIMEOUT_SECS,
+    )
+    assert result.returncode == 0, result.stderr
