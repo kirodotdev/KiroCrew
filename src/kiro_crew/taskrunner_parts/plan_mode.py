@@ -172,6 +172,7 @@ async def plan(
                 source=source,
                 spec_name=Path(spec_path).name if spec_path else "",
             )
+            run.name = workflow_name or auto_name(spec_content, spec_path, run.tasks[0].title)
         else:
             try:
                 run.tasks = await asyncio.wait_for(
