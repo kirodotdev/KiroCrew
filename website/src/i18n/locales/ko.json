@@ -9187,6 +9187,7 @@
     },
     "tunnelStatus": {
       "connected": "연결됨",
+      "connected_with_error": "연결됨(오류 있음)",
       "connecting": "연결 중…",
       "error": "오류",
       "reconnect_attempt": "재연결 시도 {{n}}회",

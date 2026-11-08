@@ -9629,6 +9629,7 @@
     },
     "tunnelStatus": {
       "connected": "Connecté",
+      "connected_with_error": "Connecté avec erreur",
       "connecting": "Connexion…",
       "error": "Erreur",
       "reconnect_attempt": "Tentative de reconnexion {{n}}",
