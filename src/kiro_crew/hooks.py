@@ -1755,10 +1755,15 @@ class ScriptHook:
     #: :mod:`kiro_crew.agent_sdk.spec_hooks`; never saved, and ``from_dict`` never
     #: reads it, so a hand-written ``hooks.json`` cannot claim a spec origin.
     spec_origin: str = ""
+    #: An agent spec hook's ``max_output_size``: the most UTF-8 bytes of its
+    #: stdout ``run_script_hook`` returns, cut after redaction and marked. ``0``
+    #: leaves only the stream cap. In memory only, like ``spec_origin``.
+    max_output_size: int = 0
 
     def to_dict(self) -> dict:
         data = asdict(self)
         data.pop("spec_origin", None)
+        data.pop("max_output_size", None)
         return data
 
     @classmethod

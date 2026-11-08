@@ -457,6 +457,11 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # chunks go to the module that asked for them, which is the registered
         # sink (slack/format.py, messaging/renderer.py and the channel renderers).
         "messaging/split.py",
+        # A channel turn's PostToolUse fire scrubs the tool output before a local
+        # hook script reads it on stdin, as dashboard/chat_turn/turn_spec_hooks.py
+        # does for a dashboard turn. A hook process is not an audience: nothing is
+        # emitted to a reader here.
+        "messaging/tool_hooks.py",
         # ``autonudge_service/store_loader.py``'s ``_load`` credential-scrubs a persisted
         # ``banner`` in memory and attempts to persist the masked value back, so a banner
         # written to the store out-of-band (a hand-edited file, or a direct
