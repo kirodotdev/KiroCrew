@@ -118,6 +118,57 @@ describe('WorkflowsPage', () => {
     expect(JSON.parse((runCall[1] as RequestInit).body as string)).toMatchObject({ source: expect.stringContaining('async def workflow') })
   })
 
+  it('keeps focus on Run while it runs, and starts one run for a double press', async () => {
+    // Hold /run open so the button stays busy while the test reads it.
+    let finishRun: () => void = () => {}
+    const realFetch = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (!String(url).endsWith('/run')) return realFetch(url, init)
+      return new Promise(resolve => {
+        finishRun = () => resolve(realFetch(url, init))
+      })
+    })
+    wrap(<WorkflowsPage />)
+    const btn = runBtn()
+    btn.focus()
+    fireEvent.click(btn)
+    fireEvent.click(btn)
+
+    await waitFor(() => expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith('/run'))).toBe(true))
+    const busy = runBtn()
+    expect(busy).toHaveAttribute('aria-disabled', 'true')
+    expect(busy).toHaveAttribute('aria-busy', 'true')
+    expect(busy).not.toBeDisabled()
+    expect(busy).toHaveFocus()
+    fireEvent.click(busy)
+    expect(fetchMock.mock.calls.filter(([u]) => String(u).endsWith('/validate'))).toHaveLength(1)
+    expect(fetchMock.mock.calls.filter(([u]) => String(u).endsWith('/run'))).toHaveLength(1)
+
+    finishRun()
+    await screen.findByTestId('zzq-tree-stub')
+    expect(runBtn()).toHaveAttribute('aria-disabled', 'false')
+  })
+
+  it('ignores Run while a separate Validate is still pending', async () => {
+    let finishValidate: () => void = () => {}
+    const realFetch = fetchMock.getMockImplementation()!
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (!String(url).endsWith('/validate')) return realFetch(url, init)
+      return new Promise(resolve => {
+        finishValidate = () => resolve(realFetch(url, init))
+      })
+    })
+    wrap(<WorkflowsPage />)
+    fireEvent.click(screen.getByRole('button', { name: i18nT('apps.workflows.workflowsPage.validate') }))
+    await waitFor(() => expect(runBtn()).toHaveAttribute('aria-disabled', 'true'))
+    fireEvent.click(runBtn())
+
+    finishValidate()
+    await waitFor(() => expect(runBtn()).toHaveAttribute('aria-disabled', 'false'))
+    expect(fetchMock.mock.calls.filter(([u]) => String(u).endsWith('/validate'))).toHaveLength(1)
+    expect(fetchMock.mock.calls.some(([u]) => String(u).endsWith('/run'))).toBe(false)
+  })
+
   it('marks the run failed when the backend reports ok:false', async () => {
     routes['/run'] = { body: { ok: false, result: null, error: 'zzq agent blew up', events: [{ t: 'phase' }] } }
     wrap(<WorkflowsPage />)
