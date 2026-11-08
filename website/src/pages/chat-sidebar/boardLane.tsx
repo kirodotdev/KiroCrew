@@ -390,9 +390,11 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
             * undo. It also UNSHELVES the menu's folder list on the way: that list is the
             * way back and it is gated behind the shelf, so opening the menu over a
             * rolled-up shelf lands the reader on a dense panel with no folders in it and
-            * the word on the button promises something that did not happen. The other
-            * lanes' row peeks the folders open in place; this is the same gesture as far
-            * as a board can carry it.
+            * the word on the button promises something that did not happen. For the same
+            * reason it opens the menu ON that list (`'folders'`): the list sits last, so a
+            * menu taller than the room below the funnel would open with it out of sight.
+            * The other lanes' row peeks the folders open in place; this is the same
+            * gesture as far as a board can carry it.
             *
             * Muted gray, the same tint as the other lanes' reveal row: the hide is
             * something the person chose, so it is not a warning. The funnel keeps the
@@ -403,7 +405,7 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
               onClick={() => {
                 setFoldersShelved(false)
                 safeSetItem(FOLDERS_SHELVED_LS_KEY, '0')
-                setFilterSortOpen(true)
+                setFilterSortOpen('folders')
               }}
               title={i18nT('pages.chatSidebar.show_hidden_folders_from_board', { count: hiddenFolderCount })}
               aria-label={i18nT('pages.chatSidebar.show_hidden_folders_from_board', { count: hiddenFolderCount })}
