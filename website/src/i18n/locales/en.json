@@ -7923,6 +7923,7 @@
       "session_one": "{{count}} session",
       "session_other": "{{count}} sessions",
       "sessions": "Sessions",
+      "collapse_all_folders": "Collapse all folders",
       "show_all_folders": "Show all folders",
       "show_folder": "Show folder",
       "show_only_sessions_tagged": "Show only sessions tagged {{name}}",

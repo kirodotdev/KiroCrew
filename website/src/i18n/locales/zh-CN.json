@@ -13963,6 +13963,7 @@
       "session_source": "会话",
       "sessions": "会话",
       "show": "展开",
+      "collapse_all_folders": "折叠所有文件夹",
       "show_all_folders": "显示所有文件夹",
       "show_all_older_sessions": "显示所有较早的会话",
       "show_folder": "显示文件夹",
