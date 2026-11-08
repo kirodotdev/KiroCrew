@@ -40,6 +40,11 @@ from kiro_crew.crew_log.entry_types import (
     PANEL_TEMPLATE_LIMIT,
     PANEL_TITLE_LIMIT,
 )
+from kiro_crew.crew_log.entry_types_surfaces import (
+    CUSTOM_POINTS_LIMIT,
+    CUSTOM_PROVENANCE_LIMIT,
+    CUSTOM_SOURCE_LIMIT,
+)
 from kiro_crew.crew_log.projection_values import _as_int, _rows_in
 from kiro_crew.crew_log.schema import Entry
 
@@ -347,7 +352,8 @@ def _agentic_step(state: dict[str, Any], entry: Entry) -> None:
         del fields[oldest]
         state["fields_omitted"] = _as_int(state.get("fields_omitted")) + 1
     state["wrote"] = _as_int(state.get("wrote")) + 1
-    fields[name] = {
+    previous = fields.get(name)
+    row: dict[str, Any] = {
         # UNWRAPPED for the reader. The wrapper is an artefact of what the entry
         # registry can declare, and a reader of this fold should not have to know
         # about it: a template's field is a value, not a value in a box.
@@ -358,6 +364,25 @@ def _agentic_step(state: dict[str, Any], entry: Entry) -> None:
         "crew_key": _panel_text(data.get("crew_key"), PANEL_CREW_KEY_LIMIT),
         "order": state["wrote"],
     }
+    person = data.get("actor") == "person"
+    if person:
+        # A PERSON'S CORRECTION from Dashboard edit mode. Kept on the row with its
+        # reason, so the lineage shows who wrote the value and the Bot's turn is told.
+        row["actor"] = "person"
+        row["seq"] = int(entry.seq)
+        reason = _panel_text(data.get("reason"), DASHBOARD_REASON_LIMIT)
+        if reason:
+            row["reason"] = reason
+    if previous is not None and (person or previous.get("actor") == "person"):
+        # The write this one replaced, one level deep, whenever a person's write is on
+        # either side: the lineage keeps both, and a Bot overwriting a correction can
+        # be seen doing so.
+        row["prior"] = {
+            key: previous[key]
+            for key in ("value", "at", "actor", "reason", "seq", "instance_version")
+            if key in previous
+        }
+    fields[name] = row
 
 
 def _agentic_render(state: dict[str, Any]) -> dict[str, Any]:
@@ -680,10 +705,43 @@ def _custom_step(state: dict[str, Any], entry: Entry) -> None:
         # line off disk is dropped and the record kept, since the record itself passed.
         row["max_age_s"] = max_age
         row["stale_after"] = _panel_iso(int(entry.time) + max_age * 1000)
+    _keep_provenance(row, data)
     latest[name] = row
     # The writer landed a record, so it is not failing any more: its failure leaves
     # ``failures`` by the same rule that drops ``failed_at`` from its row.
     state.get("failures", {}).pop(writer, None)
+
+
+def _keep_provenance(row: dict[str, Any], data: Mapping[str, Any]) -> None:
+    """Copy a record's declared ``source`` / ``points`` and the gateway's ``provenance``.
+
+    Present only on records written with the ``dashboard_edit_mode`` preview on. Each
+    is re-clamped here, as every cell of this fold is, because the line is off disk.
+    """
+    source = _panel_text(data.get("source"), CUSTOM_SOURCE_LIMIT)
+    if source:
+        row["source"] = source
+    points = data.get("points")
+    if (
+        isinstance(points, list)
+        and 0 < len(points) <= CUSTOM_POINTS_LIMIT
+        and all(
+            isinstance(p, (int, float))
+            and not isinstance(p, bool)
+            and p == p
+            and abs(p) != float("inf")
+            for p in points
+        )
+    ):
+        row["points"] = list(points)
+    stamp = data.get("provenance")
+    if isinstance(stamp, Mapping):
+        kept = {
+            key: _panel_text(stamp.get(key), CUSTOM_PROVENANCE_LIMIT)
+            for key in ("job", "run_at", "script", "sha")
+        }
+        if any(kept.values()):
+            row["provenance"] = kept
 
 
 def _custom_render(state: dict[str, Any]) -> dict[str, Any]:

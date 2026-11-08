@@ -1615,8 +1615,53 @@ def turn_block(slug: str, member: str = "", *, slot: str = "") -> str:
         stale = stale_notice(manifest, page_slot) if page_slot else ""
         if stale:
             block += "\n" + stale
+    if member and names:
+        corrected = person_corrections_line(slug, member, names)
+        if corrected:
+            block += "\n" + corrected
     dashboard_upkeep.sync(slug, page=(record, manifest))
     return block + ("\n" + dashboard_upkeep.pointer() if names else "")
+
+
+def person_corrections_line(slug: str, member: str, names: Sequence[str]) -> str:
+    """The line naming each field the PERSON corrected in Dashboard edit mode, or ``""``.
+
+    A field whose latest write carries ``actor: person`` (feature preview
+    ``dashboard_edit_mode``). The Bot may write over it, so it is told what the person
+    set and why. TOTAL: an unreadable fold or the preview off is no line.
+    """
+    try:
+        from kiro_crew import dashboard_edit_mode
+
+        if not dashboard_edit_mode.edit_mode_on():
+            return ""
+        from kiro_crew.crew_log import projection
+        from kiro_crew.dashboard.handlers.member_dashboard import _dashboard_slot
+
+        fold = projection.read_slot_projection(_dashboard_slot(member, slug), "agentic").value
+        rows = fold.get("fields") if isinstance(fold, Mapping) else None
+        if not isinstance(rows, Mapping):
+            return ""
+        parts: list[str] = []
+        for name in names:
+            row = rows.get(name)
+            if not isinstance(row, Mapping) or row.get("actor") != "person":
+                continue
+            reason = str(row.get("reason") or "")
+            parts.append(
+                f"{name} = {json.dumps(row.get('value'), ensure_ascii=False)[:120]} "
+                f"at {row.get('at') or '?'}" + (f' ("{reason}")' if reason else "")
+            )
+    except Exception:
+        logger.debug("dashboard: %r's corrections could not be read", slug, exc_info=True)
+        return ""
+    if not parts:
+        return ""
+    return (
+        "The person corrected these values on your Dashboard: "
+        + "; ".join(parts)
+        + ". Keep them unless you know better; if you write over one, say why in your reply."
+    )
 
 
 def unresolved_notice(slug: str, member: str) -> str:

@@ -51,6 +51,11 @@ from kiro_crew.crew_log.entry_types import (
     CUSTOM_RECORD_DEPTH,
     CUSTOM_TYPE_NAME_LIMIT,
 )
+from kiro_crew.crew_log.entry_types_surfaces import (
+    CUSTOM_POINTS_LIMIT,
+    CUSTOM_PROVENANCE_LIMIT,
+    CUSTOM_SOURCE_LIMIT,
+)
 from kiro_crew.crew_log.projection_dashboard import (
     custom_max_age_ok,
     custom_record_depth,
@@ -474,9 +479,89 @@ async def api_dashboard_record(request: web.Request) -> web.Response:
     if bad is not None:
         code, error = bad
         return web.json_response({"error": error, "code": code}, status=400)
+    lineage: dict[str, Any] = {}
+    from kiro_crew import dashboard_edit_mode
+
+    if await asyncio.to_thread(dashboard_edit_mode.edit_mode_on):
+        bad = _lineage_body_refusal(body)
+        if bad is not None:
+            code, error = bad
+            return web.json_response({"error": error, "code": code}, status=400)
+        if isinstance(body.get("source"), str) and body["source"].strip():
+            lineage["source"] = _scrubbed(body["source"].strip())
+        if body.get("points") is not None:
+            lineage["points"] = list(body["points"])
+        lineage["provenance"] = await asyncio.to_thread(
+            cron_provenance, request.app.get("state"), resolved.writer
+        )
     return await record_through_door(
-        request, resolved, body["type"], body["data"], max_age_s=body.get("max_age_s")
+        request,
+        resolved,
+        body["type"],
+        body["data"],
+        max_age_s=body.get("max_age_s"),
+        lineage=lineage,
     )
+
+
+def _lineage_body_refusal(body: Mapping[str, Any]) -> tuple[str, str] | None:
+    """``(code, error)`` for a bad declared ``source`` / ``points``, or ``None``."""
+    import math
+
+    source = body.get("source")
+    if source is not None and (
+        not isinstance(source, str) or len(source) > CUSTOM_SOURCE_LIMIT or "\n" in source
+    ):
+        return "bad_source", f"source must be one line of at most {CUSTOM_SOURCE_LIMIT} characters"
+    points = body.get("points")
+    if points is not None and (
+        not isinstance(points, list)
+        or not 0 < len(points) <= CUSTOM_POINTS_LIMIT
+        or not all(
+            isinstance(p, (int, float)) and not isinstance(p, bool) and math.isfinite(p)
+            for p in points
+        )
+    ):
+        return "bad_points", f"points must be a list of 1 to {CUSTOM_POINTS_LIMIT} finite numbers"
+    return None
+
+
+def cron_provenance(state: Any, writer: str) -> dict[str, str]:
+    """The gateway's own stamp for a record cron *writer* (``cron:<id>``) sends.
+
+    Read from the scheduler's record of the job, never from the request: the job id,
+    when the record arrived, the job's ``path:function`` and the first 12 hex of the
+    script file's sha256. A cell it cannot read is ``""``. Blocking IO (one file read).
+    """
+    import hashlib
+    from datetime import datetime, timezone
+
+    job_id = writer.removeprefix("cron:")
+    out = {
+        "job": job_id,
+        "run_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "script": "",
+        "sha": "",
+    }
+    jobs = getattr(getattr(state, "crons", None), "_jobs", None)
+    try:
+        candidates = jobs.values() if isinstance(jobs, Mapping) else (jobs or ())
+        job = next((j for j in candidates if getattr(j, "id", "") == job_id), None)
+    except Exception:
+        job = None
+    spec = str(getattr(job, "script", "") or "")
+    if not spec:
+        return out
+    out["script"] = spec[:CUSTOM_PROVENANCE_LIMIT]
+    try:
+        from kiro_crew.cron_script import resolve_script_path
+
+        path, _func = resolve_script_path(spec, allow_bundle_roots=True)
+        with open(path, "rb") as handle:
+            out["sha"] = hashlib.sha256(handle.read()).hexdigest()[:12]
+    except Exception:
+        logger.debug("dashboard record: the script of cron %s could not be hashed", job_id)
+    return out
 
 
 async def record_through_door(
@@ -488,6 +573,7 @@ async def record_through_door(
     caller: str = "",
     operation: str = _OPERATION,
     max_age_s: int | None = None,
+    lineage: Mapping[str, Any] | None = None,
 ) -> web.Response:
     """Steps 3b and 4 of the door, for a caller the route has ALREADY resolved,
     counted against its quota, and whose record has passed :func:`_record_body_refusal`:
@@ -538,6 +624,9 @@ async def record_through_door(
     }
     if max_age_s is not None:
         entry["max_age_s"] = int(max_age_s)
+    # Edit mode's lineage cells (`source`, `points`, `provenance`), already checked and
+    # stamped by the cron route; empty for every other caller and with the preview off.
+    entry.update(lineage or {})
 
     def _append() -> str:
         # The crewmate's LIVE DM unit, the one its page reads. Imported here, not at

@@ -722,6 +722,12 @@ def _blocks_as_html(raw_blocks: Any, declared_fields: Mapping[str, Any]) -> str:
     """
     if not isinstance(raw_blocks, list):
         raise _refuse("view.blocks", f"must be a list, got {type(raw_blocks).__name__}")
+    from kiro_crew import dashboard_edit_mode
+
+    # A block's `id` becomes its component id (`data-dashboard-block`) only with the
+    # edit mode preview on; off, the page is the one this function always wrote. The
+    # write gate checks the ids (`canonical_package_content`).
+    keep_ids = dashboard_edit_mode.edit_mode_on()
     sections: list[str] = []
     size = 0
     for index, raw_block in enumerate(raw_blocks):
@@ -744,7 +750,19 @@ def _blocks_as_html(raw_blocks: Any, declared_fields: Mapping[str, Any]) -> str:
             if size > MAX_VIEW_HTML_BYTES:
                 raise _refuse("view.html", _page_too_large(size, at_least=True))
             rows.append(row)
-        sections.append(f"<section>{head}<dl>{''.join(rows)}</dl></section>")
+        block_id = block.get("id")
+        opener = "<section>"
+        if keep_ids and block_id is not None:
+            if not isinstance(block_id, str) or not dashboard_edit_mode.BLOCK_ID_RE.fullmatch(
+                block_id
+            ):
+                raise _refuse(
+                    f"view.blocks[{index}].id",
+                    "must be a component id: 1-48 lowercase letters, digits, '-' or '_', "
+                    "starting with a letter or digit",
+                )
+            opener = f'<section {dashboard_edit_mode.BLOCK_ATTRIBUTE}="{block_id}">'
+        sections.append(f"{opener}{head}<dl>{''.join(rows)}</dl></section>")
     return "".join(sections)
 
 
@@ -1053,8 +1071,19 @@ def canonical_package_content(content: str) -> str:
     than the caller's keeps the stored form one thing: the layout comparison
     and the version history then read a package the author's whitespace cannot
     perturb.
+
+    With the ``dashboard_edit_mode`` preview on, the page's component ids
+    (``data-dashboard-block``) are checked here too: on the write only, so a stored
+    page is never refused on read for an id the host simply ignores.
     """
-    return dump_package(parse_package(content))
+    package = parse_package(content)
+    from kiro_crew import dashboard_edit_mode
+
+    if dashboard_edit_mode.edit_mode_on():
+        refused = dashboard_edit_mode.block_id_refusal(str(package["view"]["html"]))
+        if refused:
+            raise _refuse("view.html", refused)
+    return dump_package(package)
 
 
 # --------------------------------------------------------------------------- #

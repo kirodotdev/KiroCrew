@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from kiro_crew.crew_log.entry_types_fields import (
     JSON_ARRAY,
+    JSON_FLOAT,
     JSON_INT,
     JSON_OBJECT,
     JSON_STRING,
@@ -212,6 +213,13 @@ CUSTOM_ERROR_LIMIT = 240
 #: page went out of date (``dashboard/stale_wake.py``). Each one is a model turn the
 #: person pays for, so each one is recorded on the Bot's own log.
 DASHBOARD_STALE_WAKE_ENTRY_TYPE = "dashboard/stale_wake"
+#: Characters a record's declared ``source`` keeps (feature preview
+#: ``dashboard_edit_mode``): what the script read, in its own words, e.g. a metric name.
+CUSTOM_SOURCE_LIMIT = 240
+#: Numbers a record's declared ``points`` keeps: the raw readings behind its value.
+CUSTOM_POINTS_LIMIT = 120
+#: Characters each cell of the gateway's ``provenance`` stamp keeps.
+CUSTOM_PROVENANCE_LIMIT = 256
 #: Writers the custom fold remembers a failure for. Least recently FAILED goes; one
 #: crewmate has a handful of crons, so this bounds a planted line, not real use.
 CUSTOM_FAILURE_LIMIT = 16
@@ -468,6 +476,24 @@ TYPES: tuple[EntryType, ...] = (
                     "Digest of the writing crew's EXACT name, for the reason the panel "
                     "entry carries one: a slot can hold two crews, and one crew's values "
                     "must not fill the other's dashboard."
+                ),
+            ),
+            Field(
+                "actor",
+                JSON_STRING,
+                note=(
+                    "person when the PERSON corrected the value from Dashboard edit mode "
+                    "(the owner-only correct route stamps it; a Bot's dashboard_write never "
+                    "carries it). Absent for the Bot's own write. The Bot's next turn is "
+                    "told about a person's correction."
+                ),
+            ),
+            Field(
+                "reason",
+                JSON_STRING,
+                note=(
+                    "The person's one-line reason for a correction, at most "
+                    "DASHBOARD_REASON_LIMIT characters, redacted. Only with actor person."
                 ),
             ),
         ),
@@ -808,6 +834,34 @@ TYPES: tuple[EntryType, ...] = (
                     "provenance: the fold adds it to the entry's own time to render "
                     "stale_after, so the script names how long and never when. Absent when "
                     "the script declared none."
+                ),
+            ),
+            Field(
+                "source",
+                JSON_STRING,
+                note=(
+                    "What the script says it read, at most CUSTOM_SOURCE_LIMIT characters "
+                    "(feature preview dashboard_edit_mode). The script's claim, shown as "
+                    "declared by the script, never as provenance."
+                ),
+            ),
+            Field(
+                "points",
+                JSON_ARRAY,
+                item_type=JSON_FLOAT,
+                note=(
+                    "The raw readings behind the record, at most CUSTOM_POINTS_LIMIT "
+                    "finite numbers. Declared by the script."
+                ),
+            ),
+            Field(
+                "provenance",
+                JSON_OBJECT,
+                note=(
+                    "Stamped by the GATEWAY, never read from the request: job (the cron "
+                    "job id), run_at (when the record arrived), script (the job's "
+                    "path:function) and sha (the first 12 hex of the script file's "
+                    "sha256). Each cell at most CUSTOM_PROVENANCE_LIMIT characters."
                 ),
             ),
         ),

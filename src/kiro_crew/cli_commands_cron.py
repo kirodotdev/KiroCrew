@@ -1186,8 +1186,23 @@ def _cron_preview(args: argparse.Namespace) -> None:
             self._suppressed("set_session_mode", slot=slot, mode=mode)
             return {"ok": True, "mode": mode}
 
-        def crew_log_append(self, type: str, data: dict, *, max_age_s: int | None = None) -> dict:
-            self._suppressed("crew_log_append", type=type, data=data, max_age_s=max_age_s)
+        def crew_log_append(
+            self,
+            type: str,
+            data: dict,
+            *,
+            max_age_s: int | None = None,
+            source: str | None = None,
+            points: list | None = None,
+        ) -> dict:
+            lineage = {
+                key: value
+                for key, value in (("source", source), ("points", points))
+                if value is not None
+            }
+            self._suppressed(
+                "crew_log_append", type=type, data=data, max_age_s=max_age_s, **lineage
+            )
             recorded = {"type": type, "writer": f"cron:{self.job.id}", "member": ""}
             return {"ok": True, "recorded": recorded}
 
