@@ -470,10 +470,10 @@ describe('DesignTweakPage — project rail', () => {
 
       const handle = screen.getByTitle(/drag to resize/i)
 
-      // Simulate drag: mousedown -> mousemove -> mouseup
-      fireEvent.mouseDown(handle, { clientX: 500 })
-      fireEvent.mouseMove(window, { clientX: 600 })
-      fireEvent.mouseUp(window, { clientX: 600 })
+      // Simulate drag: pointerdown -> pointermove -> pointerup (touch-capable)
+      fireEvent.pointerDown(handle, { clientX: 500, pointerId: 1 })
+      fireEvent.pointerMove(handle, { clientX: 600, pointerId: 1 })
+      fireEvent.pointerUp(handle, { clientX: 600, pointerId: 1 })
 
       // Rail width is persisted to localStorage
       const stored = localStorage.getItem('ste_rail_w')
@@ -497,9 +497,9 @@ describe('DesignTweakPage — project rail', () => {
       const handle = screen.getByTitle(/drag to resize/i)
 
       // Drag far left (negative delta beyond clamp)
-      fireEvent.mouseDown(handle, { clientX: 400 })
-      fireEvent.mouseMove(window, { clientX: 100 })
-      fireEvent.mouseUp(window, { clientX: 100 })
+      fireEvent.pointerDown(handle, { clientX: 400, pointerId: 1 })
+      fireEvent.pointerMove(handle, { clientX: 100, pointerId: 1 })
+      fireEvent.pointerUp(handle, { clientX: 100, pointerId: 1 })
 
       const stored = localStorage.getItem('ste_rail_w')
       expect(parseInt(stored!, 10)).toBe(360)
@@ -517,9 +517,9 @@ describe('DesignTweakPage — project rail', () => {
       const handle = screen.getByTitle(/drag to resize/i)
 
       // Drag far right (positive delta beyond clamp)
-      fireEvent.mouseDown(handle, { clientX: 700 })
-      fireEvent.mouseMove(window, { clientX: 1200 })
-      fireEvent.mouseUp(window, { clientX: 1200 })
+      fireEvent.pointerDown(handle, { clientX: 700, pointerId: 1 })
+      fireEvent.pointerMove(handle, { clientX: 1200, pointerId: 1 })
+      fireEvent.pointerUp(handle, { clientX: 1200, pointerId: 1 })
 
       const stored = localStorage.getItem('ste_rail_w')
       expect(parseInt(stored!, 10)).toBe(800)
