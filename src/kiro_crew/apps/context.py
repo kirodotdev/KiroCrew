@@ -27,6 +27,7 @@ from kiro_crew.apps.lifecycle_sdk import AppLifecycleSDK
 from kiro_crew.apps.scrub_sdk import ScrubSDK
 from kiro_crew.apps.spawn_sdk import SpawnSDK
 from kiro_crew.apps.untrusted_text_sdk import UntrustedTextSDK
+from kiro_crew.apps.worker_auto_approve import WorkerAutoApprove
 
 
 @dataclass
@@ -82,6 +83,10 @@ class AppContext:
     spawn: SpawnSDK | None = None
     job: JobSDK | None = None
     crewmate: CrewmateSDK | None = None
+    # Bounded auto-approve grants on the app's own worker slots. Present only when
+    # the manifest declares ``permissions.workerAutoApprove``; every grant re-reads
+    # the live declaration, the owner's approval and ``enabled`` (worker_auto_approve).
+    auto_approve: WorkerAutoApprove | None = None
     health: AppHealthStatus = field(default_factory=AppHealthStatus)
     # NOT `| None`, unlike every SDK above: those grant a capability and stay None
     # until the manifest asks for it, while this one only removes sensitive data
@@ -286,6 +291,13 @@ def build_app_context(
     if perms.get("agentTurns") is True and turn_host is not None:
         turns = AgentTurnSDK.for_http_app(app_name, turn_host)
 
+    auto_approve = None
+    if perms.get("workerAutoApprove") is True:
+        try:
+            auto_approve = WorkerAutoApprove(app_name)
+        except ValueError:
+            ctx_logger.warning("app %r: its name cannot carry an auto-approve grant", app_name)
+
     return AppContext(
         name=app_name,
         data_dir=data_dir,
@@ -297,6 +309,7 @@ def build_app_context(
         spawn=spawn_sdk,
         job=job_sdk,
         crewmate=crewmate_sdk,
+        auto_approve=auto_approve,
         # Both unconditional: see the fields' comments on AppContext.
         scrub=ScrubSDK(),
         audit=AuditSDK(app_name),

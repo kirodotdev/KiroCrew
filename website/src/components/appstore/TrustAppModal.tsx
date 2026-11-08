@@ -63,6 +63,8 @@ export type TrustAppTarget = Pick<RegistryApp, 'name' | '_registry' | 'origin'> 
   displayName?: string
   trustRepository?: string
   sessionApproval?: boolean
+  /** The app declares `permissions.workerAutoApprove`: its own background sessions may auto-approve. */
+  workerAutoApprove?: boolean
   /**
    * True when the manifest widens `sessionApproval` to the owner's member
    * threads (`permissions.memberThreads`). Shown only inside the session
@@ -755,6 +757,19 @@ export default function TrustAppModal({
                 </p>
               )}
               <SessionApprovalModes label={i18nT('components.appstore.trustAppModal.session_approval_modes')} />
+            </div>
+          )}
+          {/* Its own box for the same reason: a manifest-declared request, not part of
+              the ceiling above, and the one that lets work run with nobody approving. */}
+          {app.workerAutoApprove && (
+            <div className="flex flex-col gap-1.5 rounded-lg border border-warn/30 bg-warn-subtle px-3.5 py-3">
+              <div className="flex items-center gap-2 font-semibold text-warn">
+                <ShieldAlert size={14} className="shrink-0" />
+                <span>{i18nT('components.appstore.trustAppModal.worker_auto_approve_heading')}</span>
+              </div>
+              <p className="text-text leading-relaxed">
+                {i18nT('components.appstore.trustAppModal.worker_auto_approve_desc')}
+              </p>
             </div>
           )}
           <div className="flex flex-wrap items-center gap-2 text-muted">

@@ -320,6 +320,8 @@ def format_permissions_summary(manifest: AppManifest) -> str:
         lines.append(f"  Memory:    {perms.memory}")
     if perms.cron:
         lines.append("  Cron:      scheduled agent jobs")
+    if perms.workerAutoApprove:
+        lines.append("  Auto-approve: tool calls in its own background sessions (bounded)")
 
     if not lines:
         return "  No special permissions required"

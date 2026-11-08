@@ -37,6 +37,7 @@ from kiro_crew.apps.manager_records import (
 )
 from kiro_crew.apps.manager_tree import _check_path_safety
 from kiro_crew.apps.point_grants import grant_source
+from kiro_crew.apps.worker_auto_approve import revoke_app as revoke_worker_auto_approve
 from kiro_crew.sel import sel
 
 logger = logging.getLogger("kiro_crew.apps.manager")
@@ -390,6 +391,7 @@ def disable_app(name: str) -> AppResult:
         # enable live, so a pod still starts after the owner disabled the app. Revoke
         # here too, and fail closed if the grant cannot be removed.
         revoke_host_exec(name)
+        revoke_worker_auto_approve(name)
         if host_exec_granted(name):
             return AppResult(
                 ok=False, name=name, error=f"could not revoke host-exec grant for {name!r}"

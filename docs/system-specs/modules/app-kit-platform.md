@@ -3887,12 +3887,13 @@ URL's host under its label and opens it in a new tab with
 **Where the detail page's code lives.** `website/src/pages/AppDetailPage.tsx` is the
 page and its only import path: it loads the app (`load()` resolves the art fields
 described here), holds the page's state, and renders the actions and the info
-cards. Two owners beside it never import it. `AppDetailPageArt.tsx` renders the
+cards. Three owners beside it never import it. `AppDetailPageArt.tsx` renders the
 art, `HeroBanner` and `ScreenshotGallery`, each with its local-art second chance and
 the same-origin gate on that fallback, so new work on the banner, the gallery or its
 lightbox goes there. `appDetailPageTypes.ts` holds the page's view model (`AppInfo`
 and the manifest and registry-row types it joins), which is where a new view-model
-field goes.
+field goes. `appDetailPageLabels.ts` holds the display words for the installed
+record's origin, resources and lifecycle values.
 
 **An INSTALLED app's art is served from its own install directory, not the blob
 proxy.** `GET /apps/{name}/art/{path}` (`handle_app_art_file`) reads the bytes
@@ -5566,6 +5567,11 @@ slot another create path made first (ChatEmbed's own POST) carries neither.
   withdrawn, and each withdrawal is a SEL row (`<app>.worker_slot_trust`,
   outcome `revoked`).
 
+A grant an app holds with no lease, renewed by its own watchdog, goes through the
+declared worker auto-approve seam instead (section 36). The lease's own `trust=True`
+grant is not gated on that seam's declaration or approval: it is bounded by the lease
+TTL, the slot owner and the `SafetyOverride` ceiling only.
+
 Writers: `apps/worker_slots.py`. Tests: `test/test_apps_worker_slots.py`.
 
 ## 23a. A built-in's worker slot mode is a seam the built-in fills
@@ -6931,6 +6937,88 @@ Writers: `apps/desktop_manifest.py`, `apps/manifest.py`, `apps/discovery.py`,
 `website/electron/test/app-window-host-independence.test.js`,
 `website/src/desktopWindow/desktopWindow.test.tsx`,
 `website/src/test/AppHostCoverage.test.tsx`.
+
+## 36. An app's worker auto-approve grant is declared, its own, and under the ceiling
+
+An app that runs an agent session with nobody watching (Issue Radar's unattended crews)
+needs that session's tool calls approved without a person clicking. The grant behind it
+is a `SafetyOverride` scoped grant on the slot's `_trust_scope`, which
+`chat_turn/tool_approval._slot_is_trusted` re-checks on every approval and which is never
+cached as a session policy (section 23). `apps/worker_auto_approve.py` is the App Kit
+seam for such a grant held without a worker-slot lease, and it names no app. It is not
+the only path to one: a section 23 lease taken with `acquire_worker_slot(trust=True)`
+mints the same kind of grant on its leased slot with no manifest declaration, no owner
+approval and no `revoke_app` tracking, so the guarantees below are this seam's, not the
+platform's.
+
+- **Declaration.** `permissions.workerAutoApprove: true` (the literal `true`; anything
+  else declares nothing). `build_app_context` populates `ctx.auto_approve`, a
+  `WorkerAutoApprove(app)`, only for a manifest that declares it. The flag reaches the
+  hook context as declared: `approved_manifest_permissions` filters only the entry-list
+  families, and every `hold` reads the owner's approval itself. A built-in whose
+  routes hook takes no context builds the same object itself; the checks are the same.
+- **Operator-visible.** The trust prompt (`TrustAppModal`) shows it in its own box
+  beside `sessionApproval`, from the installed manifest or from the official catalog's
+  pre-install projection (`official_catalog._disclosed_permissions_manifest`). The app's
+  detail page lists it with the other permissions, and the CLI install summary
+  (`permissions.format_permissions_summary`) names it.
+- **Approved like an API path.** It is the `workerAutoApprove` grant family (one entry,
+  `ownSlots`) of the app's approved-grants file, registered through
+  `point_grants.register_permission_grants`. An install approves what it declares; an
+  update or re-registration that ADDS it is held back, the row's
+  `workerAutoApproveGrant` reads `{approved: false, staged: true}`, and the detail
+  page's "Approve new permissions" sends `grantsConsent.workerAutoApprove = ["ownSlots"]`.
+  A built-in stores no approved-grants file, so its packaged declaration is approved.
+- **Re-read on every grant.** `app_holds_worker_auto_approve(app)` reads the live
+  manifest, the approval and the record's `enabled` (in that order), and fails closed.
+  `hold` checks it before the mint and again after it, so a disable that lands between
+  the two leaves no grant.
+- **Only the app's own slots.** `hold(slot, name, ttl_secs=...)` refuses a slot whose
+  `_app` is not the app (another app's, a person's, a cron job's) and a slot already
+  carrying another holder's scope. `release_slot` clears only the app's own slot, and
+  deactivates a scope only inside the app's namespace.
+- **Only the app's own scopes.** The key is `app:<app>:grant:<name>:autoapprove`, built
+  by the seam from a name of 1-128 `[A-Za-z0-9_.-]` characters (first alphanumeric), so
+  an app can neither mint, renew nor revoke a task run's, a person's or another app's
+  grant. Section 23's leases use `app:<app>:worker:<key>:autoapprove`, a different key.
+- **Never above the ceiling.** `hold` is `SafetyOverride.activate_scoped` (or a
+  `renew_scoped` slide of a live grant), so the `approval_modes` deny of `yolo` refuses
+  it, the activation is SEL-audited fail-closed under source `app:<app>` before it
+  exists, the TTL must be in `(0, 24h]` and a slide never passes the ceiling counted from
+  activation (or `yolo_max_seconds`). It replaces only the approval PROMPT: the
+  `POLICY ∩ PROFILE` PreToolUse gate still runs on every call.
+- **Revoked with the app.** `revoke_app(app)` deactivates every scope the app was
+  granted in this process. It runs first in `teardown.notify_app_disabled` (before the
+  app's own disable hook, so a failing or stalled hook cannot keep a grant), and again,
+  revoke-only, wherever the host-exec grant is revoked: `_write_installed` of a disabled
+  record, `disable_app` of an already-disabled one, and `uninstall_app`.
+
+A misused call (a malformed name, a TTL outside the bound) raises `ValueError`; every
+refusal returns `False` and leaves the slot on interactive approval. Revocation needs no
+permission. The seam adds no reach an app's in-gateway Python lacks: it makes the grant
+declared, shown, approved, bounded and revoked with the app.
+
+Issue Radar declares it and holds its crews' grant through it
+(`crew_runtime_session._GRANTS`, scope name `crew-<id>`), with the same 900 s TTL slid
+each watchdog cycle, the same re-mint at the ceiling and the same revocation paths.
+`apps/builtins/issue_radar/tests/test_auto_approve_seam.py` pins the declaration, that
+no backend module imports `kiro_crew.safety_override`, and that the built-in registered
+as at startup passes the seam's own gate with nothing stubbed. Its audit trail moved
+with it: the SEL source is `app:issue-radar` (was `issue-radar-crew`) and the scope key
+`app:issue-radar:grant:crew-<id>:autoapprove` (was `crew:<id>:autoapprove`).
+
+**Seam level.** `APP_SDK_LEVEL` is unchanged; an app feature-detects the seam with
+`getattr(ctx, "auto_approve", None)`, which is `None` on an older host and for an app
+that does not declare it.
+
+Writers: `apps/worker_auto_approve.py`, `apps/point_grants.py`, `apps/context.py`,
+`apps/manifest_sections.py`, `apps/manager_lookup.py`, `apps/manager_records.py`,
+`apps/manager_activation.py`, `apps/manager_uninstall.py`, `apps/teardown.py`,
+`apps/official_catalog.py`, `apps/permissions.py`,
+`website/src/components/appstore/TrustAppModal.tsx`, `website/src/pages/AppDetailPage.tsx`.
+Tests: `test/test_apps_worker_auto_approve.py`, `test/test_catalog_inventory.py`,
+`website/src/test/TrustAppModalWorkerAutoApprove.test.tsx`,
+`website/src/test/AppDetailPageCoverage.test.tsx`.
 
 ## Windows stale-backend cleanup capacity
 

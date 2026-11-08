@@ -54,8 +54,14 @@ fold of the crew log (`crew_log/projection_radar.py`, the `RADAR_*` vocabulary i
 crew ledger's storage and has no app-keyed fold seam yet; the link-screen gate's held
 control site (`crew_store_unit_order._write_unit_order`); the app-store row in
 `appManifest.ts`, the `apps.issueRadar.*` catalog keys and the `kc:issue-radar:ui-state`
-preference key. The auto-approve grant a crew holds is the app's own call into the
-core's `SafetyOverride` scoped grants; no core grant code is specific to the app.
+preference key. The auto-approve grant an unattended crew holds goes through the
+generic worker auto-approve seam (`app-kit-platform.md` section 36): the manifest
+declares `permissions.workerAutoApprove`, `crew_runtime_session._GRANTS` holds each
+crew's grant under the seam's scope `app:issue-radar:grant:crew-<id>:autoapprove`, audited
+under source `app:issue-radar`, and no backend module imports `kiro_crew.safety_override`
+(`tests/test_auto_approve_seam.py`). No core grant code is specific to the app, so an
+adopted copy that declares the same permission gets the same grant through
+`ctx.auto_approve`.
 
 The app's pins of core parity run in its own `tests/` (`test_core_parity.py`,
 `test_config_lock_owner_only.py`), and the cases that need the core's test harness sit in
@@ -1347,7 +1353,8 @@ The same loop drives the crew sweep, `crew_runtime.sweep_repo`. `crew_runtime.py
 keeps the sweep and its unblock signals, and is a mirror façade
 (`kiro_crew._facade_mirror`) for the rest of the crew runtime:
 `crew_runtime_prompt` (the brief, the nudge and the turn prompt),
-`crew_runtime_session` (a crew's slot, minting its scoped auto-approve grant, launch
+`crew_runtime_session` (a crew's slot, holding its auto-approve grant through the
+worker auto-approve seam, launch
 and turn dispatch) and `crew_runtime_supervision` (trust reconciliation, the wake,
 the watchdog, the slot-close and app-disable hooks, and the revocation of a crew's
 execution and grants). New crew-runtime code goes to the owner of its
