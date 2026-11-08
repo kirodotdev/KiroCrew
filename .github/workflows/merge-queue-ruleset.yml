@@ -11,7 +11,7 @@ name: Merge Queue Ruleset Audit
 # `merge_queue` rule with the variable unset is a clean pass ("merge queue not
 # enabled"). It goes red when an enabled queue has no required status check, or
 # when the variable says the queue is on but the ruleset does not require it
-# (then ci.yml skips main's push run and nothing tests the merged tree).
+# (the switch and the ruleset disagree, so one of them is stale).
 #
 # WHY ITS OWN SCHEDULED WORKFLOW, NOT A JOB IN main-ratchet-audit.yml: the fact
 # it reads belongs to no commit. A per-push job would stay red on every merge

@@ -364,10 +364,12 @@ Known limits of the render gate, named rather than papered over:
 - **A PR whose base is not `main` never runs `ci.yml` at all**, because
   `pull_request: branches: [main]` filters on the base branch. A stacked PR gets no
   render gate until it is rebased.
-- **`main` verdicts are sampled, not per-commit, when `MERGE_QUEUE_ENABLED` is
-  not `'true'`.** The concurrency group permits one pending run and GitHub evicts
-  it when a newer one queues, so a commit whose run was evicted has its delta fall
-  between two `github.event.before` boundaries and is never diffed. With the merge
+- **`main` verdicts are sampled, not per-commit, on a push the merge queue did
+  not land** (`MERGE_QUEUE_ENABLED` not `'true'`, or a push by anyone but
+  `github-merge-queue[bot]`). The concurrency group permits one pending run and
+  GitHub evicts it when a newer one queues, so a commit whose run was evicted has
+  its delta fall between two `github.event.before` boundaries and is never
+  diffed. With the merge
   queue on, each merge group is diffed against its own `base_sha` before it lands.
 - **Truncation measurement is not fully deterministic.** It compares a measured
   truncation ratio against a budget, so a label within roughly 10% of its budget can

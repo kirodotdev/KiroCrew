@@ -20,10 +20,13 @@ import yaml
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _WORKFLOWS_DIR = _REPO_ROOT / ".github" / "workflows"
 
-# The one `if:` a Fast Gate job carries: skip a push to main only while the
-# repository variable MERGE_QUEUE_ENABLED is 'true', when the merge group
-# already ran the gate on that exact tree.
-_FAST_GATE_PUSH_SKIP_CLAUSE = "github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true'"
+# The one `if:` a Fast Gate job carries: skip a push to main only when the merge
+# queue made it while the repository variable MERGE_QUEUE_ENABLED is 'true', when
+# the merge group already ran the gate on that exact tree.
+_FAST_GATE_PUSH_SKIP_CLAUSE = (
+    "github.event_name != 'push' || vars.MERGE_QUEUE_ENABLED != 'true' "
+    "|| github.actor != 'github-merge-queue[bot]'"
+)
 
 _ACTOR_PREDICATE = "contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id)"
 # A route the fleet did not admit falls back TWICE. In this repository it takes the
@@ -571,8 +574,8 @@ def test_every_ci_yml_resolver_consumer_reads_the_resolver_not_a_literal() -> No
 def test_all_fast_gates_skip_only_the_queued_push() -> None:
     """Every gate keeps the fleet route and carries exactly one condition.
 
-    The one `if:` a gate may carry is the push/variable clause: with the merge
-    queue on, a push to main already had every gate run on its merge group, so
+    The one `if:` a gate may carry is the push/variable clause: a push the merge
+    queue landed already had every gate run on its merge group, so
     the push run skips whole and holds no fleet job an orphan could sit on. Pinned
     by equality so an extra term cannot dodge a gate on a PR or a merge group.
     """
