@@ -105,6 +105,18 @@ rule to its owner under `runtime/crash/`. A facade grows only in its "What stays
 in the facade" column, and a responsibility no owner names gets a new file under
 `runtime/<area>/` that its facade composes.
 
+### App windows
+
+A window or global shortcut an app needs is declared in its manifest `desktop`
+block and served by `app-window-host.js` (rules in `app-window-host-rules.js`,
+the page bridge in `app-window-preload.js`); main.js composes it next to the
+companion surfaces. A shell owner of a global shortcut (the summon hotkey,
+`mochi/shortcuts.js`) records the chords it is configured for in
+`shell-shortcut-reservations.js`, and the host never gives an app one of them. It names no app and runs no app code, and a new app never
+gets a directory of its own here. `mochi/` and `crew-companion/` predate it and
+shrink as each moves onto it; `test/app-window-host-independence.test.js` holds
+both rules. Contract: `docs/system-specs/modules/app-kit-platform.md` §35.
+
 ## Install as macOS App
 
 Build a native `.app` bundle and install to `/Applications`:

@@ -1874,6 +1874,13 @@ own. It is **not** a precedent that a third-party (or non-desktop) builtin may
 ship main-process code; those stay renderer+backend. See
 `docs/system-specs/modules/mochi.md` § Deliberate divergences.
 
+The exception is closing, not open. An app that needs a desktop window or a global
+shortcut declares it in its manifest `desktop` block and the shell's generic window
+host serves it (§35); no new app code enters the main process.
+`website/electron/mochi/` and `website/electron/crew-companion/` remain until each app
+moves onto that seam, and `website/electron/test/app-window-host-independence.test.js`
+holds them to rows that only shrink.
+
 Relatedly, Mochi's vendored `ChatPanel`/`panelBridge` are a **deliberately owned
 fork**, not a convergence-pending copy of the dashboard's `ChatEmbed` — an
 approval-flow or widget-protocol change in the dashboard chat must be ported to
@@ -6650,6 +6657,101 @@ Writers: `apps/builtin_host_grants.py`, `apps/bridges_agents.py`,
 `apps/agent_template_values.py`, `apps/builtins/dev_fleet/host_grants.py`,
 `apps/builtins/pptx_maker/agent_placeholders.py`. Tests:
 `test/test_app_agent_template_values.py`.
+
+## 35. Desktop window host: app-declared windows and shortcuts, no app code in the shell
+
+An app reaches the Electron desktop shell only through its manifest `desktop` block.
+The shell's window host serves that block for every app and names none: it never
+imports or runs app code in the main process. This is the seam a desktop app such as
+Mochi or Crew Companion moves onto (owner ruling, #26967, 2026-11-07, item 5).
+
+**The declaration.** `desktop.windows` (1 to 4) and `desktop.shortcuts` (0 to 4).
+A window has an `id` (`^[a-z][a-z0-9-]{0,31}$`), an `entry` (a `.js`/`.mjs` path under
+the app's `ui/` directory, the base `contributes.panelTabs[].entry` uses, contained
+against the app root at install), a `kind` and optional `openOnEnable`. The kinds are a
+closed set. An `overlay` covers the display under the cursor: frameless, transparent,
+always on top, on every workspace, invisible to screen capture, non-focusable outside
+Windows, and click-through except over the hit regions its page reports. A `panel` is a
+frameless always-on-top window of a declared `width` (160 to 1600) and `height` (120 to
+1200) at `bottom-right`, `top-right` or `center` of that display's work area, optionally
+`transparent`. A shortcut has an `id`, an `accelerator` and the `window` it is
+delivered to. The accelerator must hold two different modifier keys on every
+platform (counted per platform: on macOS `CommandOrControl`, `Command` and `Super` are
+one key, elsewhere `CommandOrControl` and `Control` are), so at least one is not Shift,
+and one letter, digit, F-key, arrow or Space, so no app can take a single-modifier
+chord such as copy or paste; two spellings of one chord are one chord.
+Anything else is an install refusal (`apps/desktop_manifest.py`), the block is in
+`signing_payload`, and built-in discovery keeps it. The shell re-checks every rule
+(`website/electron/app-window-host-rules.js`) and drops a declaration it refuses whole,
+because it must not trust a gateway of another version.
+
+**The lifecycle.** `app-window-host.js` runs a 5-second reconcile on `/api/apps` with
+the dashboard window's credential chain, the same answer shape Crew Companion's loop
+reads: only an enabled app the gateway did not skip at boot is served. It opens each
+`openOnEnable` window, registers each shortcut, and closes and releases everything for
+an app that is disabled, gone, or whose declaration changed. A probe that is refused is
+re-resolved once; one that cannot be answered leaves every window and shortcut as it is.
+An update install suspends the host with Crew Companion and resumes it if the install
+does not proceed. A shortcut is never given to an app when the shell's own owners
+(the summon hotkey, Mochi) are configured for it, held right now or not: each records
+its configured chords in `website/electron/shell-shortcut-reservations.js` (Mochi's
+even while it is disabled, the summon hotkey's on every rebind), the host refuses a
+reserved chord, and a reservation of a chord an app holds releases it synchronously,
+before the owner's own `register()` runs. A chord another app or another program holds
+at that moment is not taken either: the app holding a chord keeps it for as long as it
+still declares that binding, whatever order the app list arrives in, and an app enabled
+later that declares the same chord gets it only once the holder lets it go. Each
+refusal is logged once. A press opens its
+window if it is closed and delivers the id once the page is ready. A panel takes focus
+only when a user action opened it (a shortcut, or `open()` from another of the app's
+windows); one opened for `openOnEnable` is shown inactive, and an overlay never takes
+focus unless its page asks.
+
+**The window.** Each window is created by the host with `contextIsolation`, `sandbox`,
+no Node, no webview, `app-window-preload.js` as its preload, window.open denied, and
+navigation and redirects pinned to its own document: the host's
+`/popout/desktop/<app>/<id>` route on the gateway origin. `main.tsx` renders that path
+with `website/src/desktopWindow/DesktopWindowRoot.tsx` instead of the dashboard: it
+requires the shell bridge naming that app and window, reads the app row, and mounts the
+declared `entry` through `AppHost` (§18) with `onFailure`, so a bundle that fails or
+throws renders nothing and closes the window. A browser tab on the same path has no
+bridge and renders nothing. A window is shown only when its page calls `ready()`, and a
+main-frame error document or transport failure is latched hidden (§6) until a later
+answered tick reloads it. A crashed page is closed; an `openOnEnable` one is reopened at
+tick cadence.
+
+**The bridge.** The page gets `window.kirocrewDesktopWindow`: `level` (1), `app`,
+`window`, `kind`, `ready()`, `close()`, `open(id)`, `setHitRegions(rects)`,
+`setFocusable(bool)` and `onShortcut(cb)`. The identity is informational: the host
+resolves every message to the window that sent it, from its main frame, still showing
+its own document, and acts only within that window's own app declaration. A page can
+open only a window its own app declares, shape (hit regions, focus) only an overlay, and
+nothing from a sender the host did not create. Hit regions are at most 16 finite boxes
+in page pixels at the page's zoom; anything else leaves the overlay click-through.
+
+**Levelling.** The seam belongs to the desktop shell, which a browser-only host never
+offers, so it is versioned by the bridge's own `level` rather than `APP_SDK_LEVEL`: an
+app feature-detects the bridge, and a gateway that predates the block shows the shell
+no declaration, so nothing opens.
+
+**What still runs in the shell.** Mochi and Crew Companion keep their main-process
+windows until each moves onto this seam (§9).
+`website/electron/test/app-window-host-independence.test.js` pins the host free of
+every built-in name and of app-owned shell code, and pins the app-owned shell
+directories and `main.js` requires as rows that only shrink.
+
+Writers: `apps/desktop_manifest.py`, `apps/manifest.py`, `apps/discovery.py`,
+`website/electron/app-window-host.js`, `website/electron/app-window-host-rules.js`,
+`website/electron/app-window-preload.js`, `website/electron/main.js`,
+`website/src/desktopWindow/desktopWindowTarget.ts`,
+`website/src/desktopWindow/DesktopWindowRoot.tsx`, `website/src/components/AppHost.tsx`,
+`website/src/main.tsx`. Tests: `test/test_app_manifest_desktop.py`,
+`website/electron/test/app-window-host.test.js`,
+`website/electron/test/app-window-host-rules.test.js`,
+`website/electron/test/app-window-preload.test.js`,
+`website/electron/test/app-window-host-independence.test.js`,
+`website/src/desktopWindow/desktopWindow.test.tsx`,
+`website/src/test/AppHostCoverage.test.tsx`.
 
 ## Windows stale-backend cleanup capacity
 

@@ -80,6 +80,19 @@ test("binds a stored custom accelerator", () => {
   assert.ok("CommandOrControl+Shift+J" in state.registered);
 });
 
+test("the bound chord is reserved from apps, and a fallback reserves the default too", () => {
+  const { shellShortcutReservations } = require("../shell-shortcut-reservations");
+  const { mod } = loadModule({ failFor: new Set(["CommandOrControl+Alt+J"]) });
+  mod.bindGlobalHotkey("CommandOrControl+Shift+J", () => {});
+  assert.strictEqual(shellShortcutReservations.isReserved("CommandOrControl+Shift+J"), true);
+  mod.bindGlobalHotkey("CommandOrControl+Alt+J", () => {});
+  assert.strictEqual(shellShortcutReservations.isReserved("CommandOrControl+Shift+J"), false);
+  assert.strictEqual(shellShortcutReservations.isReserved("CommandOrControl+Alt+J"), true);
+  assert.strictEqual(shellShortcutReservations.isReserved(DEFAULT), true);
+  mod.bindGlobalHotkey("", () => {});
+  assert.strictEqual(shellShortcutReservations.isReserved(DEFAULT), false);
+});
+
 test("a non-string stored value falls back to the default", () => {
   const { mod, state } = loadModule();
   for (const bad of [42, { accel: "x" }, true]) {

@@ -2111,6 +2111,54 @@ no way to enable the app at all.
 between a caller and a capability. Anything that must not happen in a browser
 belongs behind an app-token scope or a server-side check.
 
+## Desktop windows
+
+### `desktop` — Windows and Global Shortcuts in the Desktop App
+
+The Kiro Crew desktop app can host windows and global shortcuts for your app. You
+declare them; the desktop shell creates every window itself, loads your module into
+it, and registers the shortcuts. No code of yours runs in the shell's main process.
+Pair it with `platform.requiresDesktopApp` when the window is the app's own interface.
+
+```json
+"desktop": {
+  "windows": [
+    { "id": "pet", "entry": "desktop/pet.mjs", "kind": "overlay", "openOnEnable": true },
+    { "id": "panel", "entry": "desktop/panel.mjs", "kind": "panel",
+      "width": 420, "height": 600, "position": "bottom-right" }
+  ],
+  "shortcuts": [
+    { "id": "toggle-panel", "accelerator": "CommandOrControl+Alt+P", "window": "panel" }
+  ]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `desktop.windows[]` | object[] | 1 to 4 windows |
+| `desktop.windows[].id` | string | `^[a-z][a-z0-9-]{0,31}$`, unique within the app |
+| `desktop.windows[].entry` | string | ESM module mounted in the window, relative to the app's `ui/` directory (like `contributes.panelTabs[].entry`), ending in `.js` or `.mjs` |
+| `desktop.windows[].kind` | `"overlay"` \| `"panel"` | `overlay`: covers the display under the cursor, transparent, always on top, click-through outside the hit regions your page reports, never focused unless it asks. `panel`: a frameless always-on-top window of the size below |
+| `desktop.windows[].openOnEnable` | boolean | Open while the app is enabled (default `false`: opened by a shortcut or by another of your windows) |
+| `desktop.windows[].width` / `height` | integer | Panel only. 160 to 1600 / 120 to 1200 (default 400 / 560) |
+| `desktop.windows[].position` | string | Panel only. `bottom-right` (default), `top-right` or `center` of the work area |
+| `desktop.windows[].transparent` | boolean | Panel only (default `false`) |
+| `desktop.shortcuts[]` | object[] | 0 to 4 global shortcuts |
+| `desktop.shortcuts[].id` | string | Delivered to the page when pressed |
+| `desktop.shortcuts[].accelerator` | string | An Electron accelerator with two different modifier keys on every platform (`CommandOrControl+Control` is one key on Windows), one of them not `Shift`, and one letter, digit, `F1`-`F24`, arrow or `Space` key |
+| `desktop.shortcuts[].window` | string | The window the press is delivered to; it is opened first if closed |
+
+Any other key or value is an install refusal. A shortcut whose chord another
+program, the desktop app or another app already holds is not registered.
+
+In the window, your module reads `window.kirocrewDesktopWindow` (absent in a browser):
+call `ready()` once your first frame is painted (the window stays hidden until then),
+`setHitRegions([{ x, y, width, height }])` on an overlay for the boxes, in CSS pixels,
+that take the pointer, `setFocusable(true)` while an overlay needs the keyboard,
+`open(id)` to open another of your windows, `close()`, and `onShortcut(cb)`. Check
+`level` before using a call newer than the bridge you built against. The window is
+closed when the app is disabled, and a module that fails to load or throws closes it.
+
 ## Open Command
 
 ### `openCommand` — Launch Apps Outside the Dashboard
