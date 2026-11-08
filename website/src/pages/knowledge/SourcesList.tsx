@@ -365,6 +365,10 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
     if (ok.length) onIngest(ok)
     if (!big.length) setShowAdd(false)
   }
+  // A file the server refused (an unsupported format, say) is known only once
+  // the drop has closed the panel, so a failed upload row opens it again.
+  const uploadFailed = ingestionJobs.some(j => j.status === 'error')
+  useEffect(() => { if (uploadFailed) setShowAdd(true) }, [uploadFailed])
   // Files and folders share one view (#26892): files upload at once, and a
   // folder opens the watched-folder form below the drop zone.
   const [addType, setAddType] = useState<'local' | 'url' | 'bedrock_kb'>('local')

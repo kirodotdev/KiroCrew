@@ -4,24 +4,30 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import SourcesList from '../pages/knowledge/SourcesList'
 import * as api from '../pages/knowledge/api'
 import { api as clientApi } from '../api/client'
+import type { IngestionJob } from '../pages/knowledge/types'
 
 vi.mock('../pages/knowledge/api', () => ({ knowledgeApi: vi.fn() }))
 vi.mock('../api/client', () => ({ api: { dashboardConfig: vi.fn() } }))
 
-function renderList(onIngest: (files: File[]) => void = () => {}) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(
+function listElement(queryClient: QueryClient, onIngest: (files: File[]) => void, ingestionJobs: IngestionJob[]) {
+  return (
     <QueryClientProvider client={queryClient}>
       <SourcesList
         onIngest={onIngest}
         uploadNamespace="default"
         setUploadNamespace={() => {}}
         namespaces={['default']}
-        ingestionJobs={[]}
+        ingestionJobs={ingestionJobs}
         supportedFormatsDisplay=".md, .zip"
       />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   )
+}
+
+function renderList(onIngest: (files: File[]) => void = () => {}) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const view = render(listElement(queryClient, onIngest, []))
+  return { ...view, showJobs: (jobs: IngestionJob[]) => view.rerender(listElement(queryClient, onIngest, jobs)) }
 }
 
 async function openLocalFile() {
@@ -119,5 +125,23 @@ describe('SourcesList upload limit copy', () => {
     const notice = await screen.findByTestId('sources-upload-limit-notice')
     expect(notice).toHaveTextContent("Couldn't load the size limit. You can still upload; the server checks each file.")
     expect(screen.queryByText(/Max \d+ MB per file/)).not.toBeInTheDocument()
+  })
+})
+
+describe('SourcesList server refusal', () => {
+  it('opens the panel again when the server refuses an uploaded file, so its reason is in view', async () => {
+    vi.mocked(clientApi.dashboardConfig).mockResolvedValue({ upload_max_mb: 1, knowledge_upload_max_mb: 1, knowledge_upload_max_bytes: 1024 * 1024 })
+    const onIngest = vi.fn()
+    const { showJobs } = renderList(onIngest)
+    await openLocalFile()
+    await screen.findByText(/Max 1 MB per file\./)
+    const deck = new File(['x'], 'deck.pptx')
+    fireEvent.change(screen.getByLabelText('Upload files'), { target: { files: [deck] } })
+    expect(onIngest).toHaveBeenCalledWith([deck])
+    // The drop closes the panel, as it does for every file it sends...
+    expect(screen.queryByLabelText('Upload files')).not.toBeInTheDocument()
+    // ...and the server's refusal brings it back, with the reason on that file's row.
+    showJobs([{ name: 'deck.pptx', status: 'error', error: 'Unsupported file type: .pptx' }])
+    expect(await screen.findByText('Unsupported file type: .pptx')).toBeInTheDocument()
   })
 })
