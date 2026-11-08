@@ -179,10 +179,13 @@ export function MemberRow({
           type="button"
           onClick={(e) => {
             e.stopPropagation()
-            toggleStar(view)
+            if (!starPending.has(view.name)) toggleStar(view)
           }}
           aria-pressed={!!view.starred}
-          disabled={starPending.has(view.name)}
+          // Held, never `disabled`, while the write is in flight: disabling the
+          // star a reader just pressed blurs it to <body>, and an unstarred star at
+          // md+ is shown only while hovered or focused, so it would vanish too.
+          aria-disabled={starPending.has(view.name) || undefined}
           aria-label={t(view.starred ? 'pages.membersPage.unstar' : 'pages.membersPage.star', { name: crewDisplayName(view) })}
           title={t(view.starred ? 'pages.membersPage.unstar' : 'pages.membersPage.star', { name: crewDisplayName(view) })}
           // 24x24 minimum target (the icon is 13px): a touch that lands beside

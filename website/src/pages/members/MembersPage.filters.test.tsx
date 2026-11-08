@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from '../../test/helpers'
 
 /* Same api mock shape as MembersPage.test.tsx, plus the crew update endpoint
@@ -374,15 +375,43 @@ describe('MembersPage star', () => {
     await renderPage()
     const star = screen.getByTestId('member-star-pkg-a')
     fireEvent.click(star)
-    await waitFor(() => expect(screen.getByTestId('member-star-pkg-a')).toBeDisabled())
+    // Held with aria-disabled, not native `disabled`, so the pressed star keeps
+    // its focus (the next case).
+    await waitFor(() => expect(screen.getByTestId('member-star-pkg-a')).toHaveAttribute('aria-disabled', 'true'))
     // A second click while pending is a no-op: exactly one write in flight.
     fireEvent.click(screen.getByTestId('member-star-pkg-a'))
     expect(api.updateKirocrewAgent).toHaveBeenCalledTimes(1)
     settle({ ok: true })
-    await waitFor(() => expect(screen.getByTestId('member-star-pkg-a')).not.toBeDisabled())
+    await waitFor(() => expect(screen.getByTestId('member-star-pkg-a')).not.toHaveAttribute('aria-disabled'))
     expect(screen.getByTestId('member-star-pkg-a')).toHaveAttribute('aria-pressed', 'true')
     // No roster refetch after a 2xx: the optimistic row IS the server's state.
     expect(api.members).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps focus on the star while its write is in flight', async () => {
+    // A native `disabled` on the star a reader just pressed blurs it to <body>,
+    // and an unstarred star at md+ is shown only while hovered or focused, so a
+    // keyboard user lost both their place and the control. One row, so the
+    // optimistic flip cannot reorder the list under the focused star.
+    let settle: (v: unknown) => void = () => {}
+    ;(api.updateKirocrewAgent as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      () => new Promise((res) => { settle = res }),
+    )
+    await renderPage([row('pkg-a')])
+    const star = screen.getByTestId('member-star-pkg-a')
+    star.focus()
+    await userEvent.keyboard('{Enter}')
+    await waitFor(() => expect(star).toHaveAttribute('aria-disabled', 'true'))
+    expect(star).toHaveAttribute('aria-pressed', 'true')
+    expect(star.hasAttribute('disabled')).toBe(false)
+    expect(document.activeElement).toBe(star)
+
+    await userEvent.keyboard('{Enter}')
+    expect(api.updateKirocrewAgent).toHaveBeenCalledTimes(1)
+
+    settle({ ok: true })
+    await waitFor(() => expect(star).not.toHaveAttribute('aria-disabled'))
+    expect(document.activeElement).toBe(star)
   })
 
   it('reverts the optimistic flip AND surfaces the failure when the write fails', async () => {
