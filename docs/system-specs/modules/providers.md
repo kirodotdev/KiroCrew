@@ -1396,7 +1396,7 @@ in [agent-host-contract.md](agent-host-contract.md).
 
 **Key APIs:**
 - `start()` → `AcpClient.ensure_ready()` (spawns process, handshake, session/new)
-- `stream()` → maps events from `stream_events()`; `allow_image=False` makes the turn text-only (see [acp-client](acp-client.md#image-support))
+- `stream()` → maps events from `stream_events()`; `allow_image=False` makes the turn text-only (see [acp-client](acp-client.md#image-support)); a `prompt_gate` is handed down to the send (the direct client's `_send_prompt`, or the shared runtime handle's `_run_turn` through `AcpSessionProvider.stream`) and called there under the stdin write lock, once a pending MCP change is applied and the prompt is built, right before the frame is written; what it raises ends the turn with nothing sent
 - `stream_command()` → native slash command execution
 - `approve_tool()`/`reject_tool()` → JSON-RPC response
 - `context_usage_pct()` → reads `last_prompt_stats.context_pct`

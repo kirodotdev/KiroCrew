@@ -559,6 +559,13 @@ class TurnDriver:
         drain, and may also reject a structured monitor whose conversation
         generation changed. It must not await: the gate, monitor acceptance, and
         the stream's synchronous turn registration are one event-loop span.
+    prompt_gate:
+        Optional synchronous gate handed to ``provider.stream`` as its
+        ``prompt_gate`` keyword: the provider calls it after its own pre-prompt
+        awaits (a pending MCP change, the prompt build, the wait for the stdin
+        write lock), under that lock right before the prompt is written, so
+        whatever it raises ends the turn with nothing sent. Not passed when
+        ``None``, so a provider without the keyword is called as before.
     event_tap:
         Optional synchronous observer handed every RAW provider event, before
         the driver acts on it. For a second surface that shows the turn as it
@@ -584,6 +591,7 @@ class TurnDriver:
         audit_session_key: str = "",
         audit_agent: str = "kirocrew",
         closing_gate: Callable[[], None] | None = None,
+        prompt_gate: Callable[[], None] | None = None,
         monitor_completion: MonitorCompletionHook | None = None,
         undelivered_watch_key: str = "",
         event_tap: Callable[[Any], None] | None = None,
@@ -666,6 +674,7 @@ class TurnDriver:
         # prompt is registered. A driver built without one keeps the old ungated
         # behaviour, so a stand-in predating the parameter still works.
         self.closing_gate = closing_gate
+        self.prompt_gate = prompt_gate
 
     async def run(self, message: str) -> str:
         """Drive one turn; return the accumulated channel-safe assistant text."""
@@ -922,7 +931,8 @@ class TurnDriver:
             self.closing_gate()
         if self.monitor_completion is not None:
             self.monitor_completion.mark_accepted()
-        async for event in self.provider.stream(message):
+        gated = {} if self.prompt_gate is None else {"prompt_gate": self.prompt_gate}
+        async for event in self.provider.stream(message, **gated):
             if self.event_tap is not None:
                 try:
                     self.event_tap(event)

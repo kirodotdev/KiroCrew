@@ -11,9 +11,11 @@ engine is spawned; the runtime is a fake that records the verbs.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from contextlib import contextmanager
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -25,6 +27,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     METHOD_SESSION_CLOSE,
 )
+from kiro_crew.testing.wait import await_until, until_parked
 
 _SID = "sess-live-1"
 
@@ -81,6 +84,12 @@ def _provider(
     # The gateway claim reads real state; it is not what these tests pin.
     provider.reclaim = MagicMock()  # type: ignore[method-assign]
     return provider
+
+
+async def _passthrough(message, send, _incarnation, *, requests_model=True):
+    """An essential delivery that hands the message straight to the send."""
+    async for event in send(message):
+        yield event
 
 
 class TestTheMark:
@@ -353,6 +362,87 @@ class TestTheTurnBoundary:
             async for _ in provider.stream("hello"):
                 pass
         assert released == ["claim-1"]
+
+    @pytest.mark.asyncio
+    async def test_a_prompt_gate_refusal_after_the_apply_sends_nothing(self, monkeypatch) -> None:
+        """The channel's gate reaches the session through the outer provider and is
+        handed to the handle the apply swapped in; its refusal sends no prompt."""
+        from kiro_crew.providers.acp import AcpProvider
+
+        runtime = _runtime()
+        inner = _provider(runtime)
+        inner.mark_mcp_config_changed()
+        prompted: list[str] = []
+
+        async def _prompt(message: str, *, prompt_gate: Any = None, **_kw: object):
+            # The real handle asks the gate after its last await (see the handle test).
+            prompt_gate()
+            prompted.append(message)
+            if False:
+                yield None
+
+        runtime.new_handle.prompt = _prompt
+        released: list[object] = []
+        monkeypatch.setattr(inner, "_claim_shared_turn", lambda: "claim-1")
+
+        async def _end(claim: object) -> None:
+            released.append(claim)
+
+        monkeypatch.setattr(inner, "_end_shared_turn", _end)
+        inner.essential_delivery = SimpleNamespace(stream=_passthrough, invalidate=lambda: None)
+        outer = AcpProvider.__new__(AcpProvider)
+        outer._client = inner
+        outer.essential_delivery = SimpleNamespace(stream=_passthrough, invalidate=lambda: None)
+        asked_on: list[object] = []
+
+        def _refuse() -> None:
+            asked_on.append(inner._handle)
+            raise PermissionError("sender no longer admitted")
+
+        with pytest.raises(PermissionError):
+            async for _ in outer.stream("hello", prompt_gate=_refuse):
+                pass
+        assert asked_on == [runtime.new_handle]
+        assert prompted == [] and released == ["claim-1"]
+
+    @pytest.mark.asyncio
+    async def test_the_direct_client_asks_the_gate_under_the_write_lock(self) -> None:
+        """The direct client builds the prompt and waits for the write lock; a sender
+        revoked during that wait is refused under the lock, nothing is written, and the
+        turn is released."""
+        from kiro_crew.acp.client import AcpClient
+        from kiro_crew.providers.acp import AcpProvider
+
+        client = AcpClient()
+        client.ensure_ready = AsyncMock()  # type: ignore[method-assign]
+        client._settle_orphan_steers = AsyncMock()  # type: ignore[method-assign]
+        client._process = MagicMock()
+        client._process.stdin.write = MagicMock()
+        client._process.stdin.drain = AsyncMock()
+        outer = AcpProvider.__new__(AcpProvider)
+        outer._client = client
+        outer._ready_confirmed_session = AsyncMock()  # type: ignore[method-assign]
+        outer.essential_delivery = SimpleNamespace(stream=_passthrough, invalidate=lambda: None)
+        admitted = [True]
+
+        def _gate() -> None:
+            if not admitted[0]:
+                raise PermissionError("sender no longer admitted")
+
+        async def _drive() -> None:
+            async for _ in outer.stream("hello", prompt_gate=_gate):
+                pass
+
+        lock = client._stdin_write_lock()
+        await lock.acquire()  # another frame (a permission answer) holds the pipe
+        turn = asyncio.ensure_future(_drive())
+        await until_parked(lock)
+        admitted[0] = False
+        lock.release()
+        with pytest.raises(PermissionError):
+            await await_until(turn, what="the direct client's gated prompt")
+        client._process.stdin.write.assert_not_called()
+        assert client._turn_done.is_set()
 
 
 class TestKeepRecordOnTeardown:
