@@ -69,6 +69,29 @@ describe('SitesTab', () => {
     await waitFor(() => expect(mockPut).toHaveBeenCalledWith('/sites', { sites: [globex] }))
   })
 
+  it('keeps focus on Remove while the save runs and after it fails, and refuses a second press', async () => {
+    seed()
+    let fail: (e: Error) => void = () => {}
+    mockPut.mockImplementationOnce(() => new Promise<undefined>((_resolve, reject) => { fail = reject }))
+    renderWithProviders(<SitesTab />)
+
+    await screen.findByText('Acme Shop')
+    const remove = screen.getByRole('button', { name: i18nT(`${K}.remove_named_site`, { name: 'Acme Shop' }) })
+    remove.focus()
+    fireEvent.click(remove)
+
+    await waitFor(() => expect(remove).toHaveAttribute('aria-disabled', 'true'))
+    expect(remove).not.toBeDisabled()
+    expect(remove).toHaveFocus()
+    fireEvent.click(remove)
+    expect(mockPut).toHaveBeenCalledTimes(1)
+
+    fail(new Error('quota_exceeded'))
+    expect(await screen.findByText(/quota_exceeded/)).toBeInTheDocument()
+    await waitFor(() => expect(remove).not.toHaveAttribute('aria-disabled'))
+    expect(remove).toHaveFocus()
+  })
+
   it('adds a site with an https prefix when the URL has none, then closes the form', async () => {
     seed([])
     renderWithProviders(<SitesTab />)
