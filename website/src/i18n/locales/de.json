@@ -14301,6 +14301,7 @@
     },
     "connectionsPage": {
       "action_failed": "Aktion fehlgeschlagen: {{error}}",
+      "approval_superseded": "Diese Freigabe ist nicht mehr aktiv. Brich ab und stelle die Verbindung dann erneut her, um eine neue zu starten.",
       "before_you_connect": "Vor dem Verbinden",
       "before_you_disconnect": "Vor dem Trennen",
       "cancel": "Abbrechen",
