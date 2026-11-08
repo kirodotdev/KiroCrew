@@ -6179,7 +6179,7 @@
     "commitConfirm": "Зафиксировать это изменение в «{{branch}}» и отправить? Опубликованный коммит нельзя отозвать.",
     "commitFailed": "Коммит отклонён.",
     "commitFinding": "Закоммитить в ветку",
-    "currentRepo": "В работе",
+    "currentRepoLine": "В работе: <repo/>",
     "cycle": "Цикл",
     "defectHeading": "Дефект",
     "delta": "Измеренная разница",

@@ -5847,7 +5847,7 @@
     "commitConfirm": "Diese Änderung nach „{{branch}}“ committen und pushen? Ein veröffentlichter Commit lässt sich nicht zurückrufen.",
     "commitFailed": "Der Commit wurde abgelehnt.",
     "commitFinding": "In den Branch committen",
-    "currentRepo": "Bearbeitet",
+    "currentRepoLine": "Arbeitet an <repo/>",
     "cycle": "Zyklus",
     "defectHeading": "Defekt",
     "delta": "Gemessene Differenz",

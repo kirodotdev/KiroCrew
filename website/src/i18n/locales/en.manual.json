@@ -10423,7 +10423,7 @@
     "commitConfirm": "Commit this change to “{{branch}}” and push it? A published commit cannot be recalled.",
     "commitFailed": "The commit was refused.",
     "commitFinding": "Commit to the branch",
-    "currentRepo": "Working on",
+    "currentRepoLine": "Working on <repo/>",
     "cycle": "Cycle",
     "defectHeading": "Defect",
     "delta": "Measured delta",

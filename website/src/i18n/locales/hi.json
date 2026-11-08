@@ -5847,7 +5847,7 @@
     "commitConfirm": "यह बदलाव “{{branch}}” में कमिट करके पुश करें? प्रकाशित कमिट वापस नहीं लिया जा सकता।",
     "commitFailed": "कमिट अस्वीकार कर दिया गया।",
     "commitFinding": "ब्रांच में कमिट करें",
-    "currentRepo": "इस पर काम हो रहा है",
+    "currentRepoLine": "<repo/> पर काम हो रहा है",
     "cycle": "चक्र",
     "defectHeading": "दोष",
     "delta": "मापा गया अंतर",

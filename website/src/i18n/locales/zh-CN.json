@@ -5681,7 +5681,7 @@
     "commitConfirm": "将此更改提交到 “{{branch}}” 并推送？已发布的提交无法撤回。",
     "commitFailed": "提交被拒绝。",
     "commitFinding": "提交到分支",
-    "currentRepo": "正在处理",
+    "currentRepoLine": "正在处理 <repo/>",
     "cycle": "轮次",
     "defectHeading": "缺陷",
     "delta": "实测差值",
