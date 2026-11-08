@@ -1082,6 +1082,37 @@ resurrected from a disabled or uninstalled app would have persisted indefinitely
 Lock order is unchanged (transaction → config → bridge-file); the widened hold is
 the innermost one.
 
+**An app's update, disable or uninstall reaches the chats already open.** A new
+chat mounts the spec's `<app>:<server>` entries when it starts; on a harness that
+does not watch the spec file, a chat already open keeps the set it started with. So
+these routes end with the step an MCP page write ends with,
+`dashboard/handlers/template_server_request.py::_reach_sessions`: where every live
+session applies an MCP change itself (`_mcp_hot_reload_active`), it marks the ones
+that apply it at their next turn and resets nothing; otherwise it resets every
+session and drains the warm pool, so the next message starts from the new spec. A
+route takes the step after its lifecycle lock, and only when the app was enabled
+and declares `mcpServers`, or an update registered one: a disabled app's entries
+are already out of the spec, and an app with none changed nothing a chat holds. A
+failure of the step is logged and never fails the route, whose change has already
+landed.
+
+| Path | Takes the step | Why |
+|---|---|---|
+| update, local or registry source (`apps/routes_install.py::handle_update_app`), on success | yes | the take-down removed the old entries and, for an app that may still run, the registration wrote the new version's, possibly with a new command, args or server list |
+| disable (`apps/routes_enable.py::handle_disable_app`), on success | yes, for a gateway-managed app | the teardown removed the entries; an open chat would keep the removed server's tools |
+| uninstall (`apps/routes_uninstall.py::_run_uninstall`, shared by the route and `uninstall_app_in_process`), on success | yes, for a gateway-managed app | the deregistration removed the entries, as on disable |
+| a failed update (`apps/routes_lifecycle.py::_restore_app_after_failed_update`) | no | the restore registers again what the take-down removed, from the files `update_app` put back, so an open chat already holds that set |
+| default installs (`apps/default_installs.py`) | no | a background pass the gateway starts once, right after its listener, with no request to reach the sessions through; a session already running mounts the app's servers at its next start. The public edition declares none |
+| the health-gated re-registration (`apps/backend_runtime/registration.py::_gate_mcp_registration`) | no | it runs in the backend's health watch after the route has returned; an HTTP server on a gateway-managed backend with no live port yet is written only there, so on a harness that does not watch the spec file it reaches an open chat after a later MCP change or a reset |
+
+Not covered: a failure that removes entries and then answers an error takes no
+step: a restore whose registration fails, a failed registry update that leaves the
+app waiting for consent, and a disable whose record write fails after the
+teardown. An open chat keeps the removed servers until a later MCP change or a
+reset.
+
+Pinned by `test/test_app_lifecycle_reaches_open_chats.py`.
+
 ### 1a. The submission may not CREATE a name in the `<app>:<server>` region
 
 Every row above is about a name the submission **omits**. The mirror question is a
