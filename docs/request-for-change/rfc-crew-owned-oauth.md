@@ -414,7 +414,7 @@ Do (a) in parallel if the KAS team will take it: it unblocks the default backend
 5. **Per-member tokens on Shared Crew.** Keep gateway-wide grants (today's model) or scope tokens per member?
 6. **Migration.** Existing v2 grants cannot be read without opening kiro-cli's files, which the current rule forbids. Proposal: ask users to reconnect once; do not import.
 7. **Windows.** Closed by Amendment 2026-11-07: verified loopback TCP, as phase 1b.
-8. **Google 100-refresh-token limit per account per client** *(earlier research)*: one Crew-held token per product per gateway keeps the count low, but six Google slugs on one client may each hold one. Share one Google token across slugs (scopes merged) or keep one per slug?
+8. **Google 100-refresh-token limit per account per client** *(earlier research)*: one Crew-held token per product per gateway keeps the count low, but six Google slugs on one client may each hold one. Share one Google token across slugs (scopes merged) or keep one per slug? Closed by [Amendment 2026-11-08](#amendment-2026-11-08-one-grant-per-google-slug-revoke-on-the-last): one per slug.
 9. **KAS team ask.** Do we still file the KAS bug (a draft exists in earlier research) if (d) is accepted? Recommended yes: other KAS users need it.
 
 ---
@@ -502,3 +502,13 @@ Atlassian is the first live card: its KAS sign-in is the worst today (the 60 s w
 Unchanged: per-call approval at the proxy, the pid pin, the bridge transport (POSIX socket, Windows verified TCP) and the §4.3 residual risk.
 
 **Unverified, needs live tests.** Whether each vendor accepts Crew's `127.0.0.1` redirect and `Kiro Crew` client name; refresh rotation per vendor; the public URL shape of a Crew pod for step 4b.
+
+## Amendment 2026-11-08: one grant per Google slug, revoke on the last
+
+Phase 2 adds Asana and the six Google slugs as data entries in `connections/crew_oauth.py` (endpoints, the revoke call's form, Google's `access_type=offline` + `prompt=consent`). This amendment closes open question 8. Everything else stands.
+
+**Decision.** Each Google slug keeps its own grant and vault entry, as GitHub and Asana do. The six-product limit (at most six refresh tokens per gateway for one client) stays well under Google's 100.
+
+**Revoke.** One Google client usually serves every Google card (the registration guides say so), and Google's revoke ends the user's whole grant for that client. So Disconnect on a Google card revokes upstream only when no other Google card on the same client id and the same Google account still holds a pair; otherwise it deletes only its own vault entry. The account is the `sub` of the id_token Google returns because the consent adds the `openid` scope; it is stored as `account` in the pair (C2) and never logged, beside the `client` id that issued the pair; both are compared as stored, not as configured now. Google revokes across every client of one Cloud project, so for Google the client is compared by its project number (the client id's leading digits). An unknown account or client revokes. A Google code swap and its write hold the same grant-group lock as Disconnect. The last Google card to disconnect revokes. Asana and GitHub revoke as before.
+
+**Not chosen.** One shared Google grant (merged scopes, one Connect for all six) would change the card's shape; it stays open for a later RFC.

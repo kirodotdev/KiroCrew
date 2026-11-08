@@ -88,7 +88,7 @@ def test_an_unreadable_vault_is_unknown_not_absent(monkeypatch):
 
     monkeypatch.setattr(crew_oauth, "TokenStore", _Broken)
     assert crew_oauth.holds_grant("github") is None
-    assert crew_oauth.holds_grant("asana") is False
+    assert crew_oauth.holds_grant("slack") is False
 
 
 def test_the_sign_in_uses_the_products_one_pkce_implementation():
@@ -719,9 +719,9 @@ async def test_disconnect_revokes_a_pair_that_replaced_the_one_it_read(tmp_path,
     store.replace("github", Tokens("a1", "r1", None, ""))
     revoked: list[str] = []
 
-    async def _revoke(slug, access):
-        revoked.append(access)
-        if access == "a1":
+    async def _revoke(slug, tokens):
+        revoked.append(tokens.access)
+        if tokens.access == "a1":
             # A writer that took no part in this Disconnect's lock, e.g. a second
             # gateway on the same data home, rotates the pair mid-revoke.
             store.replace("github", Tokens("a2", "r2", None, ""))
@@ -744,8 +744,8 @@ async def test_disconnect_waits_for_a_refresh_holding_the_lock(tmp_path, monkeyp
     store.replace("github", Tokens("a1", "r1", None, ""))
     order: list[str] = []
 
-    async def _revoke(slug, access):
-        order.append(f"revoke:{access}")
+    async def _revoke(slug, tokens):
+        order.append(f"revoke:{tokens.access}")
         return True
 
     monkeypatch.setattr(crew_oauth, "_revoke", _revoke)
