@@ -208,7 +208,12 @@ function SubNode({
             const tsegs = nodeSegments(t.blocks)
             return (
               <div key={i} className="grid grid-cols-[2rem_1fr_3rem] gap-2.5 items-center py-[2px]">
-                <span className="font-mono text-[10px] text-muted text-right">t{i + 1}</span>
+                {/* The short mark fits the 2rem column; a screen reader hears the
+                    whole word instead of a bare "t1". */}
+                <span className="font-mono text-[10px] text-muted text-right">
+                  <span aria-hidden="true">{i18nT('pages.sessionBreakdown.turn_short', { n: fmtNumber(i + 1) })}</span>
+                  <span className="sr-only">{i18nT('pages.sessionBreakdown.turn_n', { n: fmtNumber(i + 1) })}</span>
+                </span>
                 <div className="h-4 flex rounded-[2px] overflow-hidden outline-solid outline-1 outline-[var(--border)] bg-bg" style={{ width: `${Math.max(8, Math.sqrt(t.total_chars / maxTurn) * 100)}%` }}>
                   {tsegs.map(s => <span key={s.key} className="h-full" style={{ width: `${s.pct}%`, background: s.fill }} />)}
                 </div>

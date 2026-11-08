@@ -17078,6 +17078,8 @@
       "status_error": "종료됨",
       "status_running": "실행 중",
       "title": "세션 분석",
+      "turn_n": "{{n}}번째 턴",
+      "turn_short": "{{n}}",
       "tool_count_other": "도구 {{n}}개",
       "unknown_agent": "하위 에이전트",
       "unknown_model": "알 수 없음"
