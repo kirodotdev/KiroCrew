@@ -15,6 +15,7 @@ from typing import Any
 
 from kiro_crew import runtime_death
 from kiro_crew.agent_sdk.drivers.acp_vocab import is_runtime_death
+from kiro_crew.executors import EmbedAdmissionTimeout
 from kiro_crew.messaging.link import canonical_key, split_dm_session_key
 
 logger = logging.getLogger("kiro_crew.messaging.dispatch")
@@ -152,6 +153,8 @@ async def charge_turn_failure(
 
     Only a process death is exempt; checking the death record for any other
     exception would excuse a real fault whenever a co-tenant's death was recorded.
+    A build the busy memory pool never admitted (:class:`EmbedAdmissionTimeout`)
+    charges nothing: the session never saw the turn.
 
     *provider* must be the one this turn ACQUIRED, never a fresh lookup: recovery
     replaces a dead session, so a later lookup asks about the replacement.
@@ -160,6 +163,8 @@ async def charge_turn_failure(
     of charging the counter, so a session on a permanently dying shared runtime
     recovers after the threshold (not twice it) with its own failure count intact.
     """
+    if isinstance(exc, EmbedAdmissionTimeout):
+        return
     threshold = _breaker_threshold(sessions)
     if (
         threshold is None
