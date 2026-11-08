@@ -12185,6 +12185,7 @@
       "loading": "Chargement…",
       "local_changes_not_yet_published_to": "Modifications locales pas encore publiées sur",
       "move_to_folder": "Déplacer vers un dossier",
+      "folder_chip_unfiled": "dossier",
       "no_lifecycle_events_yet": "Aucun événement de cycle de vie pour l'instant.",
       "not_found": "Introuvable.",
       "not_in_a_folder_click_to_file": "Hors dossier — cliquer pour classer",
