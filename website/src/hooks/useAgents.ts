@@ -223,7 +223,7 @@ export function withoutCoveredCrewmates(choices: KiroCrewAgent[]): KiroCrewAgent
 }
 
 /** One row per name, member first — see `agents` in the hook's docs. */
-function foldByName(choices: KiroCrewAgent[]): KiroCrewAgent[] {
+export function foldByName(choices: KiroCrewAgent[]): KiroCrewAgent[] {
   const byName = new Map<string, KiroCrewAgent>()
   for (const row of choices) {
     const held = byName.get(row.name)
