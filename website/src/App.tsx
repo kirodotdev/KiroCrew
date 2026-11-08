@@ -993,6 +993,7 @@ export default function App() {
       owners={slotOwners}
       open={commandPalette.open}
       onClose={commandPalette.close}
+      opener={commandPalette.opener}
       openShortcuts={toggleShortcutsModal}
     />
     {/* Theme decoration: decorative overlays (widgets, transitions)

@@ -59,10 +59,11 @@ class OverlayBoundary extends Component<
  * being composed is never handed over: the composition dies when this field unmounts,
  * so only text the IME has committed counts as typed.
  *
- * Focus goes back to where the gesture started when the field unmounts. The surface
- * that replaces it records `document.activeElement` as its restore target after this
- * field is gone, so without the hand-back it would record `<body>`, and closing the
- * bar would leave the keyboard user nowhere.
+ * Focus goes back to where the gesture started when the field unmounts. An Escape
+ * here then leaves the keyboard user where they were, and the shell palette that
+ * replaces this field when the chunk fails records `document.activeElement` as its
+ * restore target after the field is gone, so without the hand-back it would record
+ * `<body>`. The overlay gets its opener from the host instead (`opener`).
  */
 function TypeAheadInput({
   onCommit,
@@ -160,11 +161,14 @@ export default function QuickSearchSurface({
   owners,
   open,
   onClose,
+  opener,
   openShortcuts,
 }: {
   owners: SlotOwners
   open: boolean
   onClose: () => void
+  /** The control the gesture came from; see `OverlayProps.opener`. */
+  opener?: HTMLElement | null
   openShortcuts?: () => void
 }) {
   const owner = owners['quick-search']
@@ -185,7 +189,7 @@ export default function QuickSearchSurface({
   return (
     <OverlayBoundary fallback={palette}>
       <Suspense fallback={<TypeAheadInput onCommit={setTypeAhead} onClose={onClose} />}>
-        <Overlay open={open} onClose={onClose} initialQuery={typeAhead} />
+        <Overlay open={open} onClose={onClose} initialQuery={typeAhead} opener={opener} />
       </Suspense>
     </OverlayBoundary>
   )

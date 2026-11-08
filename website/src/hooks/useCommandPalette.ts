@@ -80,10 +80,24 @@ export interface UseCommandPalette {
   close: () => void
   /** Flip open ⇄ closed (backs the ⌘K alias). */
   toggle: () => void
+  /**
+   * The control that held focus when the last gesture fired: the header button,
+   * a nav row, the chat composer. Read here, at the gesture, because by the time
+   * the surface mounts, its loading field or its own autofocused input holds
+   * focus. The surface returns focus to it when dismissed.
+   */
+  opener: HTMLElement | null
+}
+
+/** The focused control, or null when focus is on the page itself. */
+function focusedControl(): HTMLElement | null {
+  const el = document.activeElement
+  return el instanceof HTMLElement && el !== document.body ? el : null
 }
 
 export function useCommandPalette(): UseCommandPalette {
   const [open, setOpen] = useState(false)
+  const [opener, setOpener] = useState<HTMLElement | null>(null)
   // Timestamp of the last *bare* Shift keydown, for double-tap detection.
   // 0 means "no pending first tap".
   const lastShiftRef = useRef(0)
@@ -99,9 +113,15 @@ export function useCommandPalette(): UseCommandPalette {
   // representing a pane switch. Seeded at mount to suppress the initial effect.
   const lastInstanceRef = useRef({ hostModelPresent, activeId: visibleActiveInstanceId })
 
-  const openPalette = useCallback(() => setOpen(true), [])
+  const openPalette = useCallback(() => {
+    setOpener(focusedControl())
+    setOpen(true)
+  }, [])
   const close = useCallback(() => setOpen(false), [])
-  const toggle = useCallback(() => setOpen(v => !v), [])
+  const toggle = useCallback(() => {
+    setOpener(focusedControl())
+    setOpen(v => !v)
+  }, [])
 
   // Switching the visible pane dismisses the palette.
   //
@@ -165,7 +185,7 @@ export function useCommandPalette(): UseCommandPalette {
       if (config.mode === 'mod-k' && isModKEvent(e)) {
         e.preventDefault()
         lastShiftRef.current = 0
-        setOpen(v => !v)
+        toggle()
         return
       }
 
@@ -173,7 +193,7 @@ export function useCommandPalette(): UseCommandPalette {
       if (customBound && config.custom && chordMatchesEvent(e, config.custom)) {
         e.preventDefault()
         lastShiftRef.current = 0
-        setOpen(v => !v)
+        toggle()
         return
       }
 
@@ -192,7 +212,7 @@ export function useCommandPalette(): UseCommandPalette {
         const now = Date.now()
         if (lastShiftRef.current !== 0 && now - lastShiftRef.current <= DOUBLE_SHIFT_WINDOW_MS) {
           lastShiftRef.current = 0
-          setOpen(true)
+          openPalette()
         } else {
           lastShiftRef.current = now
         }
@@ -206,7 +226,7 @@ export function useCommandPalette(): UseCommandPalette {
 
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
+  }, [openPalette, toggle])
 
-  return { open, openPalette, close, toggle }
+  return { open, openPalette, close, toggle, opener }
 }
