@@ -93,15 +93,12 @@ export default function CronRowActions({
 
         <DropdownMenuSeparator />
 
-        <DropdownMenuItem
-          title={job.strict_schedule
-            ? i18nT('pages.schedulePage.disable_strict_schedule_allow_jitter')
-            : i18nT('pages.schedulePage.enable_strict_schedule_no_jitter')}
-          onSelect={onToggleStrict}
-        >
+        {/* Names what a click does, with the batch Actions menu's words. */}
+        <DropdownMenuItem onSelect={onToggleStrict}>
           <Clock size={13} className="shrink-0 text-muted" />
-          <span>{i18nT('pages.schedulePage.strict')}</span>
-          {job.strict_schedule && <Check size={13} className="ml-auto shrink-0 text-accent" />}
+          <span>{job.strict_schedule
+            ? i18nT('pages.schedulePage.disable_strict_schedule_allow_jitter')
+            : i18nT('pages.schedulePage.enable_strict_schedule_no_jitter')}</span>
         </DropdownMenuItem>
 
         <DropdownMenuSub>

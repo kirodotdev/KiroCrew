@@ -4,7 +4,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import { Trans } from 'react-i18next'
 import { useImeGuard } from '../hooks/useImeGuard'
 import Clickable from '../components/Clickable'
-import { List, CalendarDays, CalendarClock, Plus, ClipboardList, ChevronRight, Globe, History, Trash2, FolderPlus, MoreHorizontal, Pencil, Folder, LayoutGrid, GitPullRequestArrow, Download, KeyRound, Info, X, Play } from 'lucide-react'
+import { List, CalendarDays, CalendarClock, Plus, ClipboardList, ChevronRight, Globe, History, Trash2, FolderPlus, MoreHorizontal, Pencil, Folder, LayoutGrid, GitPullRequestArrow, Download, KeyRound, Info, X } from 'lucide-react'
 import { api, type MemberRosterRow } from '../api/client'
 import { membersRosterQuery } from '../api/membersQuery'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -40,8 +40,8 @@ import { contentHash } from '../lib/contentHash'
 import { groupJobsByFolder, loadCollapsedFolders, saveCollapsedFolders } from '../utils/cronFolders'
 import type { CronFolder } from '../utils/cronFolders'
 import CronFolderHeader from '../components/CronFolderHeader'
-import { useMenuOpensDialog } from '../hooks/useMenuOpensDialog'
-import CronBatchActionsMenu, { batchTargets, type CronBatchAction } from '../components/CronBatchActionsMenu'
+import CronBatchActionsMenu from '../components/CronBatchActionsMenu'
+import { useScheduleBatchActions, BatchRunConfirmDialog } from './SchedulePageBatchActions'
 import CronRowActions from '../components/CronRowActions'
 import AddJobSplitButton from '../components/AddJobSplitButton'
 import {
@@ -695,53 +695,8 @@ export default function SchedulePage() {
   }, [selectedIds, load])
   const confirmArmed = confirmText.trim().toLowerCase() === BULK_DELETE_TOKEN
 
-  const [batchBusy, setBatchBusy] = useState(false)
-  const [runConfirmIds, setRunConfirmIds] = useState<string[] | null>(null)
-  const batchMenuLayer = useMenuOpensDialog()
-  const closeRunConfirm = useCallback(() => { setRunConfirmIds(null); batchMenuLayer.returnFocus() }, [batchMenuLayer])
-  const closeBatchConfirm = useCallback(() => { setBatchConfirm(false); batchMenuLayer.returnFocus() }, [batchMenuLayer])
-  const applyBatch = useCallback(async (action: CronBatchAction, ids?: string[]) => {
-    const eligible = batchTargets(action, selectedJobs, running).map(j => j.id)
-    // A confirmed id list may be stale: drop jobs paused or started since it was shown.
-    const targets = ids ? ids.filter(id => eligible.includes(id)) : eligible
-    if (targets.length === 0) {
-      if (action === 'run') closeRunConfirm()
-      return
-    }
-    const call = (id: string) => {
-      switch (action) {
-        case 'pause': return api.toggleCron(id, false)
-        case 'resume': return api.toggleCron(id, true)
-        case 'strict_on': return api.updateCron(id, { strict_schedule: true })
-        case 'strict_off': return api.updateCron(id, { strict_schedule: false })
-        case 'run': return api.runCron(id)
-      }
-    }
-    setBatchBusy(true); setActionError(null)
-    try {
-      const results = await Promise.allSettled(targets.map(call))
-      // The run and enable routes report some refusals in the body, not the status.
-      const failedIds = targets.filter((_, i) => {
-        const r = results[i]
-        return r.status === 'rejected' || !!(r.value as { error?: string } | undefined)?.error
-      })
-      if (failedIds.length > 0) {
-        setSelectedIds(new Set(failedIds))
-        // `count` (the total) picks the plural form; `failed` is interpolation only.
-        setActionError({ id: 'batch-action', msg: i18nT('pages.schedulePage.batchActions.batch_failed', { count: targets.length, failed: failedIds.length }) })
-      } else {
-        setSelectedIds(new Set())
-      }
-      await load()
-    } finally {
-      setBatchBusy(false)
-      if (action === 'run') closeRunConfirm()
-    }
-  }, [selectedJobs, running, load, setActionError, closeRunConfirm])
-  const onBatchAction = useCallback((action: CronBatchAction) => {
-    if (action === 'run') setRunConfirmIds(batchTargets('run', selectedJobs, running).map(j => j.id))
-    else void applyBatch(action)
-  }, [applyBatch, selectedJobs, running])
+  const { batchBusy, runConfirmIds, runSkipped, batchMenuLayer, closeRunConfirm, closeBatchConfirm, applyBatch, onBatchAction } =
+    useScheduleBatchActions({ selectedJobs, running, load, setSelectedIds, setActionError, setBatchConfirm })
 
   // Open the create panel blank (from "Create your first job" / "Add Job").
   const openBlankCreate = useCallback(() => { setSelected(null); setDetailOpen(false); setPrefill(null); setCreating(true) }, [])
@@ -1489,23 +1444,7 @@ export default function SchedulePage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={runConfirmIds !== null} onOpenChange={next => { if (!next && !batchBusy) closeRunConfirm() }}>
-        <DialogContent maxWidth={420}>
-          <DialogHeader>
-            <Play size={16} className="text-accent shrink-0" aria-hidden="true" />
-            <DialogTitle>{i18nT('pages.schedulePage.batchActions.run_confirm_title', { count: runConfirmIds?.length ?? 0 })}</DialogTitle>
-          </DialogHeader>
-          <DialogBody>
-            <DialogDescription>{i18nT('pages.schedulePage.batchActions.run_confirm_body')}</DialogDescription>
-          </DialogBody>
-          <DialogFooter>
-            <Btn onClick={closeRunConfirm} disabled={batchBusy}>{i18nT('pages.schedulePage.cancel')}</Btn>
-            <SendBtn disabled={batchBusy} onClick={() => { if (runConfirmIds) void applyBatch('run', runConfirmIds) }}>
-              {i18nT('pages.schedulePage.run_now')}
-            </SendBtn>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <BatchRunConfirmDialog ids={runConfirmIds} skipped={runSkipped} busy={batchBusy} onClose={closeRunConfirm} onConfirm={ids => void applyBatch('run', ids)} />
     </div>
   )
 }

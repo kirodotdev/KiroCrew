@@ -24,6 +24,17 @@ export function batchTargets(action: CronBatchAction, jobs: CronJob[], running: 
   }
 }
 
+/** The menu label of an action; the failure notice names the action with it. */
+export function batchActionLabel(action: CronBatchAction): string {
+  switch (action) {
+    case 'run': return i18nT('pages.schedulePage.run_now')
+    case 'pause': return i18nT('pages.schedulePage.pause')
+    case 'resume': return i18nT('pages.schedulePage.resume')
+    case 'strict_on': return i18nT('pages.schedulePage.batchActions.strict_on')
+    case 'strict_off': return i18nT('pages.schedulePage.batchActions.strict_off')
+  }
+}
+
 /** `run` and delete open a confirm dialog, so they go through `layer.openLayer`. */
 export default function CronBatchActionsMenu({
   jobs, running, busy, layer, onAction, folders, onMove, onNewFolder, deleteCount, onDelete,
@@ -42,13 +53,15 @@ export default function CronBatchActionsMenu({
   const [open, setOpen] = useState(false)
   const sortedFolders = [...folders].sort((a, b) => a.order - b.order)
   const move = (folderId: string) => { setOpen(false); onMove(folderId) }
-  const item = (action: CronBatchAction, icon: ReactNode, label: string) => {
+  const item = (action: CronBatchAction, icon: ReactNode, hint?: string) => {
     const n = batchTargets(action, jobs, running).length
     return (
       <DropdownMenuItem disabled={busy || n === 0} onSelect={() => action === 'run' ? layer.openLayer(() => onAction(action)) : onAction(action)}>
         {icon}
-        <span>{label}</span>
-        <span className="ml-auto pl-3 text-muted tabular-nums">{n}</span>
+        {hint
+          ? <span className="flex flex-col"><span>{batchActionLabel(action)}</span><span className="text-[12px] text-muted">{hint}</span></span>
+          : <span>{batchActionLabel(action)}</span>}
+        <span className="ml-auto pl-3 text-muted tabular-nums whitespace-nowrap">{i18nT('pages.schedulePage.batchActions.changes_n_jobs', { count: n })}</span>
       </DropdownMenuItem>
     )
   }
@@ -61,19 +74,20 @@ export default function CronBatchActionsMenu({
           onPointerDown={layer.rememberOpener}
           onKeyDown={layer.rememberOpener}
           aria-label={i18nT('pages.schedulePage.batchActions.actions_for_selected')}
+          {...uiLocation('schedule.batch-actions')}
           title={i18nT('pages.schedulePage.batchActions.actions_for_selected')}
         >
           <span className="flex items-center gap-1.5"><MoreHorizontal size={14} /> {i18nT('pages.schedulePage.actions')}</span>
         </Btn>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="min-w-[200px]" onCloseAutoFocus={layer.onCloseAutoFocus}>
-        {item('run', <Play size={13} className="shrink-0 text-accent" />, i18nT('pages.schedulePage.run_now'))}
+        {item('run', <Play size={13} className="shrink-0 text-accent" />)}
         <DropdownMenuSeparator />
-        {item('pause', <Pause size={13} className="shrink-0 text-muted" />, i18nT('pages.schedulePage.pause'))}
-        {item('resume', <Play size={13} className="shrink-0 text-muted" />, i18nT('pages.schedulePage.resume'))}
+        {item('pause', <Pause size={13} className="shrink-0 text-muted" />)}
+        {item('resume', <Play size={13} className="shrink-0 text-muted" />)}
         <DropdownMenuSeparator />
-        {item('strict_on', <Clock size={13} className="shrink-0 text-muted" />, i18nT('pages.schedulePage.batchActions.strict_on'))}
-        {item('strict_off', <Clock size={13} className="shrink-0 text-muted" />, i18nT('pages.schedulePage.batchActions.strict_off'))}
+        {item('strict_on', <Clock size={13} className="shrink-0 text-muted" />, i18nT('pages.schedulePage.batchActions.strict_on_hint'))}
+        {item('strict_off', <Clock size={13} className="shrink-0 text-muted" />, i18nT('pages.schedulePage.batchActions.strict_off_hint'))}
         <DropdownMenuSeparator />
         <DropdownMenuSub>
           <DropdownMenuSubTrigger disabled={busy} {...uiLocation('schedule.move-to-folder')}>
@@ -107,12 +121,11 @@ export default function CronBatchActionsMenu({
         <DropdownMenuSeparator />
         <DropdownMenuItem
           disabled={busy || deleteCount === 0}
-          className="text-danger"
           title={i18nT('pages.schedulePage.delete_n_selected_jobs', { count: deleteCount })}
           onSelect={() => layer.openLayer(onDelete)}
         >
-          <Trash2 size={13} className="shrink-0" />
-          <span>{i18nT('pages.schedulePage.delete_n_selected', { count: deleteCount })}</span>
+          <Trash2 size={13} className="shrink-0 text-danger" />
+          <span className="text-danger">{i18nT('pages.schedulePage.delete_n_selected', { count: deleteCount })}</span>
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

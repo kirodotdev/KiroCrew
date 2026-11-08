@@ -98,9 +98,18 @@ describe('SchedulePage batch actions', () => {
   it('turns strict schedule off through the per-job update', async () => {
     const api = await renderChecked(['Alpha job', 'Beta job'])
     openMenu()
-    fireEvent.click(menuItem('Strict schedule off'))
+    fireEvent.click(menuItem('Allow small random delay'))
     await waitFor(() => expect(api.updateCron).toHaveBeenCalledWith('b', { strict_schedule: false }))
     expect(api.updateCron).toHaveBeenCalledTimes(1)
+  })
+
+  it('names the effect of each timing item and counts jobs, not bare numbers', async () => {
+    await renderChecked(['Alpha job', 'Beta job'])
+    openMenu()
+    expect(menuItem('Run at exact time')).toHaveTextContent('Run at exact timeStart exactly on schedulechanges 1 job')
+    expect(menuItem('Allow small random delay')).toHaveTextContent('Allow small random delayStart a little late to spread the loadchanges 1 job')
+    expect(menuItem('Pause')).toHaveTextContent('Pausechanges 1 job')
+    expect(screen.getByRole('menu').textContent).not.toMatch(/jitter|strict/i)
   })
 
   it('asks before Run now and runs only enabled, idle jobs', async () => {
@@ -110,11 +119,28 @@ describe('SchedulePage batch actions', () => {
 
     const dialog = await screen.findByRole('dialog')
     expect(within(dialog).getByText('Run 1 job now?')).toBeInTheDocument()
+    const skipped = within(dialog).getByTestId('schedule-run-skipped')
+    expect(within(skipped).getAllByRole('listitem').map(li => li.textContent))
+      .toEqual(['Beta job (paused)', 'Gamma job (already running)'])
     expect(api.runCron).not.toHaveBeenCalled()
     fireEvent.click(within(dialog).getByRole('button', { name: 'Run Now' }))
 
     await waitFor(() => expect(api.runCron).toHaveBeenCalledTimes(1))
     expect(api.runCron).toHaveBeenCalledWith('a')
+  })
+
+  it('lists at most five skipped jobs in the Run now confirm, then the rest as a count', async () => {
+    const { api } = await import('../api/client')
+    const paused = Array.from({ length: 7 }, (_, i) => mkJob({ id: `p${i}`, name: `Paused ${i}`, enabled: false }))
+    vi.mocked(api).crons.mockResolvedValue({ jobs: [mkJob({ id: 'a', name: 'Alpha job' }), ...paused] })
+    renderWithProviders(<SchedulePage />)
+    await waitFor(() => expect(screen.getByText('Alpha job')).toBeInTheDocument())
+    check('Alpha job'); paused.forEach(j => check(j.name))
+    openMenu()
+    fireEvent.click(menuItem('Run Now'))
+    const skipped = within(await screen.findByRole('dialog')).getByTestId('schedule-run-skipped')
+    expect(within(skipped).getAllByRole('listitem')).toHaveLength(5)
+    expect(skipped).toHaveTextContent('+2 more')
   })
 
   it('skips a job paused while the Run now dialog was open', async () => {
@@ -163,7 +189,7 @@ describe('SchedulePage batch actions', () => {
     openMenu()
     fireEvent.click(menuItem('Pause'))
 
-    expect(await screen.findByText('1 of 2 jobs could not be updated')).toBeInTheDocument()
+    expect(await screen.findByText('Pause: 1 of 2 jobs failed. Failed jobs stay selected.')).toBeInTheDocument()
     const rowCheckbox = (name: string) =>
       within(screen.getByText(name).closest('tr') as HTMLElement).getByRole('checkbox')
     expect(rowCheckbox('Gamma job')).toBeChecked()
@@ -175,7 +201,7 @@ describe('SchedulePage batch actions', () => {
     vi.mocked(api).toggleCron.mockResolvedValue({ error: 'not your job' })
     openMenu()
     fireEvent.click(menuItem('Resume'))
-    expect(await screen.findByText('1 of 1 job could not be updated')).toBeInTheDocument()
+    expect(await screen.findByText('Resume: 1 of 1 job failed. Failed jobs stay selected.')).toBeInTheDocument()
   })
 
   it('disables an action no checked job would change', async () => {
