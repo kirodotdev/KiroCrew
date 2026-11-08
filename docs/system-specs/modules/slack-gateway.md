@@ -1826,8 +1826,8 @@ would publish the first time anyone asked for a dashboard link.
 
 **Slack connect is non-fatal** (`GatewayOrchestrator._connect_slack`): the
 initial socket-mode `connect()` is wrapped so a network/proxy/timeout failure
-(e.g. a stale `HTTPS_PROXY` in the launching shell — slack_sdk's aiohttp client
-honours proxy env vars via `trust_env`) logs a warning and the gateway
+(e.g. a stale `HTTPS_PROXY` in the launching shell — slack_sdk's web client
+reads the proxy env vars itself) logs a warning and the gateway
 continues in **dashboard-only mode** instead of crashing the whole process.
 Only ordinary `Exception`s are swallowed; `CancelledError` (BaseException)
 still propagates so real task cancellation is not masked. There is no
@@ -1856,6 +1856,13 @@ passes `select_socket_mode_proxy(url)`:
 
 With websockets older than 15 nothing is passed and the connect is direct, as
 those releases never used a proxy.
+
+**Requests outside slack_sdk.** slack_sdk's web client reads `HTTPS_PROXY` itself,
+but a plain aiohttp session reads no proxy variable. So every `response_url` reply
+(button and slash-command answers) and `download_file` pass
+`proxy=http_proxy.resolve_proxy(url)`, the HTTPS-then-HTTP entry with the bypass
+list applied. Without it they dial Slack directly, which fails on a host whose
+only way out is the proxy while the channel itself stays connected.
 
 Config example (remote access via URL):
 ```json

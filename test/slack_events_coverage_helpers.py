@@ -129,7 +129,9 @@ class _capture_respond:
             async def __aexit__(self_inner, *exc):
                 return False
 
-            async def post(self_inner, url, json=None):  # noqa: A002 - aiohttp kwarg name
+            async def post(
+                self_inner, url, json=None, proxy=None  # noqa: A002 - aiohttp kwarg name
+            ):
                 sink.append(json or {})
                 return MagicMock()
 
