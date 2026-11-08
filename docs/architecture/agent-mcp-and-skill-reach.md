@@ -91,13 +91,9 @@ to custom agents, needs an explicit owner decision.
   `skill_scope.MATE_CONDUCTOR_INHERITS_USER_SKILLS` is on, so
   `skill_scope.mate_conductor_scope` still adds the user's `~/.kiro/skills` and a
   workspace `.kiro/skills`, on kiro-cli and on KAS (`agent_skill_globs`;
-  `_spec_globs` in `src/kiro_crew/acp/kas_skill_scope.py`). On each new session whose
-  conductor loads such a skill, the mate is told to say, in its next
-  reply, which skills these are and how to keep them: add them to the mate's
-  Abilities, or ask the mate in chat. The mate chat draws no notice rows, so a
-  notice row carries the same text only on the Sessions page
-  (`_notice_inherited_conductor_skills` in
-  `src/kiro_crew/dashboard/chat_turn/turn_spec_hooks.py`). The next release turns
+  `_spec_globs` in `src/kiro_crew/acp/kas_skill_scope.py`). No session-start
+  notice names these skills: a skill to keep is added in the mate's Abilities.
+  The next release turns
   the flag off and removes it; `test/test_mate_conductor_agent.py` and
   `test/test_mate_conductor_parity.py` already pin that scoped behavior with the
   flag off.
