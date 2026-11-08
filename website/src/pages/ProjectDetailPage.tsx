@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useIsMobile } from '../hooks/useIsMobile'
+import { useReducedMotion } from '../hooks/useReducedMotion';
 import { useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion } from 'framer-motion';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
@@ -336,17 +337,21 @@ export default function ProjectDetailPage({ run, onRetry, onRefresh }: Props) {
 
 function PlanningOverlay() {
   const [dots, setDots] = useState('');
+  // Ticking text is motion too: under reduced motion the line holds still,
+  // and the static copy below it still says the plan is being built.
+  const reduceMotion = useReducedMotion();
   useEffect(() => {
+    if (reduceMotion) return;
     const iv = setInterval(() => setDots(d => d.length >= 3 ? '' : d + '.'), 500);
     return () => clearInterval(iv);
-  }, []);
+  }, [reduceMotion]);
   return (
     <div className="flex items-center justify-center h-full">
       <div className="text-center">
         {/* Static glyph plus a shimmer bar — the ticking dots and the sweep carry
             the "work in flight" signal, so nothing here spins. */}
         <Hourglass size={28} className="text-accent mx-auto mb-4" />
-        <div className="text-accent text-[16px] font-semibold">{i18nT('pages.projectDetailPage.generating_execution_plan')}{dots}</div>
+        <div className="text-accent text-[16px] font-semibold">{i18nT('pages.projectDetailPage.generating_execution_plan')}{reduceMotion ? '' : dots}</div>
         <div className="text-muted text-[13px] mt-1">{i18nT('pages.projectDetailPage.analyzing_task_and_building_step_by_step_plan')}</div>
         <div className="skeleton h-1.5 w-40 rounded-full mx-auto mt-4" aria-hidden="true" />
         <div className="text-muted text-[12px] mt-3">{i18nT('pages.projectDetailPage.the_dag_view_will_appear_once_the_plan_is_ready')}</div>
