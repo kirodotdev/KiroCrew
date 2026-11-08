@@ -4729,7 +4729,8 @@ The boundary:
   provider that show's own frozen `link.card` controls, each fixed to that
   invocation (there are no card controls on `ctx`), so a late completion for an
   earlier hover names the earlier show and the dashboard drops it. Dismissal
-  (leave, scroll, Escape) retires the current invocation too, and a ready card
+  (leave, Escape, blur, or a scroll that moves the link before its card is
+  open) retires the current invocation too, and a ready card
   that was not yet visible is still sent `hide`, so a late `open` never shows a
   dismissed card. An unnamed text pattern is named by its declaration index before
   the grant filter runs, so a pattern waiting for approval never renames a later
