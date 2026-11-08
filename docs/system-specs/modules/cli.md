@@ -2561,6 +2561,13 @@ pins the contract.
     launchd's agent socket itself, and that path changes at each boot, while
     on Linux it finds only per-login sockets, so a fixed socket path is lost
     and only a socket outside the paths it globs is named.
+    Both notes check and name the `.env` the service reads
+    (`common.service_dotenv()`): under `sudo kirocrew service install` on
+    systemd that is the one under the passwd home of `SUDO_USER`, the account
+    the unit runs as, not the elevated process's own (root's under `sudo -H`),
+    and the note says to run the remedy as that account so it keeps owning the
+    file. With `KIROCREW_HOME` set, or on launchd, the installer's own `.env`
+    is named.
   - Boot survival of the GATEWAY via `WantedBy=multi-user.target` needs no
     linger — the gateway is a system-level unit, and linger is a user-service
     concept. The AGENT RUNTIMES are a separate matter: the unit bakes
